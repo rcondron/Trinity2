@@ -47,10 +47,18 @@ Then open **http://localhost:5173**. The engine runs on `localhost:8799`.
 
 ## Status
 
-This is the **foundation**: the full engine + UI, runnable end-to-end in mock mode. Live
-service wiring (real PersonaPlex audio streaming on fal.ai, live Jev routing, live Morph
-builds, a web-search provider) plugs in behind the existing interfaces as keys are added —
-see the `services/` modules and `.env.example`.
+The engine + UI run end-to-end in mock mode with no keys, and all four services are wired
+to live: add a key in `.env` and that service flips on (the rest stay mock). Every live
+path falls back gracefully on error.
 
-Not yet wired: real fal.ai audio transport, a concrete web-search provider, and Runpod
-self-hosting (planned for after the fal.ai loop is proven).
+**Verified live:**
+- **PersonaPlex voice** on fal.ai — via fal's **queue API** (submit → poll → result; the
+  sync `fal.run` endpoint hangs). A real turn returns WAV + transcript in ~15s. The fal
+  endpoint is marked deprecated but still serving; `PERSONAPLEX_URL` is configurable for
+  self-hosting (Runpod) later.
+- **Tavily web search** — request shape confirmed against the live API.
+
+**Known gap:** the browser captures mic audio as WebM; the fal path is proven with a WAV
+URL. If PersonaPlex rejects WebM we'll transcode to WAV server-side — to confirm with a
+real mic recording. Live Jev/brain/Morph round-trips are wired and need their keys to
+exercise.

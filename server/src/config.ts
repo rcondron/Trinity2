@@ -17,8 +17,9 @@ export const config = {
 
   fal: {
     key: process.env.FAL_KEY || "",
-    // Turn-based PersonaPlex endpoint. Swap this for a self-hosted (Runpod) URL later.
-    url: process.env.PERSONAPLEX_URL || "https://fal.run/fal-ai/personaplex",
+    // fal QUEUE base for PersonaPlex. The sync fal.run endpoint hangs; the queue
+    // API (submit -> poll status -> fetch result) is the working path.
+    url: process.env.PERSONAPLEX_URL || "https://queue.fal.run/fal-ai/personaplex",
     defaultVoice: process.env.PERSONAPLEX_VOICE || "NATF2",
   },
   openrouter: {

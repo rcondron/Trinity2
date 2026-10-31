@@ -31,32 +31,51 @@ export interface VoiceTurn {
   duration?: number;
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 /**
- * Run one speech turn through PersonaPlex.
+ * Run one speech turn through PersonaPlex via fal's queue API:
+ * submit → poll status until COMPLETED → fetch result.
  * @param audioUrl the user's speech — a public URL or a base64 data: URI.
  */
 export async function personaplexTurn(audioUrl: string, persona: Persona): Promise<VoiceTurn> {
   if (!live.voice) throw new Error("Voice not configured (FAL_KEY missing)");
 
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Key ${config.fal.key}`,
+  };
   const prompt =
     persona.description +
     (Object.keys(persona.traits).length ? `\nTraits: ${JSON.stringify(persona.traits)}` : "");
 
-  const res = await fetch(config.fal.url, {
+  // 1. Submit.
+  const submit = await fetch(config.fal.url, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Key ${config.fal.key}`,
-    },
-    body: JSON.stringify({
-      audio_url: audioUrl,
-      prompt,
-      voice: resolveVoice(persona.voice),
-    }),
+    headers,
+    body: JSON.stringify({ audio_url: audioUrl, prompt, voice: resolveVoice(persona.voice) }),
   });
-  if (!res.ok) throw new Error(`PersonaPlex ${res.status}: ${await res.text()}`);
+  if (!submit.ok) throw new Error(`PersonaPlex submit ${submit.status}: ${await submit.text()}`);
+  const { status_url, response_url } = (await submit.json()) as {
+    status_url: string;
+    response_url: string;
+  };
 
-  const data = (await res.json()) as {
+  // 2. Poll status (up to ~2 min).
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    const s = await fetch(status_url, { headers });
+    const sj = (await s.json()) as { status: string };
+    if (sj.status === "COMPLETED") break;
+    if (sj.status === "FAILED" || sj.status === "ERROR")
+      throw new Error(`PersonaPlex failed: ${JSON.stringify(sj)}`);
+    await sleep(1500);
+  }
+
+  // 3. Fetch result.
+  const r = await fetch(response_url, { headers });
+  if (!r.ok) throw new Error(`PersonaPlex result ${r.status}: ${await r.text()}`);
+  const data = (await r.json()) as {
     audio: string | { url: string };
     text: string;
     duration?: number;
