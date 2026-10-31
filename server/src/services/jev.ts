@@ -1,12 +1,12 @@
 import { config, live } from "../config.js";
 import type { RouteDecision, Tool, TranscriptTurn } from "../types.js";
-import { openrouterChat } from "./llm.js";
 
 /**
- * Jev is the decision layer. It takes the unstructured conversation state and the
- * set of available tools and returns a typed decision: do nothing, call a tool,
- * recall memory, build UI, or just speak. It does not generate dialogue itself —
- * that's the brain's job.
+ * Jev (TypeSafe AI) is the decision layer. It is NOT a chat model — it's a custom
+ * "System One" decision API: give it unstructured `state` plus typed `questions`,
+ * get back typed probabilistic answers. We frame routing as a single `choice`
+ * question over the available actions, so Jev picks what Trinity should do next.
+ * Jev doesn't produce tool arguments, so we fill those ourselves.
  */
 export async function route(input: {
   userText: string;
@@ -15,39 +15,75 @@ export async function route(input: {
 }): Promise<RouteDecision> {
   if (!live.jev) return mockRoute(input);
 
-  const toolList = input.tools
-    .map((t) => `- ${t.name}: ${t.description} | args: ${JSON.stringify(t.input)}`)
-    .join("\n");
-  const context = input.transcript.slice(-6).map((t) => `${t.speaker}: ${t.text}`).join("\n");
+  const criteria: Record<string, string> = {
+    converse: "Just talk or answer conversationally — no tool or UI build is needed.",
+    build: "The user wants you to make, build, draw, design, or show a piece of UI.",
+    remember: "The user shared a fact or preference about themselves worth remembering.",
+  };
+  for (const t of input.tools) criteria[`tool:${t.name}`] = t.description;
 
-  const prompt =
-    `You are a routing decision function. Given the conversation and tools, decide the single best next action.\n\n` +
-    `TOOLS:\n${toolList || "(none)"}\n\n` +
-    `CONVERSATION:\n${context}\n\nLATEST USER TURN: ${input.userText}\n\n` +
-    `Respond with JSON only: {"action":"none|tool|recall|build|speak","tool":"<name or null>",` +
-    `"args":{...},"confidence":0..1,"reason":"short"}.`;
+  const state =
+    input.transcript.slice(-6).map((t) => `${t.speaker}: ${t.text}`).join("\n") +
+    `\nlatest user turn: ${input.userText}`;
 
   try {
-    const raw = await openrouterChat(
-      config.openrouter.jevModel,
-      [{ role: "user", content: prompt }],
-      { json: true, temperature: 0 },
-    );
-    const parsed = JSON.parse(raw) as Partial<RouteDecision>;
-    return {
-      action: parsed.action ?? "speak",
-      tool: parsed.tool,
-      args: parsed.args,
-      confidence: parsed.confidence ?? 0.5,
-      reason: parsed.reason ?? "",
+    const res = await fetch(`${config.typesafe.base}/v1/systemone`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.typesafe.key}`,
+      },
+      body: JSON.stringify({
+        model: config.typesafe.model,
+        state,
+        questions: {
+          action: {
+            type: "choice",
+            instructions: "Which single action should the assistant take next?",
+            criteria,
+          },
+        },
+      }),
+    });
+    if (!res.ok) throw new Error(`Jev ${res.status}: ${await res.text()}`);
+
+    const data = (await res.json()) as {
+      answers?: { action?: { choice?: string; confidence?: number } };
     };
+    const ans = data.answers?.action;
+    if (!ans?.choice) throw new Error("Jev returned no choice");
+    return mapChoice(ans.choice, input, ans.confidence ?? 0.6);
   } catch (err) {
     console.warn("[jev] live routing failed, using heuristic:", (err as Error).message);
     return mockRoute(input);
   }
 }
 
-/** Keyword heuristic that mimics Jev's job well enough to drive the whole loop in mock mode. */
+/** Map a Jev choice-label back to a typed RouteDecision, filling tool args ourselves. */
+function mapChoice(
+  choice: string,
+  input: { userText: string; tools: Tool[] },
+  confidence: number,
+): RouteDecision {
+  if (choice === "build")
+    return { action: "build", args: { instruction: input.userText }, confidence, reason: "jev: build" };
+  if (choice === "remember")
+    return { action: "recall", args: { write: true, query: input.userText }, confidence, reason: "jev: remember" };
+  if (choice.startsWith("tool:")) {
+    const name = choice.slice(5);
+    const tool = input.tools.find((t) => t.name === name);
+    return {
+      action: "tool",
+      tool: name,
+      args: tool ? inferArgs(tool, input.userText) : { query: input.userText },
+      confidence,
+      reason: `jev: ${name}`,
+    };
+  }
+  return { action: "speak", confidence, reason: "jev: converse" };
+}
+
+/** Keyword heuristic that mimics Jev's job well enough to drive the loop in mock/fallback mode. */
 function mockRoute(input: { userText: string; tools: Tool[] }): RouteDecision {
   const t = input.userText.toLowerCase();
   const has = (name: string) => input.tools.some((x) => x.name === name);
@@ -84,7 +120,7 @@ function mockRoute(input: { userText: string; tools: Tool[] }): RouteDecision {
   return { action: "speak", confidence: 0.6, reason: "ordinary conversational turn" };
 }
 
-/** Best-effort argument filler for the mock router. */
+/** Best-effort argument filler (Jev/heuristic don't produce tool args). */
 function inferArgs(tool: Tool, text: string): Record<string, unknown> {
   const args: Record<string, unknown> = {};
   for (const [key, spec] of Object.entries(tool.input)) {

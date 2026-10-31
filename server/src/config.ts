@@ -22,17 +22,19 @@ export const config = {
     url: process.env.PERSONAPLEX_URL || "https://queue.fal.run/fal-ai/personaplex",
     defaultVoice: process.env.PERSONAPLEX_VOICE || "NATF2",
   },
-  openrouter: {
-    key: process.env.OPENROUTER_API_KEY || "",
-    base: "https://openrouter.ai/api/v1",
-    jevModel: process.env.JEV_MODEL || "typesafe/jev",
-    brainModel: process.env.BRAIN_MODEL || "anthropic/claude-sonnet-5-5",
+  // Jev (TypeSafe AI) — a custom "System One" decision API, not OpenAI-compatible.
+  typesafe: {
+    key: process.env.TYPESAFE_API_KEY || "",
+    base: process.env.TYPESAFE_URL || "https://api.typesafe.ai",
+    model: process.env.JEV_MODEL || "jev-latest",
   },
-  morph: {
-    key: process.env.MORPH_API_KEY || "",
-    base: "https://api.morphllm.com/v1",
-    applyModel: process.env.MORPH_MODEL || "morph-v3-fast", // edit/fast-apply only
-    genModel: process.env.MORPH_GEN_MODEL || "morph-glm53-744b", // from-scratch codegen
+  // Mordiem — OpenAI-compatible gateway (Morpheus network). Powers BOTH the UI
+  // codegen model and the general-knowledge "brain".
+  mordiem: {
+    key: process.env.MORDIEM_API_KEY || process.env.MORPH_API_KEY || "",
+    base: process.env.MORDIEM_URL || "https://api.mordiem.com/api/v1",
+    genModel: process.env.MORDIEM_GEN_MODEL || "qwen3-coder-480b-a35b-instruct-turbo",
+    brainModel: process.env.BRAIN_MODEL || "claude-sonnet-5-5",
   },
   web: {
     // Tavily search. Reads TAVILY_API_KEY (or legacy WEB_SEARCH_API_KEY).
@@ -43,9 +45,9 @@ export const config = {
 /** Which services have real credentials. Everything else runs in mock mode. */
 export const live = {
   voice: Boolean(config.fal.key),
-  jev: Boolean(config.openrouter.key),
-  brain: Boolean(config.openrouter.key),
-  morph: Boolean(config.morph.key),
+  jev: Boolean(config.typesafe.key),
+  brain: Boolean(config.mordiem.key),
+  mordiem: Boolean(config.mordiem.key),
   web: Boolean(config.web.key),
 };
 
@@ -55,7 +57,7 @@ export function serviceStatus() {
     voice: m(live.voice),
     jev: m(live.jev),
     brain: m(live.brain),
-    morph: m(live.morph),
+    mordiem: m(live.mordiem),
     web: m(live.web),
   };
 }

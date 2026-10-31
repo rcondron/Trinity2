@@ -116,6 +116,6 @@ export interface ServiceStatus {
   voice: "live" | "mock";
   jev: "live" | "mock";
   brain: "live" | "mock";
-  morph: "live" | "mock";
+  mordiem: "live" | "mock";
   web: "live" | "mock";
 }

@@ -12,8 +12,8 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design.
 | Role | Service |
 |------|---------|
 | Voice (full-duplex speech↔speech) | NVIDIA **PersonaPlex-7B** via **fal.ai** |
-| Decision / tool routing | **Jev** (TypeSafe AI) via OpenRouter |
-| On-the-fly UI builder + brain | **Morph** (`morph-v3-fast`) / OpenRouter |
+| Decision / tool routing | **Jev** (TypeSafe AI) — System One decision API |
+| On-the-fly UI builder + brain | **Mordiem** (Morpheus gateway: `qwen3-coder` + `claude-sonnet-5-5`) |
 | Memory | SQLite (structured) + **PouchDB** (documents) |
 
 **Everything runs in mock mode with no API keys** — including a fully usable *talking*
@@ -51,14 +51,17 @@ The engine + UI run end-to-end in mock mode with no keys, and all four services 
 to live: add a key in `.env` and that service flips on (the rest stay mock). Every live
 path falls back gracefully on error.
 
-**Verified live:**
+**Verified live (real round-trips):**
 - **PersonaPlex voice** on fal.ai — via fal's **queue API** (submit → poll → result; the
-  sync `fal.run` endpoint hangs). A real turn returns WAV + transcript in ~15s. The fal
-  endpoint is marked deprecated but still serving; `PERSONAPLEX_URL` is configurable for
-  self-hosting (Runpod) later.
-- **Tavily web search** — request shape confirmed against the live API.
+  sync `fal.run` endpoint hangs). Returns WAV + transcript. The endpoint is marked
+  deprecated but still serving; `PERSONAPLEX_URL` is configurable for self-hosting (Runpod).
+- **Mic capture** — the browser records **WAV** via the Web Audio API (not MediaRecorder's
+  WebM) as a `data:` URI; verified fal accepts it end-to-end.
+- **Jev routing** — TypeSafe AI's System One API picks the next action (incl. selecting
+  skill-library tools); verified live in the engine.
+- **Mordiem** — UI codegen (`qwen3-coder-480b-a35b-instruct-turbo`) and the brain
+  (`claude-sonnet-5-5`) both run through Mordiem's one OpenAI-compatible gateway; verified live.
 
-**Known gap:** the browser captures mic audio as WebM; the fal path is proven with a WAV
-URL. If PersonaPlex rejects WebM we'll transcode to WAV server-side — to confirm with a
-real mic recording. Live Jev/brain/Morph round-trips are wired and need their keys to
-exercise.
+**Wired, needs a key:**
+- **Tavily web search** — request shape confirmed (clean 401 with a dummy key); add
+  `TAVILY_API_KEY`.

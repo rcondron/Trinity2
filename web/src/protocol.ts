@@ -44,7 +44,7 @@ export interface HeartbeatTask {
   enabled: boolean;
 }
 
-export type ServiceStatus = Record<"voice" | "jev" | "brain" | "morph" | "web", "live" | "mock">;
+export type ServiceStatus = Record<"voice" | "jev" | "brain" | "mordiem" | "web", "live" | "mock">;
 
 export type ClientEvent =
   | { type: "hello" }

@@ -10,9 +10,9 @@ CPA, a travel agent, or a video producer, swapped by **persona**.
 | Role | Service | Notes |
 |------|---------|-------|
 | **Voice** (full-duplex speech↔speech) | **NVIDIA PersonaPlex-7B-v1** | Text persona prompt + audio voice prompt. Hosted on **fal.ai** for v1; self-host on Runpod later. |
-| **Decision / routing** | **Jev** (TypeSafe AI, via OpenRouter) | Typed decision model. Listens to transcripts → picks the right tool/context. Does *not* generate text or call tools itself. |
-| **UI builder** (on the fly) | **Morph** `morph-v3-fast` | OpenAI-compatible fast-apply model. Builds/edits workspace UI live. |
-| **Brain** (general knowledge) | Morph / OpenRouter chat model | PersonaPlex knowledge lookups & reasoning. |
+| **Decision / routing** | **Jev** (TypeSafe AI — System One API) | Typed decision model (`/v1/systemone`, not OpenAI-compatible). Routing is framed as a `choice` question over actions; Jev picks one. Does *not* generate text or tool args itself. |
+| **UI builder** (on the fly) | **Mordiem** `qwen3-coder-480b` | OpenAI-compatible gateway (Morpheus network). Generates/edits workspace UI live. |
+| **Brain** (general knowledge) | **Mordiem** `claude-sonnet-5-5` | Same Mordiem gateway. PersonaPlex knowledge lookups & reasoning. |
 | **Web** | Built-in search/browse tool | Research & lookups. |
 
 > **Why fal.ai before Runpod:** PersonaPlex is real-time full-duplex and needs a warm,
@@ -38,7 +38,7 @@ CPA, a travel agent, or a video producer, swapped by **persona**.
 │      ├── services/voice   (PersonaPlex via fal.ai)   [mockable]         │
 │      ├── services/jev     (routing decisions)        [mockable]         │
 │      ├── services/brain   (general knowledge)        [mockable]         │
-│      ├── services/morph   (UI fast-apply)            [mockable]         │
+│      ├── services/mordiem (UI codegen + brain)       [mockable]         │
 │      ├── services/web     (search/browse)            [mockable]         │
 │      │                                                                  │
 │      ├── tools/registry   (built-in tools + Trinity skills library)     │
@@ -82,6 +82,6 @@ when its key appears in `.env` (see `.env.example`).
 ## Skills library
 
 `server/skills/` holds reusable tools Trinity has (or Morph has) created. When Jev wants a
-capability that no registered tool provides, the orchestrator asks a Morph model to author
+capability that no registered tool provides, the orchestrator asks a Mordiem model to author
 a connector/skill, saves it here, and registers it for future routing. Each skill is a
 self-describing module (name, description, input schema, handler).

@@ -3,7 +3,7 @@ import { getActivePersona } from "./db/sqlite.js";
 import type { MemoryStore } from "./db/memory.js";
 import { think } from "./services/brain.js";
 import { route } from "./services/jev.js";
-import { build } from "./services/morph.js";
+import { build } from "./services/mordiem.js";
 import { personaplexTurn } from "./services/voice.js";
 import { getTool, getTools } from "./tools/registry.js";
 import type { MemoryDoc, Persona, RouteDecision, ServerEvent, TranscriptTurn } from "./types.js";

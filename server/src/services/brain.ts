@@ -1,6 +1,6 @@
 import { config, live } from "../config.js";
 import type { Persona, TranscriptTurn } from "../types.js";
-import { openrouterChat, type ChatMessage } from "./llm.js";
+import { mordiemChat, type ChatMessage } from "./llm.js";
 
 /**
  * The "brain" — general knowledge & reasoning for PersonaPlex lookups. Given the
@@ -30,7 +30,7 @@ export async function think(input: {
     content: t.text,
   }));
   try {
-    return await openrouterChat(config.openrouter.brainModel, [
+    return await mordiemChat(config.mordiem.brainModel, [
       system,
       ...history,
       { role: "user", content: input.userText },
