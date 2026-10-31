@@ -50,7 +50,7 @@ export function createApi(memory: MemoryStore): Router {
       id: b.id || nanoid(8),
       name: b.name || "Unnamed",
       description: b.description || "",
-      voice: b.voice || "NAT-01",
+      voice: b.voice || "NATF2",
       traits: b.traits || {},
       updatedAt: Date.now(),
     };

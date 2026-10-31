@@ -9,6 +9,7 @@ export default defineConfig({
     proxy: {
       "/api": { target: `http://localhost:${ENGINE_PORT}`, changeOrigin: true },
       "/ws": { target: `ws://localhost:${ENGINE_PORT}`, ws: true },
+      "/call": { target: `ws://localhost:${ENGINE_PORT}`, ws: true },
     },
   },
   build: { outDir: "../dist/web", emptyOutDir: true },

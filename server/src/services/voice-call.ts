@@ -15,11 +15,13 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const WORD = /\S+/g;
 const VOICE_ENUM = /^(NAT|VAR)[FM]\d$/;
 
-/** Voice prompt the patched server wants: a bare enum becomes "<enum>.pt". */
+/** Voice prompt the patched server wants: a bare enum becomes "<enum>.pt", an
+ *  explicit .pt/.wav is used as-is, and anything else (e.g. a legacy "NAT-01")
+ *  falls back to the default so an unknown voice never fails the session. */
 function resolveVoice(v: string): string {
-  if (!v) return "NATF2.pt";
   if (VOICE_ENUM.test(v)) return `${v}.pt`;
-  return v; // a .pt / .wav path or clone id, used as-is
+  if (/\.(pt|wav)$/i.test(v)) return v;
+  return `${getEndpoints().personaplexVoice || "NATF2"}.pt`;
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
@@ -166,15 +168,24 @@ export class VoiceCall {
   private connectPersonaplex(url: string): Promise<WebSocket> {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(url, { maxPayload: 0 });
+      // Track it immediately so stop() can cancel an in-flight / queued connection
+      // if the caller hangs up before PersonaPlex (one session per GPU) is ready.
+      this.pp = ws;
       let hello = false;
-      const to = setTimeout(() => reject(new Error("PersonaPlex handshake timed out")), 300_000);
+      const to = setTimeout(() => {
+        ws.close();
+        reject(new Error("PersonaPlex handshake timed out"));
+      }, 60_000);
       ws.on("message", (data: RawData, isBinary: boolean) => {
         const buf = data as Buffer;
         if (!hello) {
           hello = true;
           clearTimeout(to);
           if (isBinary && buf[0] === 0x00) resolve(ws);
-          else reject(new Error("PersonaPlex refused the session"));
+          else {
+            ws.close();
+            reject(new Error("PersonaPlex refused the session"));
+          }
           return;
         }
         this.onPersonaplex(buf, isBinary);
