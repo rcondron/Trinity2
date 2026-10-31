@@ -74,6 +74,9 @@ function handle(ev: ServerEvent) {
     case "heartbeat":
       renderEvent("heartbeat", "heartbeat", `${ev.task.title}`);
       break;
+    case "skill_forged":
+      renderEvent("tool", "skill", `drafted "${ev.name}" — review & approve in Settings`);
+      break;
     case "workspace":
       workspace.srcdoc = `<!doctype html><meta charset=utf-8><body style="margin:0;background:#0f0f18">${ev.html}</body>`;
       workspaceTitle.textContent = ev.title || "Workspace";
@@ -194,6 +197,37 @@ async function loadSettings() {
   $<HTMLInputElement>("pVoice").value = p.voice;
   $<HTMLButtonElement>("savePersona").dataset.id = p.id;
   await renderTasks();
+  await renderSkills();
+}
+
+async function renderSkills() {
+  const [active, pending] = await Promise.all([
+    fetch("/api/skills").then((r) => r.json()),
+    fetch("/api/skills/pending").then((r) => r.json()),
+  ]);
+  const list = $("skillList");
+  list.innerHTML = "";
+  for (const s of pending as { name: string; description: string }[]) {
+    const el = document.createElement("div");
+    el.className = "task skill-pending";
+    el.innerHTML = `<span class="t-title"></span><span class="t-meta"></span>
+      <button class="primary small" type="button">Approve</button>
+      <button class="ghost small" type="button">✕</button>`;
+    el.querySelector(".t-title")!.textContent = s.name;
+    el.querySelector(".t-meta")!.textContent = s.description || "pending approval";
+    const [approve, discard] = el.querySelectorAll("button");
+    approve!.addEventListener("click", async () => { await fetch(`/api/skills/${s.name}/approve`, { method: "POST" }); renderSkills(); });
+    discard!.addEventListener("click", async () => { await fetch(`/api/skills/${s.name}/discard`, { method: "POST" }); renderSkills(); });
+    list.appendChild(el);
+  }
+  for (const s of active as { name: string; source: string }[]) {
+    const el = document.createElement("div");
+    el.className = "task";
+    el.innerHTML = `<span class="t-title"></span><span class="skill-badge"></span>`;
+    el.querySelector(".t-title")!.textContent = s.name;
+    el.querySelector(".skill-badge")!.textContent = s.source;
+    list.appendChild(el);
+  }
 }
 
 $("savePersona").addEventListener("click", async () => {

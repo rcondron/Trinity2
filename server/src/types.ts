@@ -53,7 +53,7 @@ export interface HeartbeatTask {
  * Jev takes unstructured state (transcript + context) and returns this.
  */
 export interface RouteDecision {
-  action: "none" | "tool" | "recall" | "build" | "speak";
+  action: "none" | "tool" | "recall" | "build" | "speak" | "forge";
   /** Tool name when action === "tool". */
   tool?: string;
   /** Arguments for the tool / build / recall. */
@@ -109,6 +109,7 @@ export type ServerEvent =
   | { type: "workspace"; html: string; title?: string }
   | { type: "memory"; doc: MemoryDoc; op: "write" | "recall" }
   | { type: "heartbeat"; task: HeartbeatTask; fired: boolean }
+  | { type: "skill_forged"; name: string; description: string; source: string }
   | { type: "status"; text: string }
   | { type: "error"; text: string };
 

@@ -21,21 +21,29 @@ export function getTool(name: string): Tool | undefined {
  * named *.skill.ts (or .js) whose default export is a Tool. This is where
  * Morph-authored connectors/skills get saved for future Jev routing.
  */
+/** Load one skill module and register it. Returns its tool name, or null. */
+export async function loadSkillFile(filePath: string): Promise<string | null> {
+  try {
+    const mod = await import(pathToFileURL(filePath).href);
+    const tool = mod.default as Tool | undefined;
+    if (tool?.name && typeof tool.run === "function") {
+      registerTool({ ...tool, source: "skill" });
+      return tool.name;
+    }
+  } catch (err) {
+    console.warn(`[skills] failed to load ${filePath}:`, (err as Error).message);
+  }
+  return null;
+}
+
 export async function loadSkills(): Promise<string[]> {
   if (!fs.existsSync(SKILLS_DIR)) return [];
   const loaded: string[] = [];
   for (const file of fs.readdirSync(SKILLS_DIR)) {
+    // *.skill.(ts|js|mjs) only — the "pending" subdir is a directory and is skipped.
     if (!/\.skill\.(ts|js|mjs)$/.test(file)) continue;
-    try {
-      const mod = await import(pathToFileURL(path.join(SKILLS_DIR, file)).href);
-      const tool = mod.default as Tool | undefined;
-      if (tool?.name && typeof tool.run === "function") {
-        registerTool({ ...tool, source: "skill" });
-        loaded.push(tool.name);
-      }
-    } catch (err) {
-      console.warn(`[skills] failed to load ${file}:`, (err as Error).message);
-    }
+    const name = await loadSkillFile(path.join(SKILLS_DIR, file));
+    if (name) loaded.push(name);
   }
   return loaded;
 }

@@ -11,6 +11,8 @@ export const DATA_DIR = process.env.TRINITY_DATA_DIR
   ? path.resolve(process.env.TRINITY_DATA_DIR)
   : path.join(ROOT, "data");
 export const SKILLS_DIR = path.join(ROOT, "server", "skills");
+/** Forged-but-unapproved skills live here; the loader does NOT scan this dir. */
+export const PENDING_SKILLS_DIR = path.join(SKILLS_DIR, "pending");
 
 export const config = {
   port: Number(process.env.PORT) || 8799,

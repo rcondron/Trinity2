@@ -8,6 +8,9 @@ dist/
 data/
 !data/.gitkeep
 
+# Forged-but-unapproved skill drafts
+server/skills/pending/
+
 # OS
 .DS_Store
 Thumbs.db

@@ -12,7 +12,8 @@ import {
   setActivePersona,
 } from "./db/sqlite.js";
 import type { MemoryStore } from "./db/memory.js";
-import { getTools } from "./tools/registry.js";
+import { getTools, loadSkillFile } from "./tools/registry.js";
+import { approveSkill, discardSkill, listPending } from "./services/skill-forge.js";
 import type { HeartbeatTask, Persona } from "./types.js";
 
 export function createApi(memory: MemoryStore): Router {
@@ -84,6 +85,23 @@ export function createApi(memory: MemoryStore): Router {
   api.get("/skills", (_req, res) =>
     res.json(getTools().map((t) => ({ name: t.name, description: t.description, source: t.source ?? "builtin" }))),
   );
+  api.get("/skills/pending", (_req, res) =>
+    res.json(listPending().map((s) => ({ name: s.name, description: s.description, source: s.source }))),
+  );
+  api.post("/skills/:name/approve", async (req, res) => {
+    try {
+      const dest = approveSkill(req.params.name);
+      const name = await loadSkillFile(dest);
+      if (!name) return res.status(400).json({ error: "approved file did not load as a valid skill" });
+      res.json({ ok: true, name });
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+  api.post("/skills/:name/discard", (req, res) => {
+    discardSkill(req.params.name);
+    res.json({ ok: true });
+  });
 
   return api;
 }

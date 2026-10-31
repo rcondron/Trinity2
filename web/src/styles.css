@@ -162,3 +162,10 @@ body {
 .task-add { display: grid; grid-template-columns: 1fr 1.6fr 70px auto; gap: 6px; margin-top: 6px; }
 .task-add input { min-width: 0; }
 .switch { cursor: pointer; }
+.primary.small { padding: 4px 10px; font-size: 12px; }
+.skill-badge {
+  margin-left: auto; font-size: 10px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px;
+}
+.skill-pending { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.skill-pending .t-meta { margin-left: 10px; }

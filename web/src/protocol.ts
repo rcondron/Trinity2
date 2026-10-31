@@ -63,5 +63,6 @@ export type ServerEvent =
   | { type: "workspace"; html: string; title?: string }
   | { type: "memory"; doc: MemoryDoc; op: "write" | "recall" }
   | { type: "heartbeat"; task: HeartbeatTask; fired: boolean }
+  | { type: "skill_forged"; name: string; description: string; source: string }
   | { type: "status"; text: string }
   | { type: "error"; text: string };
