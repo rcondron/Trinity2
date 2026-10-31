@@ -21,6 +21,12 @@ export class Orchestrator {
 
   constructor(private memory: MemoryStore) {}
 
+  /** Clear the rolling conversation + workspace — used when switching persona. */
+  resetContext(): void {
+    this.transcript = [];
+    this.lastWorkspaceHtml = undefined;
+  }
+
   private pushTurn(speaker: TranscriptTurn["speaker"], text: string, emit: Emit): TranscriptTurn {
     const turn: TranscriptTurn = { id: nanoid(8), speaker, text, ts: Date.now() };
     this.transcript.push(turn);

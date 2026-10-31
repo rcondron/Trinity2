@@ -6,7 +6,7 @@ import type { HeartbeatTask, Persona, ServerEvent } from "./protocol.js";
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
 const orb = $("orb");
-const personaName = $("personaName");
+const personaSelect = $<HTMLSelectElement>("personaSelect");
 const statusChips = $("statusChips");
 const feed = $("feed");
 const micBtn = $("micBtn");
@@ -21,6 +21,7 @@ let speech: Speech;
 const audio = new AudioIO();
 let voiceLive = false;
 let voicePreset = "";
+let personaDisplayName = "Trinity";
 let ws: WebSocket | null = null;
 const partialTurns = new Map<string, HTMLElement>();
 
@@ -38,7 +39,8 @@ function send(obj: unknown) {
 function handle(ev: ServerEvent) {
   switch (ev.type) {
     case "ready":
-      personaName.textContent = ev.persona.name;
+      if (personaSelect.options.length) personaSelect.value = ev.persona.id;
+      personaDisplayName = ev.persona.name;
       voicePreset = ev.persona.voice;
       voiceLive = ev.services.voice === "live";
       renderStatus(ev.services);
@@ -101,7 +103,9 @@ function renderTurn(turn: { id: string; speaker: string; text: string; partial?:
   if (!el) {
     el = document.createElement("div");
     el.className = `turn ${turn.speaker}`;
-    el.innerHTML = `<span class="who">${turn.speaker}</span><div class="bubble"></div>`;
+    const who = turn.speaker === "trinity" ? personaDisplayName : turn.speaker === "user" ? "you" : turn.speaker;
+    el.innerHTML = `<span class="who"></span><div class="bubble"></div>`;
+    el.querySelector(".who")!.textContent = who;
     feed.appendChild(el);
     if (turn.partial) partialTurns.set(turn.id, el);
   }
@@ -204,8 +208,33 @@ $("savePersona").addEventListener("click", async () => {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   }).then((r) => r.json());
   send({ type: "set_persona", id: saved.id });
-  personaName.textContent = saved.name;
+  await populatePersonas();
+  personaSelect.value = saved.id;
   voicePreset = saved.voice;
+});
+
+// ─── Persona library ──────────────────────────────────────────────────────────
+async function populatePersonas() {
+  const [personas, status] = await Promise.all([
+    fetch("/api/personas").then((r) => r.json()),
+    fetch("/api/status").then((r) => r.json()),
+  ]);
+  personaSelect.innerHTML = "";
+  for (const p of personas as { id: string; name: string }[]) {
+    const o = document.createElement("option");
+    o.value = p.id;
+    o.textContent = p.name;
+    personaSelect.appendChild(o);
+  }
+  personaSelect.value = status.persona.id;
+}
+
+personaSelect.addEventListener("change", () => {
+  feed.innerHTML = "";
+  partialTurns.clear();
+  const name = personaSelect.options[personaSelect.selectedIndex]?.text ?? "";
+  renderEvent("status", "persona", `now talking to ${name}`);
+  send({ type: "set_persona", id: personaSelect.value });
 });
 
 async function renderTasks() {
@@ -251,6 +280,7 @@ $("addTask").addEventListener("click", async () => {
 
 // ─── Go ───────────────────────────────────────────────────────────────────────
 initSpeech();
+void populatePersonas();
 connect();
 // speechSynthesis voices load async in some browsers
 if ("speechSynthesis" in window) window.speechSynthesis.onvoiceschanged = () => {};

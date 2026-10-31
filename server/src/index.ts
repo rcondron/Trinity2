@@ -59,7 +59,10 @@ async function main() {
           case "set_persona":
             if (getPersona(ev.id)) {
               setActivePersona(ev.id);
-              emit({ type: "ready", persona: getActivePersona(), services: serviceStatus() });
+              orchestrator.resetContext();
+              const persona = getActivePersona();
+              emit({ type: "ready", persona, services: serviceStatus() });
+              emit({ type: "status", text: `Switched to ${persona.name}` });
             }
             break;
           case "audio":

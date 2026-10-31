@@ -30,9 +30,20 @@ body {
 }
 .brand { display: flex; align-items: center; gap: 12px; }
 .brand h1 { font-size: 18px; margin: 0; letter-spacing: .5px; }
-.persona-name {
-  font-size: 12px; color: var(--muted);
-  border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px;
+.persona-select {
+  font-size: 12px; color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px;
+  cursor: pointer; appearance: none; -webkit-appearance: none;
+  background-image: linear-gradient(var(--accent), var(--accent));
+  background-size: 0; /* keep flat; arrow via padding */
+  padding-right: 22px;
+}
+.persona-select:hover { border-color: var(--accent); }
+.persona-select:focus { outline: none; border-color: var(--accent); }
+.brand { position: relative; }
+.brand::after {
+  content: "▾"; position: absolute; right: 9px; top: 50%; transform: translateY(-50%);
+  font-size: 9px; color: var(--muted); pointer-events: none;
 }
 .orb {
   width: 16px; height: 16px; border-radius: 50%;
