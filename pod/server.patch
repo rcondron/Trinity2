@@ -1,0 +1,175 @@
+diff --git a/moshi/moshi/server.py b/moshi/moshi/server.py
+index 771f491..25e41c0 100644
+--- a/moshi/moshi/server.py
++++ b/moshi/moshi/server.py
+@@ -26,6 +26,7 @@
+ 
+ import argparse
+ import asyncio
++import collections
+ from dataclasses import dataclass
+ import random
+ import os
+@@ -86,7 +87,30 @@ def wrap_with_system_tags(text: str) -> str:
+     return f"<system> {cleaned} <system>"
+ 
+ 
++# Text stream specials: padding between words, and the last padding before a word.
++TEXT_PAD = 3
++TEXT_EPAD = 0
++# Speaking pace for words written on the agent's behalf, in 80 ms frames.
++FRAMES_PER_CHAR = 0.6
++PAUSE_FRAMES = {",": 2, ";": 2, ":": 2, ".": 4, "!": 4, "?": 4}
++
++
+ @dataclass
++class RawPcmReader:
++    """Stands in for the Opus reader when the client sends plain 16-bit PCM at 24 kHz."""
++
++    def __init__(self):
++        self.pending = []
++
++    def append_bytes(self, data: bytes):
++        self.pending.append(np.frombuffer(data[: len(data) // 2 * 2], np.int16).astype(np.float32) / 32768)
++
++    def read_pcm(self):
++        out = np.concatenate(self.pending) if self.pending else np.zeros(0, np.float32)
++        self.pending = []
++        return out
++
++
+ class ServerState:
+     mimi: MimiModel
+     other_mimi: MimiModel
+@@ -132,6 +156,20 @@ class ServerState:
+             torch.cuda.synchronize()
+ 
+ 
++    def paced_tokens(self, text: str) -> list[int]:
++        """Text tokens that make the agent say `text` at a natural talking pace.
++
++        The model writes each word as it starts saying it and pads until the
++        next one, so the gap after a word is what sets how long it takes to say.
++        """
++        out = []
++        for word in text.split():
++            pieces = self.text_tokenizer.encode(word)
++            frames = max(len(pieces) + 1, round(len(word) * FRAMES_PER_CHAR) + 1)
++            frames += PAUSE_FRAMES.get(word[-1], 0)
++            out += [TEXT_EPAD] + pieces + [TEXT_PAD] * (frames - len(pieces) - 1)
++        return out
++
+     async def handle_chat(self, request):
+         ws = web.WebSocketResponse()
+         await ws.prepare(request)
+@@ -195,6 +233,10 @@ class ServerState:
+                     if kind == 1:  # audio
+                         payload = message[1:]
+                         opus_reader.append_bytes(payload)
++                    elif kind == 3:  # words the agent must say next, in order
++                        forced.extend(self.paced_tokens(message[1:].decode("utf8", errors="ignore")))
++                    elif kind == 4:  # hold: stay silent while nothing is queued to say
++                        hold[0] = message[1:2] == b"\x01"
+                     else:
+                         clog.log("warning", f"unknown message kind {kind}")
+             finally:
+@@ -203,6 +245,7 @@ class ServerState:
+ 
+         async def opus_loop():
+             all_pcm_data = None
++            step_times = []
+ 
+             while True:
+                 if close:
+@@ -224,14 +267,31 @@ class ServerState:
+                     codes = self.mimi.encode(chunk)
+                     _ = self.other_mimi.encode(chunk)
+                     for c in range(codes.shape[-1]):
+-                        tokens = self.lm_gen.step(codes[:, :, c: c + 1])
++                        # The agent says what it writes, so writing for it makes it say that,
++                        # and writing padding keeps it quiet.
++                        if forced:
++                            text_token = torch.tensor([forced.popleft()], device=self.device)
++                        elif hold[0]:
++                            text_token = torch.tensor([TEXT_PAD], device=self.device)
++                        else:
++                            text_token = None
++                        tokens = self.lm_gen.step(codes[:, :, c: c + 1], text_token=text_token)
+                         if tokens is None:
+                             continue
+                         assert tokens.shape[1] == self.lm_gen.lm_model.dep_q + 1
+                         main_pcm = self.mimi.decode(tokens[:, 1:9])
+                         _ = self.other_mimi.decode(tokens[:, 1:9])
+                         main_pcm = main_pcm.cpu()
+-                        opus_writer.append_pcm(main_pcm[0, 0].numpy())
++                        if raw_pcm:
++                            pcm16 = (np.clip(main_pcm[0, 0].numpy(), -1, 1) * 32767).astype(np.int16)
++                            await ws.send_bytes(b"\x01" + pcm16.tobytes())
++                        else:
++                            opus_writer.append_pcm(main_pcm[0, 0].numpy())
++                        # Real time needs one step per 80 ms.
++                        step_times.append(time.time() - be)
++                        if len(step_times) == 50:
++                            clog.log("info", f"avg step {1000 * sum(step_times) / 50:.0f} ms (need < 80)")
++                            step_times.clear()
+                         text_token = tokens[0, 0, 0].item()
+                         if text_token not in (0, 3):
+                             _text = self.text_tokenizer.id_to_piece(text_token)  # type: ignore
+@@ -247,7 +307,8 @@ class ServerState:
+                     return
+                 await asyncio.sleep(0.001)
+                 msg = opus_writer.read_bytes()
+-                if len(msg) > 0:
++                # Plain PCM goes out as it is made; only the Opus headers would arrive here.
++                if len(msg) > 0 and not raw_pcm:
+                     await ws.send_bytes(b"\x01" + msg)
+ 
+         clog.log("info", "accepted connection")
+@@ -256,12 +317,21 @@ class ServerState:
+         if len(request.query["voice_prompt"]) > 0:
+             clog.log("info", f"voice prompt: {voice_prompt_path} (requested: {requested_voice_prompt_path})")
+         close = False
++        forced: collections.deque[int] = collections.deque()  # text tokens to write for the agent
++        hold = [False]
++        # Plain PCM both ways, for clients without an Opus codec.
++        raw_pcm = request.query.get("pcm") == "1"
++        # A caller with somewhere else to go would rather hear "busy" than queue.
++        if request.query.get("no_wait") == "1" and self.lock.locked():
++            clog.log("info", "busy: refusing a second session")
++            await ws.close(code=1013, message=b"busy")
++            return ws
+         async with self.lock:
+             if seed is not None and seed != -1:
+                 seed_all(seed)
+ 
+             opus_writer = sphn.OpusStreamWriter(self.mimi.sample_rate)
+-            opus_reader = sphn.OpusStreamReader(self.mimi.sample_rate)
++            opus_reader = RawPcmReader() if raw_pcm else sphn.OpusStreamReader(self.mimi.sample_rate)
+             self.mimi.reset_streaming()
+             self.other_mimi.reset_streaming()
+             self.lm_gen.reset_streaming()
+@@ -370,6 +440,8 @@ def main():
+                         help="HF repo to look into, defaults PersonaPlex. "
+                              "Use this to select a different pre-trained model.")
+     parser.add_argument("--device", type=str, default="cuda", help="Device on which to run, defaults to 'cuda'.")
++    parser.add_argument("--int8", action="store_true",
++                        help="Store the language model's weights in int8 to roughly halve GPU memory.")
+     parser.add_argument("--cpu-offload", action="store_true",
+                         help="Offload LM model layers to CPU when GPU memory is insufficient. "
+                              "Requires 'accelerate' package.")
+@@ -444,6 +516,15 @@ def main():
+         args.moshi_weight = hf_hub_download(args.hf_repo, loaders.MOSHI_NAME)
+     lm = loaders.get_moshi_lm(args.moshi_weight, device=args.device, cpu_offload=args.cpu_offload)
+     lm.eval()
++    if args.int8:
++        # Halves the weights' GPU memory so another model can share the card.
++        from torchao.quantization import quantize_, int8_weight_only
++        # Only the main transformer: the depformer slices its weights per step,
++        # which int8 tensors do not support, and it is small anyway.
++        quantize_(lm, int8_weight_only(),
++                  filter_fn=lambda m, fqn: isinstance(m, torch.nn.Linear) and fqn.startswith("transformer."))
++        torch.cuda.empty_cache()
++        logger.info(f"moshi weights in int8, {torch.cuda.memory_allocated() / 2**30:.1f} GiB on GPU")
+     logger.info("moshi loaded")
+     state = ServerState(
+         mimi=mimi,

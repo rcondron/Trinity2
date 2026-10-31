@@ -32,18 +32,43 @@ one sentence that PersonaPlex is **made to say in its own voice** (held quiet wh
 still talking). Tap the mic to open a call; it appears as `stream: live` once configured.
 
 This needs a **patched, self-hosted PersonaPlex** (fal's hosted endpoint can't accept the
-say/hold protocol). Host it on **[Modal](https://modal.com)** (one L40S GPU; needs a Hugging
-Face token with access to `nvidia/personaplex-7b-v1`) — see the `personaplex-toolcall` repo's
-`personaplex/` for the server patch + `modal_app.py`. Then set:
+say/hold protocol). Then set:
 
 ```
-PERSONAPLEX_WS_URL=wss://<your-modal-deployment>   # the patched streaming server
+PERSONAPLEX_WS_URL=wss://<your-pod-or-deployment>   # the patched streaming server
 DEEPGRAM_API_KEY=<your deepgram key>
 ```
 
 With Jev + Mordiem keys already set, the real-time loop goes live. Everything is also
 adjustable at runtime in **Settings → Endpoints & models** (URLs, model names, keys, and the
 route interval / confidence / filler timing) — no restart needed.
+
+### Hosting PersonaPlex on a GPU pod
+
+[`pod/`](pod/) provisions the patched server on a CUDA PyTorch pod (tested on Runpod,
+`runpod/pytorch:…torch280`, one RTX A4500 20 GB). On the pod:
+
+```bash
+HF_TOKEN=hf_xxx bash pod/setup.sh    # clone + patch + deps + weights (idempotent)
+setsid bash pod/serve.sh >/root/pp.log 2>&1 </dev/null &   # supervised: auto-restarts
+```
+
+`setup.sh` applies `pod/server.patch` (the say/hold + raw-PCM + int8 protocol) **and** a
+one-line fix for `sphn` 0.2 (its `OpusStreamWriter` dropped `read_bytes`, which is now only
+called in Opus mode). `serve.sh` supervises the server and **restarts it on crash or OOM** —
+the model runs in bf16 (~19 GB on a 20 GB card), so a long call can OOM; the restart recovers
+automatically. Set `PP_INT8=1` for int8 weights (~half the VRAM) if your `torchao` build
+matches the image's torch. Expose the server on an HTTP port and point `PERSONAPLEX_WS_URL` at
+`wss://<pod-proxy-host>`; `/api/chat` is appended automatically.
+
+**Durability.** A pod's container disk is **ephemeral** — it survives disconnects and (via
+`/post_start.sh`, which `setup.sh`-provisioned pods write) an in-place restart, but a **Stop**
+wipes everything. For full stop-survival, create the pod with a **network volume** and keep
+the repo + Hugging Face cache on it (`PP_ROOT=/workspace … bash pod/setup.sh`, `HF_HOME` on the
+volume), or bake a custom image. Otherwise, re-running `pod/setup.sh` rebuilds a fresh pod in
+a few minutes.
+
+(Modal also works — one L40S; see the `personaplex-toolcall` repo's `personaplex/modal_app.py`.)
 
 ## Run it
 

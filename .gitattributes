@@ -1,0 +1,3 @@
+# Pod provisioning runs on Linux — keep shell scripts and the patch LF-only.
+pod/*.sh text eol=lf
+pod/server.patch text eol=lf
