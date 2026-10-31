@@ -1,28 +1,69 @@
-import { live } from "../config.js";
+import { config, live } from "../config.js";
+import type { Persona } from "../types.js";
 
 /**
- * Voice (NVIDIA PersonaPlex, full-duplex speech-to-speech).
+ * Voice — NVIDIA PersonaPlex (full-duplex speech-to-speech model).
  *
- * Two modes:
- *  - LIVE  (FAL_KEY set): the browser streams mic PCM → engine → PersonaPlex on
- *    fal.ai, and PersonaPlex streams back Trinity's speech audio + a transcript.
- *    The bidirectional streaming client is wired here once we have a key to test
- *    against the real endpoint (and later a persistent Runpod pod).
- *  - MOCK  (no FAL_KEY): the BROWSER does speech itself via the Web Speech API
- *    (SpeechRecognition → text in, speechSynthesis → voice out). The engine then
- *    works purely on text turns. This gives a fully usable talking Trinity today
- *    with zero API keys.
+ * Transport reality (verified 2026-10-31): the fal.ai endpoint is TURN-BASED and
+ * marked DEPRECATED. You submit one audio clip (the user's speech) + a persona
+ * prompt, and get back one WAV (Trinity's reply) + its transcript. True streaming
+ * full-duplex is not exposed through fal. The durable path is self-hosting
+ * PersonaPlex (Runpod) and pointing PERSONAPLEX_URL at it — this client's request
+ * shape is reusable there (adjust the auth header).
  *
- * The engine's orchestrator is identical in both modes — it reasons over text
- * turns — so turning the real voice on later changes only the transport.
+ * Modes:
+ *  - LIVE  (FAL_KEY set): `personaplexTurn` runs a turn through the endpoint.
+ *  - MOCK  (no FAL_KEY): the browser does speech via the Web Speech API; the
+ *    engine never calls this. See web/src/speech.ts.
  */
 export function voiceMode(): "live" | "mock" {
   return live.voice ? "live" : "mock";
 }
 
-/** Placeholder for the fal.ai PersonaPlex streaming session (filled when FAL_KEY exists). */
-export async function startVoiceSession(): Promise<never> {
-  throw new Error(
-    "Live PersonaPlex streaming not implemented yet — add FAL_KEY and we'll wire the fal.ai stream.",
-  );
+const VOICE_ENUM = /^(NAT|VAR)[FM]\d$/;
+function resolveVoice(personaVoice: string): string {
+  return VOICE_ENUM.test(personaVoice) ? personaVoice : config.fal.defaultVoice;
+}
+
+export interface VoiceTurn {
+  audioUrl: string; // WAV (24kHz) hosted URL of Trinity's reply
+  text: string; // transcript of Trinity's reply
+  duration?: number;
+}
+
+/**
+ * Run one speech turn through PersonaPlex.
+ * @param audioUrl the user's speech — a public URL or a base64 data: URI.
+ */
+export async function personaplexTurn(audioUrl: string, persona: Persona): Promise<VoiceTurn> {
+  if (!live.voice) throw new Error("Voice not configured (FAL_KEY missing)");
+
+  const prompt =
+    persona.description +
+    (Object.keys(persona.traits).length ? `\nTraits: ${JSON.stringify(persona.traits)}` : "");
+
+  const res = await fetch(config.fal.url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Key ${config.fal.key}`,
+    },
+    body: JSON.stringify({
+      audio_url: audioUrl,
+      prompt,
+      voice: resolveVoice(persona.voice),
+    }),
+  });
+  if (!res.ok) throw new Error(`PersonaPlex ${res.status}: ${await res.text()}`);
+
+  const data = (await res.json()) as {
+    audio: string | { url: string };
+    text: string;
+    duration?: number;
+  };
+  return {
+    audioUrl: typeof data.audio === "string" ? data.audio : data.audio?.url,
+    text: data.text ?? "",
+    duration: data.duration,
+  };
 }

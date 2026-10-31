@@ -6,7 +6,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /** Project root (two levels up from server/src). */
 export const ROOT = path.resolve(__dirname, "..", "..");
-export const DATA_DIR = path.join(ROOT, "data");
+/** Override with TRINITY_DATA_DIR to run multiple instances (e.g. for tests). */
+export const DATA_DIR = process.env.TRINITY_DATA_DIR
+  ? path.resolve(process.env.TRINITY_DATA_DIR)
+  : path.join(ROOT, "data");
 export const SKILLS_DIR = path.join(ROOT, "server", "skills");
 
 export const config = {
@@ -14,7 +17,9 @@ export const config = {
 
   fal: {
     key: process.env.FAL_KEY || "",
-    model: "fal-ai/personaplex",
+    // Turn-based PersonaPlex endpoint. Swap this for a self-hosted (Runpod) URL later.
+    url: process.env.PERSONAPLEX_URL || "https://fal.run/fal-ai/personaplex",
+    defaultVoice: process.env.PERSONAPLEX_VOICE || "NATF2",
   },
   openrouter: {
     key: process.env.OPENROUTER_API_KEY || "",
@@ -25,10 +30,12 @@ export const config = {
   morph: {
     key: process.env.MORPH_API_KEY || "",
     base: "https://api.morphllm.com/v1",
-    model: process.env.MORPH_MODEL || "morph-v3-fast",
+    applyModel: process.env.MORPH_MODEL || "morph-v3-fast", // edit/fast-apply only
+    genModel: process.env.MORPH_GEN_MODEL || "morph-glm53-744b", // from-scratch codegen
   },
   web: {
-    key: process.env.WEB_SEARCH_API_KEY || "",
+    // Tavily search. Reads TAVILY_API_KEY (or legacy WEB_SEARCH_API_KEY).
+    key: process.env.TAVILY_API_KEY || process.env.WEB_SEARCH_API_KEY || "",
   },
 } as const;
 

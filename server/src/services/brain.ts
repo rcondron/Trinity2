@@ -29,11 +29,16 @@ export async function think(input: {
     role: t.speaker === "trinity" ? "assistant" : "user",
     content: t.text,
   }));
-  return openrouterChat(config.openrouter.brainModel, [
-    system,
-    ...history,
-    { role: "user", content: input.userText },
-  ]);
+  try {
+    return await openrouterChat(config.openrouter.brainModel, [
+      system,
+      ...history,
+      { role: "user", content: input.userText },
+    ]);
+  } catch (err) {
+    console.warn("[brain] live think failed, using mock:", (err as Error).message);
+    return mockThink(input);
+  }
 }
 
 function mockThink(input: { userText: string; memories: string[] }): string {

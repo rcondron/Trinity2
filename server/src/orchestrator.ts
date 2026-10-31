@@ -4,8 +4,9 @@ import type { MemoryStore } from "./db/memory.js";
 import { think } from "./services/brain.js";
 import { route } from "./services/jev.js";
 import { build } from "./services/morph.js";
+import { personaplexTurn } from "./services/voice.js";
 import { getTool, getTools } from "./tools/registry.js";
-import type { MemoryDoc, ServerEvent, TranscriptTurn } from "./types.js";
+import type { MemoryDoc, Persona, RouteDecision, ServerEvent, TranscriptTurn } from "./types.js";
 
 type Emit = (e: ServerEvent) => void;
 
@@ -42,15 +43,51 @@ export class Orchestrator {
     const decision = await route({ userText, transcript: this.transcript, tools: getTools() });
     emit({ type: "route", decision });
 
-    // 3. Act.
-    let say = "";
+    // 3. Act + 4. Speak back.
+    const say = await this.runDecision(decision, { persona, memoryTexts, userText, generateSpeech: true }, emit);
+    // In mock voice mode the browser speaks this turn's text via the Web Speech API.
+    this.pushTurn("trinity", say, emit);
+  }
+
+  /**
+   * Handle one spoken turn in LIVE voice mode: PersonaPlex produces Trinity's reply
+   * audio + transcript, then Jev routes on that transcript to fire any tools/builds.
+   * @param audioUrl the user's speech as a public URL or base64 data: URI.
+   */
+  async handleUserAudio(audioUrl: string, emit: Emit): Promise<void> {
+    const persona = getActivePersona();
+    this.pushTurn("user", "🎙 (spoken)", emit);
+
+    emit({ type: "status", text: "Trinity is responding…" });
+    const turn = await personaplexTurn(audioUrl, persona);
+    emit({ type: "audio", chunk: turn.audioUrl }); // client plays the WAV URL
+    this.pushTurn("trinity", turn.text, emit);
+
+    // Jev listens to the PersonaPlex transcript and fires tools/builds if warranted.
+    const recalled = await this.memory.search(turn.text, { limit: 3 });
+    const decision = await route({ userText: turn.text, transcript: this.transcript, tools: getTools() });
+    emit({ type: "route", decision });
+    await this.runDecision(
+      decision,
+      { persona, memoryTexts: recalled.map((d) => d.text), userText: turn.text, generateSpeech: false },
+      emit,
+    );
+  }
+
+  /** Execute a routing decision. Returns spoken text when generateSpeech is true. */
+  private async runDecision(
+    decision: RouteDecision,
+    ctx: { persona: Persona; memoryTexts: string[]; userText: string; generateSpeech: boolean },
+    emit: Emit,
+  ): Promise<string> {
+    const { persona, memoryTexts, userText, generateSpeech } = ctx;
+    const speak = async () =>
+      generateSpeech ? think({ persona, transcript: this.transcript, memories: memoryTexts, userText }) : "";
+
     switch (decision.action) {
       case "tool": {
         const tool = decision.tool ? getTool(decision.tool) : undefined;
-        if (!tool) {
-          say = await think({ persona, transcript: this.transcript, memories: memoryTexts, userText });
-          break;
-        }
+        if (!tool) return speak();
         emit({ type: "tool_start", tool: tool.name, args: decision.args ?? {} });
         const result = await tool.run(decision.args ?? {}, {
           persona,
@@ -58,12 +95,11 @@ export class Orchestrator {
           emit,
         });
         emit({ type: "tool_result", tool: tool.name, result });
-        say = result.say ?? (result.ok ? "Done." : result.error ?? "That didn't work.");
         if (result.render) {
           this.lastWorkspaceHtml = result.render;
           emit({ type: "workspace", html: result.render, title: tool.name });
         }
-        break;
+        return result.say ?? (result.ok ? "Done." : result.error ?? "That didn't work.");
       }
       case "build": {
         const instruction = String(decision.args?.instruction ?? userText);
@@ -71,25 +107,17 @@ export class Orchestrator {
         const html = await build(instruction, this.lastWorkspaceHtml);
         this.lastWorkspaceHtml = html;
         emit({ type: "workspace", html, title: instruction.slice(0, 48) });
-        say = "There — take a look at what I put together.";
-        break;
+        return generateSpeech ? "There — take a look at what I put together." : "";
       }
       case "recall": {
         if (decision.args?.write) await this.writeMemory(userText, emit);
-        say = await think({ persona, transcript: this.transcript, memories: memoryTexts, userText });
-        break;
+        return speak();
       }
       case "speak":
       case "none":
       default:
-        say = await think({ persona, transcript: this.transcript, memories: memoryTexts, userText });
+        return speak();
     }
-
-    // 4. Speak back.
-    const reply = this.pushTurn("trinity", say, emit);
-    // In mock voice mode the browser speaks `reply.text` via the Web Speech API;
-    // in live mode this is where PersonaPlex audio would already be streaming.
-    void reply;
   }
 
   /** Run a due heartbeat task as a proactive, self-initiated turn. */

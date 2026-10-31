@@ -1,5 +1,6 @@
 import "./styles.css";
 import { Speech } from "./speech.js";
+import { AudioIO } from "./audio.js";
 import type { HeartbeatTask, Persona, ServerEvent } from "./protocol.js";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -17,6 +18,8 @@ const workspaceTitle = $("workspaceTitle");
 const panes = $("panes");
 
 let speech: Speech;
+const audio = new AudioIO();
+let voiceLive = false;
 let voicePreset = "";
 let ws: WebSocket | null = null;
 const partialTurns = new Map<string, HTMLElement>();
@@ -37,16 +40,22 @@ function handle(ev: ServerEvent) {
     case "ready":
       personaName.textContent = ev.persona.name;
       voicePreset = ev.persona.voice;
+      voiceLive = ev.services.voice === "live";
       renderStatus(ev.services);
-      voiceHint.textContent = ev.services.voice === "live"
-        ? "Live voice: PersonaPlex"
+      voiceHint.textContent = voiceLive
+        ? "Live voice: PersonaPlex (tap to record a turn)"
         : speech?.recognitionSupported
           ? "Mock voice (browser speech). Add FAL_KEY for PersonaPlex."
           : "This browser has no speech recognition — type to Trinity below.";
       break;
+    case "audio":
+      audio.play(ev.chunk);
+      micLabel.textContent = "Tap to talk";
+      break;
     case "transcript":
       renderTurn(ev.turn);
-      if (ev.turn.speaker === "trinity" && !ev.turn.partial) speech?.speak(ev.turn.text, voicePreset);
+      // Mock voice: browser speaks Trinity's turns. Live voice: PersonaPlex audio plays instead.
+      if (ev.turn.speaker === "trinity" && !ev.turn.partial && !voiceLive) speech?.speak(ev.turn.text, voicePreset);
       break;
     case "route":
       renderEvent("route", "route", `${ev.decision.action}${ev.decision.tool ? ` → ${ev.decision.tool}` : ""} · ${ev.decision.reason}`);
@@ -125,11 +134,34 @@ function initSpeech() {
   speech.onSpeakingChange = (on) => orb.classList.toggle("speaking", on);
   speech.onBargeIn = () => send({ type: "barge_in" });
 
-  micBtn.addEventListener("click", () => {
-    if (!speech.recognitionSupported) {
-      $("textInput").focus();
+  micBtn.addEventListener("click", async () => {
+    // Live voice: push-to-talk recording → PersonaPlex.
+    if (voiceLive) {
+      if (!audio.supported) { $("textInput").focus(); return; }
+      if (audio.recording) {
+        micBtn.classList.remove("active");
+        orb.classList.remove("listening");
+        micLabel.textContent = "Thinking…";
+        try {
+          const clip = await audio.stop();
+          send({ type: "audio", chunk: clip });
+        } catch {
+          micLabel.textContent = "Tap to talk";
+        }
+      } else {
+        try {
+          await audio.start();
+          micBtn.classList.add("active");
+          orb.classList.add("listening");
+          micLabel.textContent = "Recording… tap to send";
+        } catch {
+          renderEvent("status", "error", "microphone permission denied");
+        }
+      }
       return;
     }
+    // Mock voice: Web Speech API.
+    if (!speech.recognitionSupported) { $("textInput").focus(); return; }
     if (speech.listening) speech.stopListening();
     else speech.startListening();
   });

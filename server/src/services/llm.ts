@@ -31,15 +31,15 @@ export async function openrouterChat(
   return data.choices[0]?.message?.content ?? "";
 }
 
-/** Morph is OpenAI-compatible; this calls its fast-apply / chat endpoint. */
-export async function morphChat(messages: ChatMessage[]): Promise<string> {
+/** Morph is OpenAI-compatible; this calls its chat/completions endpoint for a given model. */
+export async function morphChat(model: string, messages: ChatMessage[]): Promise<string> {
   const res = await fetch(`${config.morph.base}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${config.morph.key}`,
     },
-    body: JSON.stringify({ model: config.morph.model, messages }),
+    body: JSON.stringify({ model, messages }),
   });
   if (!res.ok) throw new Error(`Morph ${res.status}: ${await res.text()}`);
   const data = (await res.json()) as { choices: { message: { content: string } }[] };

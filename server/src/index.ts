@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import express from "express";
 import { WebSocketServer, type WebSocket } from "ws";
-import { config, serviceStatus } from "./config.js";
+import { config, live, serviceStatus } from "./config.js";
 import { createMemoryStore } from "./db/memory.js";
 import { getActivePersona, setActivePersona, getPersona } from "./db/sqlite.js";
 import { seed } from "./db/seed.js";
@@ -63,7 +63,12 @@ async function main() {
             }
             break;
           case "audio":
-            // Live PersonaPlex streaming lands here when FAL_KEY is set.
+            // Live voice: the browser sends the user's recorded speech (a data: URI
+            // or raw base64). PersonaPlex returns Trinity's reply audio + transcript.
+            if (live.voice) {
+              const audioUrl = ev.chunk.startsWith("data:") ? ev.chunk : `data:audio/webm;base64,${ev.chunk}`;
+              await orchestrator.handleUserAudio(audioUrl, emit);
+            }
             break;
           case "barge_in":
           case "stop":

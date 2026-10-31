@@ -11,12 +11,30 @@ const webSearch: Tool = {
   source: "builtin",
   async run(args) {
     const query = String(args.query ?? "");
-    const results = await search(query);
+    let answer: string | undefined;
+    let results: Awaited<ReturnType<typeof search>>["results"] = [];
+    try {
+      ({ answer, results } = await search(query));
+    } catch (err) {
+      return { ok: false, say: `My search tool hit an error: ${(err as Error).message}`, error: (err as Error).message };
+    }
     const top = results[0];
+    const say =
+      answer ||
+      (top ? `${top.title}. ${top.snippet}` : `I couldn't find anything for "${query}".`);
     return {
       ok: true,
-      say: top ? `${top.title}. ${top.snippet}` : `I couldn't find anything for "${query}".`,
-      data: results,
+      say,
+      render: results.length
+        ? `<div style="font-family:system-ui;color:#e8e8ef;padding:20px">
+             <h3 style="margin:0 0 10px">Search: ${query.replace(/</g, "&lt;")}</h3>
+             ${answer ? `<p style="color:#b9b9d6">${answer.replace(/</g, "&lt;")}</p>` : ""}
+             <ul style="line-height:1.6">${results
+               .map((r) => `<li><a href="${r.url}" style="color:#22d3ee">${r.title.replace(/</g, "&lt;")}</a></li>`)
+               .join("")}</ul>
+           </div>`
+        : undefined,
+      data: { answer, results },
     };
   },
 };
