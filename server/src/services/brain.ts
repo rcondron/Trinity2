@@ -1,4 +1,4 @@
-import { config, live } from "../config.js";
+import { getEndpoints, live } from "../settings.js";
 import type { Persona, TranscriptTurn } from "../types.js";
 import { mordiemChat, type ChatMessage } from "./llm.js";
 
@@ -30,7 +30,7 @@ export async function think(input: {
     content: t.text,
   }));
   try {
-    return await mordiemChat(config.mordiem.brainModel, [
+    return await mordiemChat(getEndpoints().brainModel, [
       system,
       ...history,
       { role: "user", content: input.userText },
@@ -70,7 +70,7 @@ export async function narrate(input: {
     content: t.text,
   }));
   try {
-    return await mordiemChat(config.mordiem.brainModel, [
+    return await mordiemChat(getEndpoints().brainModel, [
       system,
       ...history,
       {

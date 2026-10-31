@@ -1,4 +1,5 @@
-import { config, live } from "../config.js";
+import { config } from "../config.js";
+import { live } from "../settings.js";
 import type { Persona } from "../types.js";
 
 /**

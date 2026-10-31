@@ -11,14 +11,39 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design.
 
 | Role | Service |
 |------|---------|
-| Voice (full-duplex speech↔speech) | NVIDIA **PersonaPlex-7B** via **fal.ai** |
+| Voice — real-time, full-duplex | NVIDIA **PersonaPlex-7B**, self-hosted (patched) on **Modal** |
+| Voice — turn-based fallback | PersonaPlex via **fal.ai** (queue API) |
+| Live transcription | **Deepgram** (nova-3, interim results) |
 | Decision / tool routing | **Jev** (TypeSafe AI) — System One decision API |
 | On-the-fly UI builder + brain | **Mordiem** (Morpheus gateway: `qwen3-coder` + `claude-sonnet-5-5`) |
+| Fast reply writer (for voice) | **Mordiem** (`nvidia-nemotron-3-nano`) |
 | Memory | SQLite (structured) + **PouchDB** (documents) |
 
 **Everything runs in mock mode with no API keys** — including a fully usable *talking*
-Trinity (your browser does speech via the Web Speech API). Add keys in `.env` to switch
-each service to live.
+Trinity (your browser does speech via the Web Speech API). Add keys in `.env`, or edit
+endpoints live in **Settings → Endpoints & models**, to switch each service to live.
+
+## Real-time voice (the streaming loop)
+
+The headline path is a **continuous, full-duplex call**: a persistent PersonaPlex WebSocket
+does the talking while **Deepgram** transcribes you live beside it, **Jev** is polled every
+~400 ms on your in-progress sentence to fire tools, and after a tool runs a fast model writes
+one sentence that PersonaPlex is **made to say in its own voice** (held quiet while you're
+still talking). Tap the mic to open a call; it appears as `stream: live` once configured.
+
+This needs a **patched, self-hosted PersonaPlex** (fal's hosted endpoint can't accept the
+say/hold protocol). Host it on **[Modal](https://modal.com)** (one L40S GPU; needs a Hugging
+Face token with access to `nvidia/personaplex-7b-v1`) — see the `personaplex-toolcall` repo's
+`personaplex/` for the server patch + `modal_app.py`. Then set:
+
+```
+PERSONAPLEX_WS_URL=wss://<your-modal-deployment>   # the patched streaming server
+DEEPGRAM_API_KEY=<your deepgram key>
+```
+
+With Jev + Mordiem keys already set, the real-time loop goes live. Everything is also
+adjustable at runtime in **Settings → Endpoints & models** (URLs, model names, keys, and the
+route interval / confidence / filler timing) — no restart needed.
 
 ## Run it
 

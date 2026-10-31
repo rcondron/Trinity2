@@ -1,6 +1,6 @@
 import express, { type Router } from "express";
 import { nanoid } from "nanoid";
-import { serviceStatus } from "./config.js";
+import { serviceStatus, publicEndpoints, setEndpoints, type Endpoints } from "./settings.js";
 import {
   deleteTask,
   getActivePersona,
@@ -23,6 +23,20 @@ export function createApi(memory: MemoryStore): Router {
   api.get("/status", (_req, res) => {
     res.json({ services: serviceStatus(), persona: getActivePersona() });
   });
+
+  // ── Endpoints & models (Settings page) ──
+  api.get("/settings/endpoints", (_req, res) => res.json(publicEndpoints()));
+  api.put("/settings/endpoints", (req, res) => {
+    setEndpoints((req.body ?? {}) as Partial<Endpoints>);
+    res.json(publicEndpoints());
+  });
+  // Available PersonaPlex voice presets (for the voice picker).
+  api.get("/voices", (_req, res) =>
+    res.json([
+      "NATF0", "NATF1", "NATF2", "NATF3", "NATM0", "NATM1", "NATM2", "NATM3",
+      "VARF0", "VARF1", "VARF2", "VARF3", "VARF4", "VARM0", "VARM1", "VARM2", "VARM3", "VARM4",
+    ]),
+  );
 
   // ── Personas ──
   api.get("/personas", (_req, res) => res.json(listPersonas()));

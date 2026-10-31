@@ -1,13 +1,15 @@
 import { createServer } from "node:http";
 import express from "express";
 import { WebSocketServer, type WebSocket } from "ws";
-import { config, live, serviceStatus } from "./config.js";
+import { config } from "./config.js";
+import { live, serviceStatus } from "./settings.js";
 import { createMemoryStore } from "./db/memory.js";
 import { getActivePersona, setActivePersona, getPersona } from "./db/sqlite.js";
 import { seed } from "./db/seed.js";
 import { createApi } from "./http.js";
 import { startHeartbeat } from "./heartbeat.js";
 import { Orchestrator } from "./orchestrator.js";
+import { VoiceCall } from "./services/voice-call.js";
 import { registerBuiltins } from "./tools/builtins.js";
 import { loadSkills } from "./tools/registry.js";
 import type { ClientEvent, ServerEvent } from "./types.js";
@@ -27,7 +29,24 @@ async function main() {
   app.get("/healthz", (_req, res) => res.json({ ok: true, services: serviceStatus() }));
 
   const server = createServer(app);
-  const wss = new WebSocketServer({ server, path: "/ws" });
+  // Two WebSocket endpoints share the HTTP server: /ws carries JSON control +
+  // text turns; /call carries the real-time binary audio loop.
+  const wss = new WebSocketServer({ noServer: true });
+  const callWss = new WebSocketServer({ noServer: true });
+  server.on("upgrade", (req, socket, head) => {
+    const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+    if (pathname === "/ws") wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+    else if (pathname === "/call") callWss.handleUpgrade(req, socket, head, (ws) => callWss.emit("connection", ws, req));
+    else socket.destroy();
+  });
+
+  // Real-time voice: one VoiceCall per connection (persistent PersonaPlex + Deepgram).
+  callWss.on("connection", (ws, req) => {
+    const q = new URL(req.url ?? "/", "http://localhost").searchParams;
+    const callC = new VoiceCall(ws, memory, { voice: q.get("voice") ?? undefined, prompt: q.get("prompt") ?? undefined });
+    void callC.start();
+  });
+
   const clients = new Set<WebSocket>();
   const broadcast = (e: ServerEvent) => {
     const msg = JSON.stringify(e);

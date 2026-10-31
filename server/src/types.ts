@@ -72,8 +72,10 @@ export interface ToolContext {
 export interface Tool {
   name: string;
   description: string;
-  /** JSON-schema-ish description of args, used to prompt Jev and for validation. */
-  input: Record<string, { type: string; description: string; required?: boolean }>;
+  /** JSON-schema-ish description of args, used to prompt Jev and for validation.
+   *  `options` (value→label) lets the live router have Jev pick the argument from
+   *  a fixed set; without it, free-text args are filled from the final sentence. */
+  input: Record<string, { type: string; description: string; required?: boolean; options?: Record<string, string> }>;
   run: (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>;
   /** Skills loaded from the library mark themselves so we can list provenance. */
   source?: "builtin" | "skill";
@@ -115,6 +117,8 @@ export type ServerEvent =
 
 export interface ServiceStatus {
   voice: "live" | "mock";
+  /** Real-time streaming voice loop (patched PersonaPlex + Deepgram + Jev). */
+  stream: "live" | "mock";
   jev: "live" | "mock";
   brain: "live" | "mock";
   mordiem: "live" | "mock";

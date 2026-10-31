@@ -1,4 +1,4 @@
-import { config, live } from "../config.js";
+import { getEndpoints, live } from "../settings.js";
 import type { MemoryDoc } from "../types.js";
 import { mordiemChat } from "./llm.js";
 
@@ -20,7 +20,7 @@ export async function extractMemories(userText: string, trinityText: string): Pr
     `User: ${userText}\nAssistant: ${trinityText}`;
   try {
     const raw = await mordiemChat(
-      config.mordiem.brainModel,
+      getEndpoints().brainModel,
       [
         { role: "system", content: "You extract durable memories as strict JSON. Output ONLY the JSON array, nothing else." },
         { role: "user", content: prompt },

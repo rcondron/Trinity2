@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { config, live, PENDING_SKILLS_DIR, SKILLS_DIR } from "../config.js";
+import { PENDING_SKILLS_DIR, SKILLS_DIR } from "../config.js";
+import { getEndpoints, live } from "../settings.js";
 import { mordiemChat } from "./llm.js";
 
 export interface ForgedSkill {
@@ -35,7 +36,7 @@ export async function forgeSkill(
   try {
     source = stripFences(
       await mordiemChat(
-        config.mordiem.genModel,
+        getEndpoints().genModel,
         [
           { role: "system", content: SYSTEM },
           { role: "user", content: `Create a skill for this need: ${need}` },

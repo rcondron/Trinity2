@@ -1,4 +1,4 @@
-import { config, live } from "../config.js";
+import { getEndpoints, live } from "../settings.js";
 import type { MemoryDoc, RouteDecision, Tool, TranscriptTurn } from "../types.js";
 
 /**
@@ -27,15 +27,16 @@ export async function route(input: {
     input.transcript.slice(-6).map((t) => `${t.speaker}: ${t.text}`).join("\n") +
     `\nlatest user turn: ${input.userText}`;
 
+  const ep = getEndpoints();
   try {
-    const res = await fetch(`${config.typesafe.base}/v1/systemone`, {
+    const res = await fetch(`${ep.typesafeUrl}/v1/systemone`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${config.typesafe.key}`,
+        Authorization: `Bearer ${ep.typesafeKey}`,
       },
       body: JSON.stringify({
-        model: config.typesafe.model,
+        model: ep.jevModel,
         state,
         questions: {
           action: {
@@ -83,11 +84,12 @@ export async function selectMemories(
     input.transcript.slice(-4).map((t) => `${t.speaker}: ${t.text}`).join("\n") +
     `\nlatest user turn: ${input.userText}`;
 
+  const ep = getEndpoints();
   try {
-    const res = await fetch(`${config.typesafe.base}/v1/systemone`, {
+    const res = await fetch(`${ep.typesafeUrl}/v1/systemone`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.typesafe.key}` },
-      body: JSON.stringify({ model: config.typesafe.model, state, questions }),
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${ep.typesafeKey}` },
+      body: JSON.stringify({ model: ep.jevModel, state, questions }),
     });
     if (!res.ok) throw new Error(`Jev ${res.status}: ${await res.text()}`);
     const data = (await res.json()) as { answers?: Record<string, { noul?: number }> };
@@ -165,8 +167,113 @@ function mockRoute(input: { userText: string; tools: Tool[] }): RouteDecision {
   return { action: "speak", confidence: 0.6, reason: "ordinary conversational turn" };
 }
 
-/** Best-effort argument filler (Jev/heuristic don't produce tool args). */
-function inferArgs(tool: Tool, text: string): Record<string, unknown> {
+// ─── Streaming router (the real-time loop) ───────────────────────────────────
+
+/** A single decision from the streaming router, mid-sentence or at sentence end. */
+export interface StreamDecision {
+  /** Tool name, or a pseudo-action: NONE | BUILD | FORGE | REMEMBER. */
+  tool: string;
+  confidence: number;
+  /** Chosen argument when the tool enumerates options; null otherwise. */
+  arg: string | null;
+  argConfidence: number | null;
+  ms: number;
+  error?: string;
+}
+
+const STREAM_ACTIONS: Record<string, string> = {
+  NONE: "Nothing to do: small talk, a question, or anything answerable by just talking.",
+  BUILD: "The caller wants a piece of UI made, drawn, designed, or shown on screen.",
+  FORGE: "The caller wants a NEW reusable tool/skill that is not in the tool list.",
+  REMEMBER: "The caller shared a durable fact or preference about themselves worth saving.",
+};
+
+function streamQuestions(conversation: string, tools: Tool[], done: unknown[]) {
+  const criteria: Record<string, string> = { ...STREAM_ACTIONS };
+  for (const t of tools) criteria[t.name] = t.description;
+
+  const questions: Record<string, unknown> = {
+    tool: {
+      type: "choice",
+      criteria,
+      instructions: {
+        goal: "Decide whether the caller's latest words ask the agent to do one of these right now.",
+        rules: [
+          "Pick a tool only when the caller is asking for it, not when they merely mention the topic.",
+          "Actions already done for these words are in recent_actions; do not repeat them.",
+        ],
+      },
+    },
+  };
+  // A second question per tool that enumerates argument options, so Jev picks the arg too.
+  for (const t of tools) {
+    for (const [arg, spec] of Object.entries(t.input)) {
+      if (!spec.options) continue;
+      questions[`${t.name}__${arg}`] = {
+        type: "choice",
+        criteria: spec.options,
+        instructions: { goal: `If the caller wants ${t.description.toLowerCase()} which ${arg}?` },
+      };
+    }
+  }
+  return {
+    model: getEndpoints().jevModel,
+    state: {
+      page: { url: "voice://call", title: "Live voice call", text: conversation },
+      elements: [],
+      recent_actions: done.slice(-10),
+    },
+    questions,
+  };
+}
+
+/**
+ * Ask Jev whether the caller's words (possibly mid-sentence) call for a tool, and
+ * — when the chosen tool enumerates options — which argument. Mirrors the text
+ * `route`, but is shaped for the fast, repeated polling the live loop does.
+ */
+export async function routeStream(
+  conversation: string,
+  tools: Tool[],
+  done: unknown[],
+): Promise<StreamDecision> {
+  const ep = getEndpoints();
+  const started = Date.now();
+  if (!ep.typesafeKey) return { tool: "NONE", confidence: 0, arg: null, argConfidence: null, ms: 0 };
+  try {
+    const res = await fetch(`${ep.typesafeUrl}/v1/systemone`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${ep.typesafeKey}` },
+      body: JSON.stringify(streamQuestions(conversation, tools, done)),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) throw new Error(`Jev ${res.status}: ${await res.text()}`);
+    const answers = ((await res.json()) as { answers?: Record<string, { choice?: string; confidence?: number }> })
+      .answers ?? {};
+    const tool = answers.tool?.choice ?? "NONE";
+    const head = answers[`${tool}__${argNameFor(tool, tools)}`];
+    return {
+      tool,
+      confidence: answers.tool?.confidence ?? 0,
+      arg: head?.choice ?? null,
+      argConfidence: head?.confidence ?? null,
+      ms: Date.now() - started,
+    };
+  } catch (err) {
+    return { tool: "NONE", confidence: 0, arg: null, argConfidence: null, ms: Date.now() - started, error: (err as Error).message };
+  }
+}
+
+/** The first argument name of a tool that enumerates options (for reading Jev's answer). */
+function argNameFor(toolName: string, tools: Tool[]): string {
+  const t = tools.find((x) => x.name === toolName);
+  if (!t) return "";
+  for (const [arg, spec] of Object.entries(t.input)) if (spec.options) return arg;
+  return "";
+}
+
+/** Best-effort argument filler (Jev/heuristic don't produce free-text tool args). */
+export function inferArgs(tool: Tool, text: string): Record<string, unknown> {
   const args: Record<string, unknown> = {};
   const numbers = (text.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number);
   let ni = 0;

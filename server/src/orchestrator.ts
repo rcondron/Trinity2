@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { live } from "./config.js";
+import { live } from "./settings.js";
 import { getActivePersona } from "./db/sqlite.js";
 import type { MemoryStore } from "./db/memory.js";
 import { think, narrate } from "./services/brain.js";

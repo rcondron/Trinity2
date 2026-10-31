@@ -1,4 +1,4 @@
-import { config, live } from "../config.js";
+import { getEndpoints, live } from "../settings.js";
 import { mordiemChat } from "./llm.js";
 
 /**
@@ -20,7 +20,7 @@ export async function build(instruction: string, currentHtml?: string): Promise<
         : `Build UI for: ${instruction}`;
       return stripFences(
         await mordiemChat(
-          config.mordiem.genModel,
+          getEndpoints().genModel,
           [
             { role: "system", content: GEN_SYSTEM },
             { role: "user", content: user },

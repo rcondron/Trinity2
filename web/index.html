@@ -78,6 +78,59 @@
 
         <h3>Skills library</h3>
         <div id="skillList" class="task-list"></div>
+
+        <h3>Endpoints &amp; models</h3>
+        <p class="hint" style="text-align:left;margin:0 0 4px">
+          Overrides <code>.env</code> at runtime. Leave a key blank to keep what's in <code>.env</code>.
+        </p>
+        <div class="ep-grid">
+          <label>Real-time PersonaPlex URL (wss, patched server)
+            <input id="epPpUrl" placeholder="wss://…modal.run" />
+          </label>
+          <label>PersonaPlex voice
+            <select id="epVoice" class="ep-select"></select>
+          </label>
+          <label>Transcription endpoint (Deepgram, wss)
+            <input id="epDgUrl" placeholder="wss://api.deepgram.com/v1/listen?…" />
+          </label>
+          <label>Deepgram API key <span id="epDgKeySet" class="key-state"></span>
+            <input id="epDgKey" type="password" placeholder="leave blank to keep .env" />
+          </label>
+          <label>Jev (TypeSafe) URL
+            <input id="epJevUrl" placeholder="https://api.typesafe.ai" />
+          </label>
+          <label>Jev model
+            <input id="epJevModel" placeholder="jev-latest" />
+          </label>
+          <label>TypeSafe API key <span id="epJevKeySet" class="key-state"></span>
+            <input id="epJevKey" type="password" placeholder="leave blank to keep .env" />
+          </label>
+          <label>Mordiem URL
+            <input id="epMordiemUrl" placeholder="https://api.mordiem.com/api/v1" />
+          </label>
+          <label>Mordiem API key <span id="epMordiemKeySet" class="key-state"></span>
+            <input id="epMordiemKey" type="password" placeholder="leave blank to keep .env" />
+          </label>
+          <label>Brain model
+            <input id="epBrainModel" placeholder="claude-sonnet-5-5" />
+          </label>
+          <label>UI codegen model
+            <input id="epGenModel" placeholder="qwen3-coder-480b-a35b-instruct-turbo" />
+          </label>
+          <label>Reply model (fast, one sentence)
+            <input id="epReplyModel" placeholder="nvidia-nemotron-3-nano-30b-a3b" />
+          </label>
+          <label>Route every (ms)
+            <input id="epRouteEvery" type="number" placeholder="400" />
+          </label>
+          <label>Min confidence (0–1)
+            <input id="epMinConf" type="number" step="0.05" placeholder="0.7" />
+          </label>
+          <label>Filler after (ms)
+            <input id="epFiller" type="number" placeholder="500" />
+          </label>
+        </div>
+        <button class="primary" id="saveEndpoints" type="button">Save endpoints</button>
       </form>
     </dialog>
 

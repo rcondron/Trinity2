@@ -1,4 +1,4 @@
-import { config } from "../config.js";
+import { getEndpoints } from "../settings.js";
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -7,18 +7,20 @@ export interface ChatMessage {
 
 /**
  * Chat completion via Mordiem (OpenAI-compatible gateway to the Morpheus network).
- * Used for both the brain and UI codegen — just different model ids.
+ * Used for the brain, UI codegen, and the reply writer — just different model ids.
+ * Base URL and key come from the runtime settings (env defaults + overrides).
  */
 export async function mordiemChat(
   model: string,
   messages: ChatMessage[],
   opts: { temperature?: number; maxTokens?: number } = {},
 ): Promise<string> {
-  const res = await fetch(`${config.mordiem.base}/chat/completions`, {
+  const { mordiemUrl, mordiemKey } = getEndpoints();
+  const res = await fetch(`${mordiemUrl}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${config.mordiem.key}`,
+      Authorization: `Bearer ${mordiemKey}`,
     },
     body: JSON.stringify({
       model,

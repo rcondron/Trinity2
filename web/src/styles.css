@@ -169,3 +169,16 @@ body {
 }
 .skill-pending { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
 .skill-pending .t-meta { margin-left: 10px; }
+
+/* ── Endpoints & models ── */
+.ep-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.ep-grid label { font-size: 12px; }
+.ep-grid input, .ep-select {
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+  border-radius: 8px; padding: 7px 9px; font: inherit; font-size: 13px; width: 100%;
+}
+.ep-grid input:focus, .ep-select:focus { outline: none; border-color: var(--accent); }
+.key-state { font-size: 10px; margin-left: 6px; }
+.key-state.ok { color: var(--ok); }
+.key-state.off { color: var(--muted); }
+@media (max-width: 560px) { .ep-grid { grid-template-columns: 1fr; } }
