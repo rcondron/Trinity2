@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.env
+.env.local
+*.log
+
+# Trinity runtime data
+data/
+!data/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db

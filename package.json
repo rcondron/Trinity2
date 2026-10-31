@@ -1,0 +1,39 @@
+{
+  "name": "trinity",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Trinity — a real-time voice agent engine. Talk to her; she creates things as you speak.",
+  "scripts": {
+    "dev": "concurrently -k -n engine,web -c cyan,magenta \"npm:dev:engine\" \"npm:dev:web\"",
+    "dev:engine": "tsx watch server/src/index.ts",
+    "dev:web": "vite",
+    "start": "tsx server/src/index.ts",
+    "build:web": "vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "dotenv": "^18.0.9",
+    "express": "^4.22.3",
+    "nanoid": "^6.0.2",
+    "pouchdb": "^9.0.0",
+    "pouchdb-find": "^9.0.0",
+    "ws": "^8.22.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.6",
+    "@types/pouchdb": "^6.4.2",
+    "@types/ws": "^8.18.2",
+    "concurrently": "^10.0.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
+  }
+}

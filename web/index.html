@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Trinity</title>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="orb" id="orb"></span>
+        <h1>Trinity</h1>
+        <span class="persona-name" id="personaName">—</span>
+      </div>
+      <div class="status" id="statusChips"></div>
+      <button class="ghost" id="settingsBtn" title="Settings">⚙</button>
+    </header>
+
+    <main class="panes" id="panes">
+      <!-- TALK -->
+      <section class="pane talk">
+        <div class="talk-inner">
+          <button class="mic" id="micBtn" aria-label="Talk">
+            <span class="mic-icon">🎙</span>
+            <span class="mic-label" id="micLabel">Tap to talk</span>
+          </button>
+          <div class="listening" id="listening"></div>
+          <form class="textbar" id="textForm">
+            <input id="textInput" placeholder="…or type to Trinity" autocomplete="off" />
+            <button type="submit">Send</button>
+          </form>
+          <p class="hint" id="voiceHint"></p>
+        </div>
+      </section>
+
+      <!-- TRANSCRIPT (collapsible) -->
+      <section class="pane transcript" id="transcriptPane">
+        <div class="pane-head">
+          <h2>Transcript</h2>
+          <button class="ghost small" id="collapseBtn" title="Collapse">⟨⟩</button>
+        </div>
+        <div class="feed" id="feed"></div>
+      </section>
+
+      <!-- WORKSPACE -->
+      <section class="pane workspace">
+        <div class="pane-head">
+          <h2 id="workspaceTitle">Workspace</h2>
+          <span class="ws-sub">what Trinity builds appears here</span>
+        </div>
+        <iframe id="workspace" title="workspace" sandbox="allow-scripts"></iframe>
+      </section>
+    </main>
+
+    <dialog id="settings" class="settings">
+      <form method="dialog" class="settings-inner">
+        <div class="settings-head">
+          <h2>Trinity settings</h2>
+          <button class="ghost" value="close">✕</button>
+        </div>
+
+        <h3>Persona</h3>
+        <label>Name <input id="pName" /></label>
+        <label>Who she is / how she sounds
+          <textarea id="pDesc" rows="5"></textarea>
+        </label>
+        <label>Voice preset <input id="pVoice" placeholder="NAT-01" /></label>
+        <button class="primary" id="savePersona" type="button">Save persona</button>
+
+        <h3>Heartbeat — recurring tasks</h3>
+        <div id="taskList" class="task-list"></div>
+        <div class="task-add">
+          <input id="tTitle" placeholder="Title" />
+          <input id="tInstruction" placeholder="What should Trinity do?" />
+          <input id="tInterval" type="number" placeholder="secs" value="1800" />
+          <button class="primary" id="addTask" type="button">Add</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script type="module" src="/src/app.ts"></script>
+  </body>
+</html>
