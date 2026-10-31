@@ -119,7 +119,7 @@ export const live = {
     return Boolean(getEndpoints().mordiemKey);
   },
   get web(): boolean {
-    return Boolean(config.web.key);
+    return true; // keyless DuckDuckGo baseline; Tavily is used when config.web.key is set
   },
 };
 
