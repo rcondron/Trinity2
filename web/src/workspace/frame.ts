@@ -191,7 +191,7 @@ function findRender() {
 }
 
 function isAssetUrl(value) {
-  return typeof value === "string" && /\/api\/images\/[^\/?#]+$/.test(value);
+  return typeof value === "string" && /\/api\/(?:images|audio)\/[^\/?#]+$/.test(value);
 }
 
 // The state as the template should see it: engine image URLs swapped for this frame's blob:

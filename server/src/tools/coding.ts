@@ -1,7 +1,7 @@
 import { nanoid } from "nanoid";
 import { recentResults } from "../agent/act.js";
 import { build, pageTitle } from "../services/mordiem.js";
-import { coderModel, getEndpoints } from "../settings.js";
+import { coderModel, coderName, getEndpoints } from "../settings.js";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
 import { BUILD_PREVIEW_TEMPLATE, type BuildPreviewState } from "../workspace/build-preview.js";
 import { isBuildPreview, workspace, type WorkspaceSnapshot } from "../workspace/bus.js";
@@ -10,15 +10,16 @@ import { registerTool } from "./registry.js";
 /**
  * The coding skill (build_ui): Jev routes "build / change / show me something interactive"
  * here, and a coder on Mordiem streams the page into the workspace — a live preview
- * materializes as the code is written, then the finished page goes live. Two coders:
- * GLM 5.3 (fast; the default) and Kimi K3 (slower, stronger: big apps and games). Jev picks
- * one from the caller's words ("use Kimi to build…") through the `coder` option; otherwise
- * the Settings default writes it. If a coder fails (an HTTP error, a stall, no usable page),
+ * materializes as the code is written, then the finished page goes live. Two coders: a quick
+ * one (Mercury 3 by default: a page in ~3 s) and a strong one (Kimi K3: slower, more polished,
+ * for big apps and games). Jev picks one from the caller's words ("use Kimi to build…") through
+ * the `coder` option — keyless, a coder named in the words is taken — otherwise the Settings
+ * default writes it. If a coder fails (an HTTP error, a stall, no usable page),
  * the other takes over once, in the same preview. Builds run one at a time in the order
  * asked, so "make it bigger" said mid-build waits and then edits the finished page.
  */
+/** The two coder slots: "glm" is the quick one, "kimi" the strong one (their first occupants' names; the models are settings). */
 type Coder = "glm" | "kimi";
-const CODER_NAME: Record<Coder, string> = { glm: "GLM", kimi: "Kimi" };
 const isCoder = (v: unknown): v is Coder => v === "glm" || v === "kimi";
 const otherCoder = (c: Coder): Coder => (c === "glm" ? "kimi" : "glm");
 const defaultCoder = (): Coder => (getEndpoints().coderDefault === "kimi" ? "kimi" : "glm");
@@ -45,12 +46,19 @@ const LEAD =
 const EDIT_RE = new RegExp(
   LEAD.source +
     "(?:(?:change|turn|add|remove|set|move|swap|switch|update|fix|tweak|adjust|rename|resize|recolou?r|increase|decrease|enlarge|shrink|replace|delete|hide|include|highlight|sort|undo)\\b" +
-    "|use\\b(?!\\s+(?:kimi|glm)\\b)|(?:make|give|put)\\b(?!\\s+(?:me\\s+|us\\s+)?(?:a|an|another)\\b))",
+    "|use\\b(?!\\s+(?:kimi|kimmy|mercury|glm)\\b)|(?:make|give|put)\\b(?!\\s+(?:me\\s+|us\\s+)?(?:a|an|another)\\b))",
   "i",
 );
 
-/** A coder named in speech: "Kimi" (often heard as "Kimmy"), "GLM" ("G L M"), with or without its version. */
-const CODER_WORDS = String.raw`(?:kimi|kimmy|g\.?\s?l\.?\s?m)(?:\s+k\s?3|\s+k\s+three|\s+5(?:\.3)?|\s+five(?:\s+point\s+three)?)?`;
+/** A coder named in speech: "Kimi" (often heard as "Kimmy"), "Mercury", "GLM" ("G L M"), with or without its version. */
+const CODER_WORDS = String.raw`(?:kimi|kimmy|mercury|g\.?\s?l\.?\s?m)(?:\s+k\s?3|\s+k\s+three|\s+[2-5](?:\.\d)?|\s+(?:two|three|four|five)(?:\s+point\s+\w+)?)?`;
+
+/** The coder the caller named, when they did: "use Kimi" → the strong slot, "with Mercury" / "GLM" → the quick one. */
+function namedCoder(s: string): Coder | undefined {
+  if (/\b(?:kimi|kimmy)\b/i.test(s)) return "kimi";
+  if (/\b(?:mercury|g\.?\s?l\.?\s?m)\b/i.test(s)) return "glm";
+  return undefined;
+}
 
 /** The request minus how to build it: "Use Kimi to make it bigger" → "make it bigger". */
 function withoutCoder(s: string): string {
@@ -123,9 +131,11 @@ export function buildsIdle(): Promise<void> {
 }
 
 /** Queue the build and answer at once: the reply says it's started (or next), never done. */
-function startBuild(ctx: ToolContext, chosen?: Coder): ToolResult {
+function startBuild(ctx: ToolContext, picked?: Coder): ToolResult {
   const utterance = ctx.utterance.trim();
   const request = withoutCoder(utterance) || utterance;
+  // Jev's pick first; else the coder the caller named (keyless routing picks no options).
+  const chosen = picked ?? namedCoder(utterance);
   const job: BuildJob = {
     id: `build:${nanoid(6)}`,
     utterance,
@@ -139,7 +149,7 @@ function startBuild(ctx: ToolContext, chosen?: Coder): ToolResult {
   if (queued) workspace.activity(job.id, `Queued: ${lowerFirst(job.title)}`);
   buildQueue = buildQueue.then(() => runBuild(job)).catch(() => {});
 
-  const by = chosen ? ` with ${CODER_NAME[chosen]}` : "";
+  const by = chosen ? ` with ${coderName(chosen)}` : "";
   const screen = workspace.snapshot();
   const say = queued
     ? `Queued "${job.title}"${by}; it starts in the workspace as soon as the current build finishes.`
@@ -159,6 +169,7 @@ async function runBuild(job: BuildJob): Promise<void> {
   const { id } = job;
   // The screen as this build starts (an earlier build's finished page, if any) is what it may edit.
   let before = workspace.snapshot();
+  const startVersion = before.version;
   const prev = editablePage(before);
   const prevTitle = before.title;
   // A tool's card (no coder wrote it) shows what the tool found on the web: the coder gets it as data, quoted and
@@ -176,11 +187,17 @@ async function runBuild(job: BuildJob): Promise<void> {
   const cancel = new AbortController();
   let previewing = false;
   let lost = false;
-  let state: BuildPreviewState = { html: "", title, chars: 0, coder: CODER_NAME[coder] };
+  let state: BuildPreviewState = { html: "", title, chars: 0, coder: coderName(coder) };
   const show = (patch: Partial<BuildPreviewState>) => {
     state = { ...state, ...patch };
     if (lost) return;
     if (!previewing) {
+      // The screen moved on while the coder was still silent (a picture, a card): this page isn't wanted there now.
+      if (workspace.snapshot().version !== startVersion) {
+        lost = true;
+        cancel.abort(new Error("the workspace moved on"));
+        return;
+      }
       previewing = true;
       before = workspace.snapshot(); // what the preview covers comes back on failure
       workspace.showApp(BUILD_PREVIEW_TEMPLATE, state, title, id);
@@ -221,12 +238,12 @@ async function runBuild(job: BuildJob): Promise<void> {
       } catch (err) {
         if (lost || attempt > 0) throw err;
         const next = otherCoder(coder);
-        console.warn(`[build] ${CODER_NAME[coder]} (${coderModel(coder)}) failed: ${(err as Error).message} — ${CODER_NAME[next]} takes over`);
-        const failed = CODER_NAME[coder];
+        console.warn(`[build] ${coderName(coder)} (${coderModel(coder)}) failed: ${(err as Error).message} — ${coderName(next)} takes over`);
+        const failed = coderName(coder);
         coder = next;
-        workspace.activity(id, `${CODER_NAME[next]} is taking over: ${verb.toLowerCase()} ${lowerFirst(title)}…`);
-        const handover = { coder: CODER_NAME[next], thinking: 0 };
-        if (previewing) show({ ...handover, note: `${failed} couldn't finish — ${CODER_NAME[next]} is taking over…` });
+        workspace.activity(id, `${coderName(next)} is taking over: ${verb.toLowerCase()} ${lowerFirst(title)}…`);
+        const handover = { coder: coderName(next), thinking: 0 };
+        if (previewing) show({ ...handover, note: `${failed} couldn't finish — ${coderName(next)} is taking over…` });
         else state = { ...state, ...handover };
       }
     }
@@ -265,17 +282,25 @@ function restoreScreen(s: WorkspaceSnapshot): void {
 const buildUi: Tool = {
   name: "build_ui",
   description:
-    "Build, change, or show something interactive in the workspace: an app, tool, game, chart, dashboard, form, or visualization.",
+    "Build, change, or show something interactive in the workspace: an app, tool, game, chart, dashboard, form, or visualization — not a picture, video or audio clip.",
   input: {
     coder: {
       type: "string",
       description: "coding model should build it",
       options: {
-        glm: "GLM 5.3 — fast; right for most pages, widgets and charts",
-        kimi: "Kimi K3 — slower but stronger: big or complex apps and games, or when the caller asks for Kimi",
+        glm: "the quick coder — right for most pages, widgets and charts",
+        kimi: "the strong coder — slower but more polished: big or complex apps and games, or when the caller asks for it by name",
       },
     },
   },
+  // The labels name the configured models ("Mercury 3 (quick) — …"), so "use Kimi" still finds its coder after a change.
+  options: (arg) =>
+    arg === "coder"
+      ? {
+          glm: `${coderName("glm")} (quick) — right for most pages, widgets and charts`,
+          kimi: `${coderName("kimi")} (strong) — slower but more polished: big or complex apps and games, or when the caller asks for ${coderName("kimi")}`,
+        }
+      : undefined,
   // Reads the caller's whole sentence itself (ctx.utterance), so it fires when the sentence ends.
   argMode: "raw",
   source: "builtin",

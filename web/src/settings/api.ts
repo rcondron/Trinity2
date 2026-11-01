@@ -51,6 +51,9 @@ export interface PublicEndpoints {
   replyModel: string;
   fastModel: string;
   imageModel: string;
+  /** Text-to-speech for audio clips the caller asks for, and the voice name that model takes (older engines leave them out). */
+  ttsModel?: string;
+  ttsVoice?: string;
   /** "auto": skills Trinity creates are usable at once; "manual": they wait for approval. */
   skillApproval?: "auto" | "manual";
   routeEveryMs: number;
@@ -69,6 +72,8 @@ export interface PublicEndpoints {
 export interface ModelCatalog {
   text: string[];
   image: string[];
+  /** Text-to-speech models (older engines leave this out). */
+  tts?: string[];
 }
 
 /** PUT /settings/endpoints body: partial; "" resets a field to its .env default. */
@@ -96,12 +101,39 @@ export interface PodStatus {
   uploads: boolean | null;
 }
 
-/** Normalized voice library. `customAvailable` is false on engines without the voice library. */
+/** A rendered "this is how I sound" clip of one voice (GET /voices → samples.items[voice]). */
+export interface VoiceSample {
+  durationSec: number;
+  createdAt: number;
+}
+
+/**
+ * Voice samples: the pod says `text` in each voice once, and the clip is kept. `use` is who has the
+ * pod's one session right now ("nobody", "standby", "call", "warming", "sample") — samples are only
+ * made when it isn't a live call. Keyed by voice value: a builtin id or "custom:<slug>".
+ */
+export interface VoiceSamples {
+  text: string;
+  use: string;
+  items: Record<string, VoiceSample>;
+}
+
+/** POST /voices/:voice/sample — `cached` when the engine already had it (no `force`). */
+export interface MakeSampleResult extends VoiceSample {
+  voice: string;
+  cached: boolean;
+}
+
+/**
+ * Normalized voice library. `customAvailable` is false on engines without the voice library;
+ * `samples` is null on engines that can't make them (no sample controls then).
+ */
 export interface VoiceLibrary {
   builtin: BuiltinVoice[];
   custom: CustomVoice[];
   pod: PodStatus | null;
   customAvailable: boolean;
+  samples: VoiceSamples | null;
 }
 
 export interface CreateVoiceResult {
@@ -354,7 +386,9 @@ export async function request<T>(method: string, path: string, body?: unknown, o
     const notAvailable = res.status === 404 && !isJson;
     let message: string;
     if (notAvailable) message = "This feature isn't available on this engine yet";
-    else if (res.status === 502 || res.status === 503 || res.status === 504 || (res.status === 500 && !text.trim()))
+    // A gateway status with no JSON body is the proxy saying the engine is down; with one, it's the
+    // engine itself answering (e.g. 502 "The voice didn't produce a sample").
+    else if (!isJson && (res.status === 502 || res.status === 503 || res.status === 504 || (res.status === 500 && !text.trim())))
       message = UNREACHABLE;
     else message = errorMessage(data, text) ?? `The engine answered ${res.status}`;
     const err = new ApiError(message, res.status, notAvailable, path);
@@ -399,6 +433,7 @@ function normalizeVoices(raw: unknown): VoiceLibrary {
       custom: [],
       pod: null,
       customAvailable: false,
+      samples: null,
     };
   }
   const o = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
@@ -432,7 +467,22 @@ function normalizeVoices(raw: unknown): VoiceLibrary {
     custom,
     pod: p ? { configured: Boolean(p.configured), reachable: tri(p.reachable), uploads: tri(p.uploads) } : null,
     customAvailable: true,
+    samples: normalizeSamples(o.samples),
   };
+}
+
+function normalizeSample(raw: unknown): VoiceSample {
+  const r = obj(raw);
+  return { durationSec: num(r.durationSec), createdAt: num(r.createdAt) };
+}
+
+/** Engines without voice samples don't send `samples` at all → null. */
+function normalizeSamples(raw: unknown): VoiceSamples | null {
+  if (!raw || typeof raw !== "object") return null;
+  const s = obj(raw);
+  const items: Record<string, VoiceSample> = {};
+  for (const [voice, item] of Object.entries(obj(s.items))) if (item && typeof item === "object") items[voice] = normalizeSample(item);
+  return { text: str(s.text), use: str(s.use) || "nobody", items };
 }
 
 function fallbackVoices(): VoiceLibrary {
@@ -441,6 +491,7 @@ function fallbackVoices(): VoiceLibrary {
     custom: [],
     pod: null,
     customAvailable: false,
+    samples: null,
   };
 }
 
@@ -846,6 +897,22 @@ export const api = {
       return { synced: Boolean(r.synced), error: typeof r.error === "string" ? r.error : undefined };
     },
     audioUrl: (slug: string) => `/api/voices/${enc(slug)}/audio`,
+    /** The rendered sample of a voice (a builtin id or "custom:<slug>"); 404 until it's made. */
+    sampleUrl: (voice: string) => `/api/voices/${enc(voice)}/sample.wav`,
+    /**
+     * Have the pod say the sample line in this voice and keep the clip. Slow (≈10 s, up to ~75 s
+     * behind a queue); 409 when the voice is in a call or still warming up. `force` remakes a cached one.
+     */
+    async makeSample(voice: string, o: { force?: boolean } = {}, opts: RequestOptions = {}): Promise<MakeSampleResult> {
+      const r = obj(
+        await request<unknown>("POST", `/voices/${enc(voice)}/sample${o.force ? "?force=1" : ""}`, undefined, {
+          action: "make the sample",
+          timeoutMs: 90_000,
+          ...opts,
+        }),
+      );
+      return { ...normalizeSample(r), voice: str(r.voice) || voice, cached: r.cached === true };
+    },
   },
 
   games: {

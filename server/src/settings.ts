@@ -24,13 +24,16 @@ export interface Endpoints {
   mordiemUrl: string;
   mordiemKey: string;
   brainModel: string;
-  /** The coding skill's coders: GLM (fast, the default) and Kimi (stronger, for big apps). */
+  /** The coding skill's coders: a quick one (the default; the "glm" slot) and a strong one for big apps (the "kimi" slot). */
   glmModel: string;
   kimiModel: string;
   coderDefault: "glm" | "kimi";
   replyModel: string;
   fastModel: string;
   imageModel: string;
+  /** Text-to-speech for audio clips the caller asks for (make_audio), and the voice name that model takes. */
+  ttsModel: string;
+  ttsVoice: string;
   // Other services.
   tavilyKey: string;
   falKey: string;
@@ -66,6 +69,8 @@ function envDefaults(): Endpoints {
     replyModel: config.mordiem.replyModel,
     fastModel: config.mordiem.fastModel,
     imageModel: config.mordiem.imageModel,
+    ttsModel: config.mordiem.ttsModel,
+    ttsVoice: config.mordiem.ttsVoice,
     tavilyKey: config.web.key,
     falKey: config.fal.key,
     skillApproval: config.skills.approval,
@@ -116,11 +121,43 @@ export function setEndpoints(patch: Partial<Endpoints>): Endpoints {
   return getEndpoints();
 }
 
-/** The coding skill's model: the named coder, else the configured default. */
+/** The coding skill's model: the named coder ("glm" is the quick slot, "kimi" the strong one), else the configured default. */
 export function coderModel(which?: "glm" | "kimi"): string {
   const e = getEndpoints();
   const pick = which ?? (e.coderDefault === "kimi" ? "kimi" : "glm");
   return pick === "kimi" ? e.kimiModel : e.glmModel;
+}
+
+const MODEL_NAMES: Record<string, string> = {
+  "mercury-3": "Mercury 3",
+  "mercury-2-5": "Mercury 2.5",
+  "kimi-k3": "Kimi K3",
+  "kimi-k3-fast-api": "Kimi K3 fast",
+  "z-ai-glm-5-3-flash": "GLM 5.3 flash",
+  "z-ai-glm-5-3": "GLM 5.3",
+  "deepseek-v4-flash-0731-fast": "DeepSeek V4 flash",
+  "qwen3-coder-480b-a35b-instruct-turbo": "Qwen3 Coder",
+  "openai-gpt-54-mini": "GPT-5.4 mini",
+  "claude-haiku-5-5": "Haiku 5.5",
+  "claude-sonnet-5-5": "Sonnet 5.5",
+};
+
+/** A model id as a name to say and show: "mercury-3" → "Mercury 3", "some-vendor-model-2-1-turbo" → "Model 2.1 turbo". */
+export function modelName(id: string): string {
+  const known = MODEL_NAMES[id];
+  if (known) return known;
+  const words = id.replace(/^(?:z-ai|zai-org|openai|nvidia|e2ee|google|xiaomi)-/, "").split("-");
+  const out: string[] = [];
+  for (const w of words) {
+    if (/^\d+$/.test(w) && /^\d+$/.test(out[out.length - 1] ?? "")) out[out.length - 1] += `.${w}`;
+    else out.push(/^[a-z]/.test(w) && w.length <= 3 && !/^(v\d|pro|max)$/.test(w) ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1));
+  }
+  return out.join(" ");
+}
+
+/** The coder's name, for what the workspace shows ("Mercury 3 is building…") and Jev's choice labels. */
+export function coderName(which: "glm" | "kimi"): string {
+  return modelName(coderModel(which));
 }
 
 /** Safe-to-send view: secret keys become booleans (`*Set`), values withheld. */

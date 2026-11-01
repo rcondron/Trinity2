@@ -10,7 +10,7 @@ import { emitPersonaActivated } from "./events.js";
 import { createApi } from "./http.js";
 import { startHeartbeat } from "./heartbeat.js";
 import { Orchestrator } from "./orchestrator.js";
-import { VoiceCall, hasVoiceCall, setVoiceResolver } from "./services/voice-call.js";
+import { VoiceCall, hasVoiceCall, setVoiceNotifier, setVoiceResolver } from "./services/voice-call.js";
 import { ensureVoiceOnPod } from "./services/voices.js";
 import { registerGameContext, sweepGamesOnBoot } from "./game/integration.js";
 import { registerStoryTools } from "./game/story-tools.js";
@@ -157,6 +157,8 @@ async function main() {
   };
   // A finished skill's news that no call said in full goes to every open app, like a heartbeat line.
   setTellFallback((text, spoken) => orchestrator.showUnprompted(text, broadcast, spoken));
+  // The voice came back from a sample ("free": the tab that lent it re-warms) — or a call took it ("taken").
+  setVoiceNotifier((status) => broadcast({ type: "voice", status }));
   // The caller's name rides along: the voice hears it at connect, so the app re-warms a session set up before it changed.
   const readyEvent = (): ServerEvent => ({ type: "ready", persona: getActivePersona(), services: serviceStatus(), profileName: getProfileName() });
 

@@ -15,7 +15,7 @@ Personas can also carry extra tool sets — the Game Master is one example.
 | **Voice** (full-duplex speech↔speech) | **NVIDIA PersonaPlex-7B**, self-hosted and patched on a GPU pod (Runpod RTX A4500) | Text persona prompt + voice prompt (a preset `.pt` or a custom `.wav` sample). Patched with say / hold / flush control frames, raw PCM, and voice-sample upload routes. |
 | **Live transcription** | **Deepgram** nova-3 | Interim results drive routing while you're still talking. |
 | **Tool routing** | **Jev** (TypeSafe AI System One) | A typed decision model — a `choice` over tools plus per-argument option questions, with page state and recent actions. It decides; it doesn't write text. |
-| **Coding skill** | **Mordiem** `z-ai-glm-5-3-flash` (default) and `kimi-k3` | Builds interactive pages for the workspace (streamed) and writes new skills. |
+| **Coding skill** | **Mordiem** `mercury-3` (quick, the default) and `kimi-k3` (strong) | Builds interactive pages for the workspace (streamed) and writes new skills. |
 | **Brain** | **Mordiem** `claude-sonnet-5-5` | Questions that need real knowledge or reasoning (`ask_brain`). |
 | **Fast models** | **Mordiem** `nvidia-nemotron-3-nano-30b-a3b` | The spoken reply after a tool runs (~0.8 s), argument extraction, memory and schedule parsing (JSON). |
 | **Images** | **Mordiem** `krea-2-turbo` | Art for personas that need it (e.g. the Game Master). |
@@ -38,8 +38,9 @@ keys are editable at runtime on the Settings page.
      VoiceCall ─ the real-time loop (one PersonaPlex session, owned by the engine)
      Orchestrator ─ the text channel and the heartbeat's proactive turns
         both use the agent core:  decide (Jev) → act (a tool) → reply
-     tools/ ─ build_ui · ask_brain · web_search · create_skill · remember · recall · schedule ·
-              get_time · skills Trinity created (sandboxed) · persona tool sets (e.g. game_*)
+     tools/ ─ build_ui · make_image · make_audio · clear_workspace · ask_brain · web_search ·
+              create_skill · remember · recall · schedule · get_time · skills Trinity created
+              (sandboxed) · persona tool sets (e.g. game_*)
      WorkspaceBus ─ the one shared workspace every window subscribes to
      SQLite (personas, settings, tasks, games) · PouchDB (memories) · data/ (skills, art, voices)
  ─────────────────────────────────────────────────────────────────────────────────────
@@ -52,7 +53,10 @@ keys are editable at runtime on the Settings page.
   call evicts the previous one (`no_wait=1` + busy retries while the pod releases it). Only
   the browser tab you're looking at warms a call — except to answer a `wake` (see Heartbeat),
   whose session (`/call?standby=1&wake=1`) never takes the voice from one that's up or
-  connecting: the engine turns it away first.
+  connecting: the engine turns it away first. The session can also be lent out for a few
+  seconds to render a voice sample (see Voices): from no one, or from a standby tab, which is
+  told so and warms up again when the voice is free; never from a live call, and a call that
+  starts meanwhile takes it back at once.
 - **Warm standby.** The page opens `/call?standby=1` at load, so the ~5 s handshake happens
   before you tap the mic. Deepgram connects in parallel and is kept alive through the
   handshake. The persona's short voice prompt keeps the handshake short (handshake time
@@ -71,9 +75,18 @@ keys are editable at runtime on the Settings page.
   "twelve dollars and ninety-nine cents", "$10-20 million" → "ten to twenty million dollars"),
   percents, degrees, signs ("-3%" → "minus three percent"), ranges and scores ("30-7" → "thirty to
   seven"), fractions and ratings ("1 1/2 cups", "4.8/5"), grouped numbers and decimals; a bare long
-  number (maybe a ZIP code or a PIN), a version or an IP address stays as written. A streamed chunk
-  that ends in a number waits for the next one, so "$2.5" and "million" are read together, and an
-  "a.m." mid-sentence doesn't end the reply. A hold
+  number (maybe a ZIP code or a PIN), a version or an IP address stays as written. Some numbers are
+  read by the words around them: a slash pair after a date word stays a date ("on 3/4", "due
+  1/10"), a hyphenated pair that names one thing stays an identifier ("room 3-104", "the 1-800
+  number"), "30s" after a range or a timing word is seconds ("rest 60-90s"), "19.45" after "at" is
+  a clock time, and 1000–1899 after "in" or "since" is a year. A streamed chunk that ends in a
+  number, a currency sign, "a.m." or a word the next number is read by ("at", "on", "between")
+  waits for the next one, so "$2.5" and "million" are read together, and each chunk is read after
+  the words already said, so a rule that looks back ("cut the recipe by 2/3") sees them; an "a.m."
+  followed by a weekday, a month or a time zone doesn't end the reply. In the browser the voice
+  passes through a clean-up chain (`web/src/voice-chain.ts`: high-pass, de-box, presence, air,
+  compressor, limiter) with a 240 ms jitter cushion that grows on underruns; Settings → Voices
+  turns the chain off per browser. A hold
   (0x04) keeps the agent quiet while you're still talking or an action is pending; a silence
   pump keeps the model stepping; a filler ("One sec.") covers slow tools. `announce()` lets
   background work speak up unprompted (a due reminder, a new skill that's ready): it waits up
@@ -115,7 +128,11 @@ keys are editable at runtime on the Settings page.
   ("snooze it for ten minutes", "can you snooze that?"), never "I always snooze it", "don't snooze
   it" or "snooze buttons are the worst"; "make a note", "write this down" are
   memories; a page part after them ("a note taking app", "a reminder button") makes it a build
-  or an edit. While a game runs, what "I" or "we" do is a move in the story and only explicit
+  or an edit. A picture asked for by name ("draw me a picture of…", "paint a sunset", "I'd like a
+  portrait of…") is make_image, a clip "make a video of…" make_video, a reading or a voice note
+  make_audio, "clear / close / reset the screen" clear_workspace and "what's on the screen?"
+  describe_workspace; a chart "drawn" is still a build, and a picture mentioned ("I took a picture
+  yesterday") asks for nothing. While a game runs, what "I" or "we" do is a move in the story and only explicit
   web words ("google", "online") search. Curly apostrophes read as straight ones.
 - **act** (`act.ts`) — runs the chosen tool (free-text arguments extracted by the fast model
   when needed) with the persona, recent conversation, memory store and situation, and keeps
@@ -136,14 +153,19 @@ keys are editable at runtime on the Settings page.
 | `remember` / `recall` | Saves a fact the caller asks Trinity to keep; answers from what they told her before. |
 | `schedule` | Reminders ("in ten minutes…") and recurring tasks ("every morning at eight…"). |
 | `get_time` | The date and time. |
+| `make_image` / `make_audio` / `make_video` | A picture, a spoken audio clip or a video the caller asks for: a card in the workspace that fills in when the model is done (video has no provider yet, and says so). |
+| `clear_workspace` / `describe_workspace` | Clears the workspace window; says what it's showing. |
 | skills Trinity created | Each runs sandboxed; listed (and switchable) in Settings → Skills. |
 | persona tool sets | Extra tools a persona enables, e.g. `game_*` for the Game Master. |
 
 ### The coding skill (`tools/coding.ts`, `services/mordiem.ts`)
 
-- **Two coders on Mordiem.** GLM 5.3 (`z-ai-glm-5-3-flash`: first code ~1.2 s, a full canvas app
-  ~16 s) is the default; Kimi K3 (`kimi-k3`: ~32 s, the most polished output) is for big or
-  complex apps. Jev picks one through the tool's `coder` option ("use Kimi to build…");
+- **Two coders on Mordiem.** A quick one, Mercury 3 (`mercury-3`: first code ~1.1 s, a complete
+  page in ~3 s, measured on a timer and a chart), is the default; a strong one, Kimi K3 (`kimi-k3`:
+  ~20–30 s, the most polished output), is for big or complex apps. (The two slots keep their first
+  names in the settings keys, `glmModel` and `kimiModel`.) Jev picks one through the tool's `coder`
+  option ("use Kimi to build…"), whose labels name the configured models; keyless, a coder named
+  in the words is taken;
   otherwise the Settings default writes it. If a coder fails (an HTTP error, a stall, no usable
   page, or a reply that didn't finish — an error inside the stream, a stop at the token limit or
   a content filter, a stream that ends with neither a finish reason nor `[DONE]`), the other
@@ -166,9 +188,26 @@ keys are editable at runtime on the Settings page.
   from finished builds and from the streaming preview (a refresh would navigate; a preconnect
   hint reaches its host whatever the CSP says).
 
+### Pictures and audio (`tools/media.ts`, `services/images.ts`, `services/speech.ts`)
+
+- **make_image** asks Mordiem's image endpoint (the Settings image model, `krea-2-turbo` by
+  default, ~5 s) for the described picture and shows a picture card in the workspace at once; the
+  card fills in when the PNG is on disk (`data/images/`), and the same words again show the cached
+  one. **make_audio** reads a text aloud with Mordiem's text-to-speech (`tts-kokoro`, voice
+  `af_heart` by default; mp3, or wav when the model can't make mp3) into `data/audio/` and shows
+  a player card; music and sound effects are declined, since the gateway exposes no path to those
+  models. **make_video** exists so the request lands somewhere honest: there's no video provider
+  yet. The cards are app templates (`workspace/media-cards.ts`): a sandboxed frame can't load the
+  engine's files itself, so the host posts the bytes in, as it does for game art.
+- **The screen as context** (`tools/screen.ts`). The situation Jev and the reply writer see says
+  what the workspace shows ("The workspace window shows a picture: “Picture: a red fox…”", "…is
+  empty"), so "clear that" and "what's on screen?" mean something, and **clear_workspace** blanks
+  it. While a game owns the screen neither applies: the game describes itself and its tools run
+  the screen.
+
 ### Skills Trinity creates (`services/skill-forge.ts`, `sandbox/`)
 
-- **Pipeline.** A coder (Kimi, with GLM as the fallback) writes one ES module
+- **Pipeline.** A coder (the strong one, with the quick one as the fallback) writes one ES module
   (`export default { name, description, input, examples, run }`); it is described and
   self-tested with its examples in the sandbox, gets one repair round with the failure fed
   back, and is saved to `data/skills/<name>.skill.mjs` (+ `data/skills/index.json`).
@@ -241,7 +280,11 @@ keys are editable at runtime on the Settings page.
   the meeting.", "set a reminder for 5pm" asks what to remind of, a "for <day>" after the
   reminder's own verb stays in its words ("remind me at 5 to buy a gift for Friday" is today at 5),
   and a snooze right after a reminder came due ("snooze it for ten minutes", "ten more minutes",
-  "remind me again at 5") sets that reminder again, read from the agent's last line.
+  "remind me again at 5") sets that reminder again, read from the agent's last line. Dotted times
+  ("at 3.30pm") and decimal delays ("in 1.5 hours", "every 1.5 hours") read too, while "for 1.5
+  hours" stays in the reminder's words, and an ordinal the request goes on with ("on the 2nd
+  floor") isn't a day. A delay under three days that isn't whole days is said in hours, with its
+  day ("in thirty-six hours, at ten PM tomorrow").
 - **The tick** runs every 5 s. A due reminder is said as it is ("Quick reminder: time to
   stretch."), with no model call. A recurring task runs through the agent core as a proactive
   turn — Jev decides (schedule, remember, create_skill and a persona's tool sets, such as the
@@ -305,9 +348,10 @@ keys are editable at runtime on the Settings page.
 A full page (not a modal) with deep links: **Personas** (create and edit: voice, voice prompt
 with a length meter, description, tool sets), **Models & API keys** (every key — Mordiem,
 TypeSafe/Jev, Deepgram, Tavily, fal, PersonaPlex admin token; the models — the coding skill's
-GLM and Kimi coders and default, brain, reply writer, fast JSON, images, Jev; endpoints; live-loop
-timing; per-field reset to the `.env` default), **Voices** (record or drop a sample; trimmed to
-the best ≤8 s of speech, normalized, uploaded to the pod), **Skills** (built-in tools, skills
+quick and strong coders and default, brain, reply writer, fast JSON, images, speech and its voice,
+Jev; endpoints; live-loop timing; per-field reset to the `.env` default), **Voices** (hear a sample of
+every voice; the live voice clean-up switch; record or drop a sample of your own, trimmed to the best
+≤8 s of speech, normalized, uploaded to the pod), **Skills** (built-in tools, skills
 Trinity created — switch, read the code, test, delete — the approval mode and a "create a skill"
 box), **Memory** (your name, search, edit, add, delete), **Heartbeat** (reminders and recurring
 tasks), and Saved games (for the Game Master). Changes broadcast to open pages.
@@ -318,6 +362,13 @@ Built-in presets plus custom voices made from a short sample (1–12 s WAV, conv
 mono). Custom samples are uploaded to the pod (`POST /api/voices`, bearer admin token) and
 verified by SHA-256 before a call uses them; if one can't be confirmed, the call falls back to
 the default voice rather than failing.
+
+**Samples.** The built-in presets exist on the pod only as embeddings, so to hear one the pod
+speaks a fixed line in it (`services/voice-samples.ts`): the engine borrows the voice session,
+holds the model quiet except for the forced words, collects the audio until the echo of the line
+is complete, trims the silence and caches a 24 kHz WAV in `data/voices/samples/`. Settings →
+Voices plays a cached sample from a ▶ on each voice, makes one on first play (about ten
+seconds), or makes them all in one go. A sample is never made while a call is live.
 
 ## Security
 

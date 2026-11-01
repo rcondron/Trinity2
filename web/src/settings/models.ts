@@ -88,8 +88,21 @@ const TEXT_MODELS = [
   "gpt-oss-120b",
   "llama-3.3-70b",
 ];
-const CODER_MODELS = ["z-ai-glm-5-3-flash", "kimi-k3", "z-ai-glm-5-3", "qwen3-coder-480b-a35b-instruct-turbo", "claude-sonnet-5-5"];
+const CODER_MODELS = [
+  "mercury-3",
+  "mercury-2-5",
+  "kimi-k3",
+  "deepseek-v4-flash-0731-fast",
+  "qwen3-coder-480b-a35b-instruct-turbo",
+  "openai-gpt-54-mini",
+  "claude-haiku-5-5",
+  "z-ai-glm-5-3-flash",
+  "claude-sonnet-5-5",
+];
 const IMAGE_MODELS = ["krea-2-turbo", "chroma", "grok-imagine-image", "flux-2-pro"];
+const TTS_MODELS = ["tts-kokoro", "elevenlabs-tts-v4", "elevenlabs-tts-v4-turbo", "tts-chatterbox-hd", "tts-inworld-1-5-max", "tts-minimax-speech-02-hd", "tts-orpheus"];
+/** Kokoro's voice names (other models take their own ids). */
+const TTS_VOICES = ["af_heart", "af_bella", "af_nova", "af_sarah", "af_sky", "am_adam", "am_michael", "am_eric", "bf_emma", "bf_isabella", "bm_george", "bm_lewis"];
 const JEV_MODELS = ["jev-latest"];
 
 const GROUPS: GroupDef[] = [
@@ -157,14 +170,14 @@ const GROUPS: GroupDef[] = [
       {
         title: "Coding skill",
         icon: "code",
-        sub: "Builds the interactive UI in the workspace window — apps, tools, games, charts, dashboards, forms. Jev picks GLM or Kimi from what you ask; otherwise the default coder writes it. If a build fails, Trinity retries once with the other one.",
+        sub: "Builds the interactive UI in the workspace window — apps, tools, games, charts, dashboards, forms. Jev picks the quick or the strong coder from what you ask; otherwise the default coder writes it. If a build fails, Trinity retries once with the other one.",
         fields: [
           {
             key: "glmModel",
-            label: "GLM model",
+            label: "Quick coder",
             kind: "model",
             list: "dl-coder-models",
-            hint: "Fast: first code in about a second, a full app in ~16 s. Right for most pages, widgets, and charts.",
+            hint: "Most pages, widgets and charts. Measured on a timer and a chart: mercury-3 ≈ 3 s a page · deepseek-v4-flash-0731-fast ≈ 11 s · openai-gpt-54-mini ≈ 10–15 s · z-ai-glm-5-3-flash ≈ 31 s.",
             note: (v) =>
               /glm-5-3(?!-flash)/i.test(v)
                 ? "This model thinks before it writes — ~16 s of reasoning before any code appears (the build preview shows “Thinking…”)."
@@ -172,10 +185,10 @@ const GROUPS: GroupDef[] = [
           },
           {
             key: "kimiModel",
-            label: "Kimi model",
+            label: "Strong coder",
             kind: "model",
             list: "dl-coder-models",
-            hint: "Slower (~32 s for an app) but the most polished — big or complex apps and games, or when you ask for Kimi.",
+            hint: "Big or complex apps and games, or when you ask for it by name; also the fallback. kimi-k3 ≈ 20–30 s, the most polished.",
           },
           {
             key: "coderDefault",
@@ -183,8 +196,8 @@ const GROUPS: GroupDef[] = [
             kind: "choice",
             wide: true,
             options: [
-              { value: "glm", label: "GLM", icon: "zap", hint: "Fast — most pages, widgets, and charts" },
-              { value: "kimi", label: "Kimi", icon: "sparkles", hint: "Slower, more polished — big apps and games" },
+              { value: "glm", label: "Quick", icon: "zap", hint: "Seconds — most pages, widgets, and charts" },
+              { value: "kimi", label: "Strong", icon: "sparkles", hint: "Slower, more polished — big apps and games" },
             ],
             hint: "Writes the build when Jev doesn't pick a coder.",
           },
@@ -193,7 +206,7 @@ const GROUPS: GroupDef[] = [
       {
         title: "Conversation & tools",
         icon: "sparkles",
-        sub: "The models behind answers, spoken replies, tool arguments, images, and tool choice.",
+        sub: "The models behind answers, spoken replies, tool arguments, pictures, spoken audio clips, and tool choice.",
         fields: [
           {
             key: "brainModel",
@@ -216,6 +229,20 @@ const GROUPS: GroupDef[] = [
             kind: "model",
             list: "dl-image-models",
             hint: "Pictures for the workspace. krea-2-turbo ≈ 4.7 s · chroma ≈ 6.5 s · grok-imagine-image ≈ 9.4 s · flux-2-pro ≈ 15.6 s.",
+          },
+          {
+            key: "ttsModel",
+            label: "Speech",
+            kind: "model",
+            list: "dl-tts-models",
+            hint: "Spoken audio clips the caller asks for (“read this aloud”). tts-kokoro ≈ 1 s a sentence; elevenlabs-tts-v4 and tts-chatterbox-hd are richer and slower.",
+          },
+          {
+            key: "ttsVoice",
+            label: "Speech voice",
+            kind: "model",
+            list: "dl-tts-voices",
+            hint: "The voice name that speech model takes — kokoro: af_heart, af_bella, af_nova, am_adam, am_michael, bm_george…; ElevenLabs: a voice id.",
           },
           { key: "jevModel", label: "Jev model", kind: "model", list: "dl-jev-models", hint: "The decision model on TypeSafe." },
         ],
@@ -342,6 +369,8 @@ function renderDatalists(catalog: ModelCatalog | null | undefined): void {
     ["dl-text-models", merge(TEXT_MODELS, catalog?.text)],
     ["dl-coder-models", merge(CODER_MODELS, catalog?.text)],
     ["dl-image-models", merge(IMAGE_MODELS, catalog?.image)],
+    ["dl-tts-models", merge(TTS_MODELS, catalog?.tts)],
+    ["dl-tts-voices", TTS_VOICES],
     ["dl-jev-models", JEV_MODELS],
   ];
   for (const [id, values] of lists) {

@@ -74,6 +74,7 @@ export type ServerEvent =
   | { type: "memory"; doc: MemoryDoc; op: "write" | "recall" }
   | { type: "heartbeat"; task: HeartbeatTask; fired: boolean }
   | { type: "wake" } // a reminder or task is (about to be) due and no voice call is up anywhere: one tab warms one
+  | { type: "voice"; status: "free" | "taken" } // the pod's one session, lent out for a voice sample, is free again — or a call took it
   | { type: "skill_forged"; name: string; description: string; source: string }
   | { type: "status"; text: string }
   | { type: "error"; text: string };

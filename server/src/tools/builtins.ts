@@ -1,7 +1,9 @@
 import { jsonChat } from "../services/json-chat.js";
 import { search } from "../services/web.js";
 import type { Tool } from "../types.js";
+import { registerMediaTools } from "./media.js";
 import { registerTool } from "./registry.js";
+import { registerScreenTools } from "./screen.js";
 
 /** Web text as HTML text or an attribute value: a result's title or URL can't add tags or attributes to the card. */
 const html = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -74,4 +76,6 @@ const getTime: Tool = {
 
 export function registerBuiltins(): void {
   [webSearch, getTime].forEach(registerTool);
+  registerScreenTools();
+  registerMediaTools();
 }

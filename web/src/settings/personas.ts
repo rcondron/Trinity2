@@ -103,7 +103,7 @@ export function createPersonasSection(): Section {
       ]);
       personas = sortPersonas(list);
       activeId = status.persona?.id ?? null;
-      voices = lib ?? { builtin: [], custom: [], pod: null, customAvailable: false };
+      voices = lib ?? { builtin: [], custom: [], pod: null, customAvailable: false, samples: null };
       toolsets = sets;
       loaded = true;
       const sub = pendingSub;
@@ -252,7 +252,7 @@ export function createPersonasSection(): Section {
     return new PersonaEditor(
       p,
       {
-        voices: voices ?? { builtin: [], custom: [], pod: null, customAvailable: false },
+        voices: voices ?? { builtin: [], custom: [], pod: null, customAvailable: false, samples: null },
         toolsets,
         isActive: !isNew && p.id === activeId,
         canDelete: personas.length > 1,

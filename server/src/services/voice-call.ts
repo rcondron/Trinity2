@@ -9,7 +9,7 @@ import { contextFor } from "../agent/context.js";
 import { fallbackReply, speakable, streamReply } from "../agent/reply.js";
 import { decide, firing, confidentOptions, type Decision, type RecentAction } from "../agent/router.js";
 import { bg, safeInterval } from "../util/bg.js";
-import { wordsForNumbers } from "../tools/schedule.js";
+import { readAfter, wordsForNumbers } from "../tools/schedule.js";
 import { curateExchange, curationAfter } from "./curator.js";
 import { voicePromptFile as mapVoiceFile } from "./voices.js";
 import type { Persona, TranscriptTurn } from "../types.js";
@@ -29,6 +29,8 @@ const FIRST_WORDS_MS = 12_000; // the reply writer falls back on its own after 1
 const FINALIZE_WAIT_MS = 1_200; // mic off: how long Deepgram's Finalize result may take
 const ECHO_COVER = 0.7; // share of the caller's words that must be one in-order piece of the agent's words
 const READY_WAIT_MS = 15_000; // an announcement waits this long for a call that's still connecting
+const RECENT_USE_MS = 10_000; // a standby that heard, was typed or said something this recently isn't lent out: the caller may go on
+const LOAN_GRACE_MS = 2_500; // a returned loan is kept this long for a batch's next sample before the voice is freed
 
 /** Words as spoken, apostrophes dropped so "let's" matches a transcribed "lets": "Let's begin!" → ["lets", "begin"]. */
 const spokenWords = (s: string) => s.toLowerCase().replace(/['’]/g, "").match(/[a-z0-9]+/g) ?? [];
@@ -83,13 +85,13 @@ export function setVoiceResolver(fn: (voice: string) => Promise<string>): void {
 }
 
 /** A protocol frame: a 1-byte kind followed by its body. */
-function frame(kind: number, body: ArrayLike<number>): Uint8Array {
+export function frame(kind: number, body: ArrayLike<number>): Uint8Array {
   const out = new Uint8Array(body.length + 1);
   out[0] = kind;
   out.set(body, 1);
   return out;
 }
-const SILENCE_FRAME = frame(1, new Uint8Array(FRAME_BYTES));
+export const SILENCE_FRAME = frame(1, new Uint8Array(FRAME_BYTES));
 
 class BusyError extends Error {}
 
@@ -132,6 +134,102 @@ export interface CallOpts {
 /** The engine owns at most one PersonaPlex session (the pod serves one per GPU). */
 let activeCall: VoiceCall | null = null;
 
+/**
+ * Who has that session: nobody; a warm standby; a live call ("call": someone is talking or being
+ * answered, or was in the last 10 s); one still connecting; or a voice sample (see lendVoice).
+ */
+export type VoiceUse = "nobody" | "standby" | "call" | "warming" | "sample";
+
+export function voiceUse(): VoiceUse {
+  if (loan) return "sample";
+  return activeCall ? activeCall.use() : "nobody";
+}
+
+/** The session, lent out for a voice sample. A call that starts cuts it short (`aborted` says why). */
+export interface VoiceLoan {
+  /** Settles when the borrower has given the voice back (returnVoice). */
+  readonly done: Promise<void>;
+  readonly aborted: string | null;
+  onAbort(cb: (why: string) => void): void;
+}
+
+class Loan implements VoiceLoan {
+  aborted: string | null = null;
+  borrows = 0;
+  /** Runs out when nobody borrowed the voice again after it was returned: then it's free. */
+  grace?: ReturnType<typeof setTimeout>;
+  private settled = Promise.resolve();
+  private settle = () => {};
+  private abortWatchers: ((why: string) => void)[] = [];
+
+  get done(): Promise<void> {
+    return this.settled;
+  }
+  borrow(): void {
+    clearTimeout(this.grace);
+    if (this.borrows++ === 0) this.settled = new Promise((r) => (this.settle = r));
+  }
+  release(): void {
+    if (this.borrows > 0 && --this.borrows === 0) this.settle();
+  }
+  onAbort(cb: (why: string) => void): void {
+    if (this.aborted !== null) cb(this.aborted);
+    else this.abortWatchers.push(cb);
+  }
+  abort(why: string): void {
+    if (this.aborted !== null) return;
+    this.aborted = why;
+    clearTimeout(this.grace);
+    for (const cb of this.abortWatchers.splice(0)) cb(why);
+  }
+}
+
+/** The loan out right now, or resting in its grace period (null: nothing lent). */
+let loan: Loan | null = null;
+
+/** Tells the app tabs that the voice is free again after a loan, or went to a call instead (index.ts broadcasts it). */
+let voiceNotifier: ((status: "free" | "taken") => void) | null = null;
+export function setVoiceNotifier(fn: (status: "free" | "taken") => void): void {
+  voiceNotifier = fn;
+}
+
+/**
+ * Borrow the session for something that isn't a call — a voice sample. Null while it's in use (a
+ * live call, or one still connecting — see voiceUse). A warm standby is let go first: its tab is
+ * told, and re-warms when the voice is free again. A loan already out, or in its grace period, is
+ * shared. The borrower always gives it back with returnVoice, however the borrowing went.
+ */
+export async function lendVoice(what: string): Promise<VoiceLoan | null> {
+  if (loan) {
+    if (loan.aborted !== null) return null; // a call is taking the voice back right now
+    loan.borrow();
+    return loan;
+  }
+  const use = voiceUse();
+  if (use === "call" || use === "warming") return null;
+  const ln = new Loan();
+  ln.borrow();
+  loan = ln; // before the standby is let go: a call starting meanwhile aborts the loan instead of racing it
+  await activeCall?.lendOut(what);
+  return ln;
+}
+
+/**
+ * Give a loan back. The voice is kept for a moment (a batch's next sample arrives within it and
+ * reuses the loan); then it's free, and the tabs are told so the one that lent it re-warms.
+ */
+export function returnVoice(borrowed: VoiceLoan): void {
+  if (!(borrowed instanceof Loan)) return;
+  borrowed.release();
+  if (borrowed !== loan || borrowed.borrows > 0 || borrowed.aborted !== null) return;
+  clearTimeout(borrowed.grace);
+  borrowed.grace = setTimeout(() => {
+    if (loan !== borrowed || borrowed.borrows > 0) return;
+    loan = null;
+    voiceNotifier?.("free");
+  }, LOAN_GRACE_MS);
+}
+
 /** How an unprompted line went in the call: said in full; cut off by the caller; or not said (no call, or it went away). */
 export type Spoken = "said" | "cut" | "unsaid";
 
@@ -147,7 +245,7 @@ export function announce(text: string): Promise<Spoken> {
   return activeCall ? activeCall.announce(text) : Promise.resolve("unsaid");
 }
 
-/** Whether a voice call is up or connecting (an announcement can be said in it). */
+/** Whether a voice call is up or connecting (an announcement can be said in it). A sample's loan isn't one: nobody to tell. */
 export function hasVoiceCall(): boolean {
   return activeCall !== null;
 }
@@ -259,6 +357,15 @@ export class VoiceCall {
     if (this.opts.wake && activeCall && activeCall !== this) {
       this.evict("Voice is open in another window.");
       return;
+    }
+    // A voice sample has the session on loan: take it back (a wake too — a due reminder beats a sample).
+    const borrowed = loan;
+    if (borrowed) {
+      borrowed.abort("a call started");
+      await Promise.race([borrowed.done, sleep(3000)]);
+      if (loan === borrowed) loan = null;
+      voiceNotifier?.("taken");
+      if (this.closed) return; // hung up while the sample let go
     }
     // One session per GPU: take over from any previous call (another tab, a reload, a persona switch).
     const previous = activeCall;
@@ -502,6 +609,27 @@ export class VoiceCall {
   evict(reason: string): void {
     this.send({ type: "status", text: reason, evicted: true });
     this.stop();
+  }
+
+  /** A voice sample borrows the session: the tab is told (it re-warms on the "voice: free" broadcast) and this one lets go. */
+  async lendOut(what: string): Promise<void> {
+    this.send({ type: "status", text: `Lent the voice out for ${what} — back in a moment.`, lent: true });
+    this.stop();
+    await Promise.race([this.stopped, sleep(3000)]);
+  }
+
+  /** In use (someone is talking or being answered, or a turn was heard or typed in the last 10 s), still connecting, or a free standby. */
+  use(): VoiceUse {
+    const now = Date.now();
+    const busy =
+      this.micOn ||
+      this.replyActive > 0 ||
+      this.holds.size > 0 ||
+      now < this.sayingUntil ||
+      // A typed turn makes no audio, and nothing marks the call busy until the router has decided (Jev
+      // takes up to ~8 s): the finished turn counts too, or a sample would take the session from under its answer.
+      now - Math.max(this.lastAudioAt, this.lastCallerEndAt, this.agentLastWord) < RECENT_USE_MS;
+    return busy ? "call" : this.ready ? "standby" : "warming";
   }
 
   stop(): void {
@@ -921,20 +1049,32 @@ export class VoiceCall {
         // a word the reader reads the next number by ("at 10:30:00" is a clock time, "between $5 and $10" a range, "on
         // 3/4" a date, "for 30s" seconds, "in 1453" a year) waits for the next one, which may hold its unit or the rest
         // ("$2.5" "million", "$" "40", "7 a.m." "tomorrow", "$40 -" "50", "$5 million" "dollars"), so the two are read
-        // together. ("By" isn't one: "cut it by" "2/3" is a fraction, though "by 2/3" alone would read as a date.)
+        // together. Each chunk is read after the words already said (readAfter), so a rule that looks back a few words
+        // ("cut the recipe" "by 2/3", "in their" "20-30s") sees them whatever the split. A decade token and a dotted
+        // time wait for the next two words too, for the rules that look ahead ("30s on", "10.15 UK time").
         let held = "";
+        let said = "";
+        const flush = () => {
+          words.put(readAfter(said, held));
+          said = `${said} ${held}`.slice(-200);
+          held = "";
+        };
         try {
           await streamReply(
             { persona: this.persona, asked, outcome: outcome.say, situation: ctx.summary, style: ctx.style, inProgress: outcome.inProgress },
             (chunk) => {
               held = held ? `${held} ${chunk}` : chunk;
-              if (/(?:[\d°$€£¥₹₩฿]|\d0s|(?<![A-Za-z_])[ap]\.m\.|\d\s*(?:[-–—]|\bto|\band|(?:thousand|million|billion|trillion)\b)|\b(?:at|between|on|due|until|till|through|thru|since|starting|from|around|before|after|in|for|rest|hold|every|each|wait|within))$/i.test(held)) return;
-              words.put(wordsForNumbers(held));
-              held = "";
+              if (
+                /(?:[\d°$€£¥₹₩฿]|\d0s(?:\s+\S+){0,2}|\d{1,2}\.[0-5]\d\s+(?:this|in(?:\s+the)?|UK|local|London|Paris|Berlin)|(?<![A-Za-z_])[ap]\.m\.|\d\s*(?:[-–—]|\bto|\band|(?:thousand|million|billion|trillion)\b)|\b(?:at|between|on|due|until|till|through|thru|since|starting|from|around|before|after|in|for|rest|hold|every|each|wait|within))$/i.test(
+                  held,
+                )
+              )
+                return;
+              flush();
             },
           );
         } finally {
-          if (held) words.put(wordsForNumbers(held));
+          if (held) flush();
         }
       })()
         .catch(() => words.put(wordsForNumbers(fallbackReply(outcome?.say ?? ""))))

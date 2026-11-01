@@ -66,20 +66,25 @@ export const config = {
   mordiem: {
     key: process.env.MORDIEM_API_KEY || process.env.MORPH_API_KEY || "",
     base: process.env.MORDIEM_URL || "https://api.mordiem.com/api/v1",
-    // The coding skill's two coders (UI builds, forged skills, custom screens). Measured
-    // streaming an interactive canvas app: z-ai-glm-5-3-flash first code ~1.2s, done ~16s;
-    // kimi-k3 ~1.1s / ~32s with the most polished result. (Full z-ai-glm-5-3 is
-    // thinking-only on Mordiem: ~16s of reasoning before any code.)
-    glmModel: process.env.MORDIEM_GLM_MODEL || "z-ai-glm-5-3-flash",
-    kimiModel: process.env.MORDIEM_KIMI_MODEL || "kimi-k3",
-    coderDefault: (process.env.CODER_DEFAULT === "kimi" ? "kimi" : "glm") as "glm" | "kimi",
+    // The coding skill's two coders (UI builds, forged skills, custom screens): a quick one for most
+    // pages and a strong one for big apps. (The keys keep their first names, "glm" and "kimi", so
+    // saved settings and Jev's option ids stay valid.) Measured on the engine's own build prompt, a
+    // timer and a chart: mercury-3 first code ~1.1 s, done ~3 s; deepseek-v4-flash-0731-fast ~1 s /
+    // ~11 s; kimi-k3 ~1 s / ~20–30 s with the most polished result; z-ai-glm-5-3-flash ~31 s (full
+    // z-ai-glm-5-3 is thinking-only on Mordiem: ~16 s of reasoning before any code).
+    glmModel: process.env.QUICK_CODER || process.env.MORDIEM_GLM_MODEL || "mercury-3",
+    kimiModel: process.env.STRONG_CODER || process.env.MORDIEM_KIMI_MODEL || "kimi-k3",
+    coderDefault: (process.env.CODER_DEFAULT === "kimi" || process.env.CODER_DEFAULT === "strong" ? "kimi" : "glm") as "glm" | "kimi",
     brainModel: process.env.BRAIN_MODEL || "claude-sonnet-5-5",
     // Fast model that writes the one spoken sentence after a tool runs.
     replyModel: process.env.REPLY_MODEL || "nvidia-nemotron-3-nano-30b-a3b",
     // Fast JSON model for argument extraction and game content (~2s measured).
     fastModel: process.env.FAST_MODEL || "nvidia-nemotron-3-nano-30b-a3b",
-    // Image model for game art (krea-2-turbo ~4.7s measured).
+    // Image model for game art and pictures the caller asks for (krea-2-turbo ~4.7s measured).
     imageModel: process.env.IMAGE_MODEL || "krea-2-turbo",
+    // Text-to-speech for audio clips the caller asks for (tts-kokoro ~1s measured), and its voice.
+    ttsModel: process.env.TTS_MODEL || "tts-kokoro",
+    ttsVoice: process.env.TTS_VOICE || "af_heart",
   },
 
   web: {

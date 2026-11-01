@@ -34,7 +34,7 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design.
 | Voice — real-time, full-duplex | NVIDIA **PersonaPlex-7B**, self-hosted (patched) on a **Runpod** GPU pod |
 | Live transcription | **Deepgram** (nova-3, interim results) |
 | Tool routing | **Jev** (TypeSafe AI) — System One decision API |
-| Coding skill (UIs, new skills) | **Mordiem** `z-ai-glm-5-3-flash` (GLM 5.3, default) or `kimi-k3` (Kimi K3) |
+| Coding skill (UIs, new skills) | **Mordiem** `mercury-3` (quick, default: a page in ~3 s) or `kimi-k3` (strong) |
 | Brain | **Mordiem** `claude-sonnet-5-5` |
 | Fast reply writer + JSON | **Mordiem** `nvidia-nemotron-3-nano` |
 | Images | **Mordiem** `krea-2-turbo` |
@@ -52,8 +52,8 @@ Open **⚙ Settings** (a full page at `/settings.html`):
 
 - **Personas** — create and edit who Trinity is: name, personality, voice, voice prompt, tool sets.
 - **Models & API keys** — every key (Mordiem, TypeSafe/Jev, Deepgram, Tavily, fal, PersonaPlex
-  admin token) and every model (the coding skill's GLM and Kimi coders and which is the default,
-  brain, reply writer, fast JSON, images, Jev), plus endpoints and live-loop timing.
+  admin token) and every model (the coding skill's quick and strong coders and which is the
+  default, brain, reply writer, fast JSON, images, Jev), plus endpoints and live-loop timing.
 - **Voices** — make a new voice from a short recorded or uploaded sample.
 - **Skills** — the built-in tools and the skills Trinity created (switch on/off, read the code,
   test, delete), whether new skills need your approval, and a box to ask for a new one.

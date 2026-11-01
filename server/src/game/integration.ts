@@ -16,7 +16,7 @@ import { getActiveGame, getGame, listGames, mutateGame } from "./store.js";
 const isGM = (p: Persona) => (p.toolsets ?? []).includes("game");
 
 /** General tools that only add noise to Jev's choices while a game is running (the game tools cover play). */
-const HIDDEN_DURING_GAME = ["build_ui", "create_skill", "remember", "recall", "schedule", "ask_brain", "roll_dice", "get_time"];
+const HIDDEN_DURING_GAME = ["build_ui", "make_image", "make_audio", "make_video", "create_skill", "remember", "recall", "schedule", "ask_brain", "roll_dice", "get_time"];
 /** The Game Master without a game: no skill-making, memory-keeping or scheduling. */
 const HIDDEN_WITHOUT_GAME = ["create_skill", "remember", "schedule"];
 

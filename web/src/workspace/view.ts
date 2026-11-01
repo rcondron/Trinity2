@@ -900,6 +900,8 @@ class WorkspaceView {
     el.className = "tw-frame is-pending";
     el.setAttribute("sandbox", SANDBOX);
     el.setAttribute("referrerpolicy", "no-referrer");
+    // An audio clip card may start playing on its own once this page has had a gesture (an opaque origin needs "*").
+    el.setAttribute("allow", "autoplay *");
     el.setAttribute("aria-hidden", "true");
     el.tabIndex = -1;
     el.title = this.frameTitle();
@@ -966,11 +968,12 @@ class WorkspaceView {
   }
 
   private sendAssets(frame: Frame, mapped: unknown): void {
-    const prefix = `${this.httpOrigin}/api/images/`;
+    // (Engine images, and the audio clips make_audio records: the frame can't load either itself.)
+    const prefixes = [`${this.httpOrigin}/api/images/`, `${this.httpOrigin}/api/audio/`];
     const found = new Set<string>();
     const walk = (v: unknown, depth: number): void => {
       if (typeof v === "string") {
-        if (v.startsWith(prefix)) found.add(v);
+        if (prefixes.some((p) => v.startsWith(p))) found.add(v);
       } else if (v && typeof v === "object" && depth < 64) {
         for (const x of Array.isArray(v) ? v : Object.values(v as Record<string, unknown>)) walk(x, depth + 1);
       }

@@ -41,13 +41,16 @@ export async function mordiemChat(
 const NOT_A_PICK = /(tts|music|sound|voice-changer|scribe|whisper|embedding|video|ace-step|-edit$|image-to|text-to-video)/i;
 /** Image generators (the gateway lists every model with type "model", so go by name). */
 const IMAGE_ID = /(flux|krea|chroma|imagine|image|sdxl|seedream|dall|recraft|ideogram|illustrious|hidream|qwen-image|nano-banana)/i;
-let catalog: { at: number; text: string[]; image: string[] } | null = null;
+/** Text-to-speech models ("tts-kokoro", "elevenlabs-tts-v4"), for the audio clips make_audio records. */
+const TTS_ID = /(^|-)tts(-|$)/i;
+let catalog: { at: number; text: string[]; image: string[]; tts: string[] } | null = null;
 
 /**
- * The model ids the gateway offers, split into text and image models, for the Settings model
- * pickers. Cached 10 minutes; the last good list (or empty lists) when Mordiem can't be reached.
+ * The model ids the gateway offers, split into text, image and text-to-speech models, for the
+ * Settings model pickers. Cached 10 minutes; the last good list (or empty lists) when Mordiem can't
+ * be reached.
  */
-export async function mordiemModels(): Promise<{ text: string[]; image: string[] }> {
+export async function mordiemModels(): Promise<{ text: string[]; image: string[]; tts: string[] }> {
   if (catalog && Date.now() - catalog.at < 10 * 60_000) return catalog;
   const { mordiemUrl, mordiemKey } = getEndpoints();
   try {
@@ -59,10 +62,15 @@ export async function mordiemModels(): Promise<{ text: string[]; image: string[]
     const body = (await res.json()) as { data?: { id?: unknown }[] };
     const ids = [...new Set((body.data ?? []).map((m) => m.id).filter((id): id is string => typeof id === "string"))];
     const picks = ids.filter((id) => !NOT_A_PICK.test(id)).sort();
-    catalog = { at: Date.now(), text: picks.filter((id) => !IMAGE_ID.test(id)), image: picks.filter((id) => IMAGE_ID.test(id)) };
+    catalog = {
+      at: Date.now(),
+      text: picks.filter((id) => !IMAGE_ID.test(id)),
+      image: picks.filter((id) => IMAGE_ID.test(id)),
+      tts: ids.filter((id) => TTS_ID.test(id)).sort(),
+    };
     return catalog;
   } catch {
-    return catalog ?? { text: [], image: [] };
+    return catalog ?? { text: [], image: [], tts: [] };
   }
 }
 

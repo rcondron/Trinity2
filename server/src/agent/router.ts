@@ -207,6 +207,14 @@ function toolRules(tools: Tool[]): string[] {
     rules.push(
       "Something to see or use on screen (a page, app, chart, game or form) is build_ui; a new ability the assistant should keep using later (a converter, a lookup, a connection to a web service) is create_skill.",
     );
+  if (has("build_ui") && has("make_image"))
+    rules.push("A picture, image, photo, illustration, painting or artwork of something is make_image, even when the caller says 'draw' or 'make'; a chart, diagram, page or app is build_ui.");
+  if (has("build_ui") && has("clear_workspace"))
+    rules.push("Clearing, closing, resetting or blanking the screen or workspace is clear_workspace; changing what's on it is build_ui.");
+  if (["build_ui", "clear_workspace", "make_image", "make_audio"].some(has))
+    rules.push(
+      "The workspace is the live page beside the caller — what they call the screen, the board or the window. Asking to build, change, show something on, picture, or clear it is an action, never small talk.",
+    );
   return rules;
 }
 
@@ -316,6 +324,28 @@ const BUILD = /\b(build|make|show me|create|draw|design|mock ?up|dashboard|chart
 /** A build asked for with a verb ("can you build me…", "make me a chart", "show me"), not a page word said in passing ("I check my dashboard") or "make sure". */
 const BUILD_VERB = String.raw`(build|create|draw|design|mock ?up|visuali[sz]e|show me|make (me|us|a|an|some|(it|this|that) (a|an|the|into)))\b`;
 const BUILD_ASKED = new RegExp(String.raw`\b${BUILD_VERB}`);
+/**
+ * A making verb a few words before a picture, clip or audio noun ("show me a picture of…", "I'd like a video of…") —
+ * not a mention ("I took a picture yesterday", "I like this video") nor something to watch, find or send.
+ */
+const ASK_FOR = String.raw`(make|create|generate|draw|design|render|produce|give|show|whip up|i want|i'?d like|i need|can i (get|have)|how about)\b(?![^.?!]{0,40}\b(watch|see|find|look|search|play|open|download|send|upload|take|took)\b)[^.?!]{0,40}?\b`;
+/** A picture asked for by name ("draw me a picture of…", "paint a sunset"), not a chart "drawn" ("draw a chart" is a build) nor one made bigger. */
+const IMAGE = new RegExp(
+  String.raw`\b(paint|sketch|illustrate)\b(?! (a |an |the |my )?(chart|graph|diagram|map|plan|ui|page|screen|wall|room|house|fence))` +
+    String.raw`|\b${ASK_FOR}(picture|image|photo|photograph|portrait|painting|drawing|illustration|artwork|poster|wallpaper|logo|icon)s?\b(?! (bigger|smaller|larger|darker|brighter|wider|taller))`,
+);
+/** A video or animation asked for. */
+const VIDEO = new RegExp(String.raw`\b(animate\b|${ASK_FOR}(video|clip|animation|movie|gif)s?\b)`);
+/** Spoken audio asked for: a reading, a narration, a voice note, "audio of…"; music and sound effects route here too, to be declined honestly. */
+const AUDIO = new RegExp(
+  String.raw`\b(read (this|that|it|the following|me|the text) (aloud|out loud|back( to me)?)|read aloud|narrat(e|ion)|voice ?(over|note|memo)|text to speech|say (this|that) in (a|an|the|your) \w+ voice` +
+    String.raw`|(record|${ASK_FOR.replace("|how about", "|record|how about")}(audio|recording|song|music|jingle|sound effects?))\b)`,
+);
+/** The screen cleared: "clear the workspace", "close that window", "wipe the screen", "reset the board". */
+const CLEAR =
+  /\b(clear|close|reset|wipe|blank|empty|hide|erase|get rid of|take down|remove)\b( (out|up|down|off))?( (the|that|this|my|your|everything (on|from)|what's on|whats on) (the )?)?(workspace|screen|board|window|display|canvas)\b|\bstart (over|fresh|clean) (on|with) the (workspace|screen)\b/;
+/** The screen asked about: "what's on the screen?", "what does the workspace show right now?". */
+const DESCRIBE = /\b(what('s| is|s)|what do(es)? (the|my) (workspace|screen|board|window) (show|have|display))\b[^.?!]{0,20}?\b(on|in) (the|my) (workspace|screen|board|window)\b|\bwhat do(es)? (the|my) (workspace|screen|board|window) (show|have|display)\b/;
 const EVERY = String.raw`every (day|morning|evening|night|week|hour)\b`;
 
 /** A time said after "remember to …": then it's a reminder to set ("remember to call mom at 5pm"), not a fact to keep. */
@@ -426,17 +456,28 @@ function heuristic(input: RouteInput, tools: Tool[], started: number): Decision 
   const rememberAt = at("remember", REMEMBER, withoutScene(REMINISCING));
   const scheduleAt = at("schedule", SCHEDULE, withoutScene(HABIT));
   const memoryAt = Math.min(recallAt, rememberAt, scheduleAt);
-  if (searchAt < Math.min(memoryAt, skillAt, buildAt)) return pick("web_search", 0.8);
-  if (memoryAt < Infinity && memoryAt <= Math.min(skillAt, buildAt)) {
+  // A picture, clip or audio asked for by name beats the generic build verbs ("make me a picture of…"), and
+  // clearing the screen is its own request.
+  if (at("clear_workspace", CLEAR) < Infinity) return pick("clear_workspace", 0.8);
+  if (at("describe_workspace", DESCRIBE) < Infinity) return pick("describe_workspace", 0.8);
+  const imageAt = at("make_image", IMAGE);
+  const videoAt = at("make_video", VIDEO);
+  const audioAt = at("make_audio", AUDIO);
+  const mediaAt = Math.min(imageAt, videoAt, audioAt);
+  const screenAt = Math.min(buildAt, mediaAt);
+  if (searchAt < Math.min(memoryAt, skillAt, screenAt)) return pick("web_search", 0.8);
+  if (memoryAt < Infinity && memoryAt <= Math.min(skillAt, screenAt)) {
     if (memoryAt === recallAt) return pick("recall", 0.7);
     if (memoryAt === scheduleAt) return pick("schedule", 0.7); // "remember to call mom at 5" starts both
     return pick("remember", 0.7);
   }
   if (skillAt < Infinity) return pick("create_skill", 0.7);
+  if (mediaAt < Infinity) return pick(mediaAt === imageAt ? "make_image" : mediaAt === videoAt ? "make_video" : "make_audio");
   if (buildAt < Infinity) return pick("build_ui");
   const words = new Set(t.split(/[^a-z0-9]+/).filter((w) => w.length > 2));
   for (const tool of tools) {
     if (inGame && tool.name === "web_search") continue; // "search the chest": no web words, no web search
+    if (/^(make_image|make_video|make_audio|clear_workspace|describe_workspace)$/.test(tool.name)) continue; // a video or picture mentioned isn't one asked for
     if (tool.name.split(/[_\s]+/).some((tok) => tok.length > 3 && words.has(tok))) return pick(tool.name, 0.7);
   }
   return pick("NONE", 0.6);

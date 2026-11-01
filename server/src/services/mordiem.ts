@@ -3,8 +3,8 @@ import { VENICE_PARAMS } from "./json-chat.js";
 import { mordiemStream, StreamHttpError, type ChatMessage, type StreamOptions } from "./llm.js";
 
 /**
- * The coding skill's model client: a coder on Mordiem (GLM 5.3 or Kimi K3 — tools/coding.ts
- * picks one) writes a complete, self-contained HTML fragment that the workspace renders in a
+ * The coding skill's model client: a coder on Mordiem (the quick one, Mercury 3 by default, or the
+ * strong one, Kimi K3 — tools/coding.ts picks) writes a complete, self-contained HTML fragment that the workspace renders in a
  * sandboxed iframe. The fragment is streamed so the workspace can show it materializing
  * while it's written; an edit regenerates the fragment from the current one.
  */

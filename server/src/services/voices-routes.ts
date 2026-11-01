@@ -1,6 +1,7 @@
 import path from "node:path";
 import express, { type NextFunction, type Request, type Response, type Router } from "express";
 import { listPersonas } from "../db/sqlite.js";
+import { renderVoiceSample, sampleFilePath } from "./voice-samples.js";
 import {
   MAX_SAMPLE_BYTES,
   VoiceError,
@@ -8,6 +9,7 @@ import {
   customVoiceValue,
   deleteVoice,
   getVoice,
+  parseVoiceValue,
   syncVoice,
   toCustomVoiceInfo,
   voiceFilePath,
@@ -17,13 +19,18 @@ import {
 /**
  * The Voices API (mounted under /api):
  *   GET    /voices                → {builtin: [{id, label}], custom: [{id, slug, name, durationSec, createdAt,
- *                                    synced, syncError, usedBy}], pod: {configured, reachable, uploads, tokenSet, base, error?}}
+ *                                    synced, syncError, usedBy}], pod: {configured, reachable, uploads, tokenSet, base, error?},
+ *                                    samples: {text, use, items: {[voice]: {durationSec, createdAt}}}}
  *                                    (?fresh=1 re-checks the pod instead of using the 30 s cache)
  *   POST   /voices                → {voice, synced, syncError?}   body: {name, wavBase64}
  *                                    (or a raw audio/wav body with ?name=…)
  *   DELETE /voices/:slug          → {ok, usedBy: [persona names that used it]}
  *   POST   /voices/:slug/sync     → {synced, error?}               (re-uploads to the pod)
  *   GET    /voices/:slug/audio    → audio/wav                      (preview)
+ *   POST   /voices/:voice/sample  → {voice, durationSec, createdAt, cached}   (the pod renders one unless there is one;
+ *                                    ?force=1 re-renders; ≈ 10 s, up to ~75 s; 409 while the voice is in a call)
+ *   GET    /voices/:voice/sample.wav → audio/wav                   (404 when there's none yet)
+ * `:voice` is a built-in id ("NATF2") or "custom:<slug>" (URL-encoded).
  * Errors are {error: "<what to do about it>"} with a 4xx/5xx status.
  */
 
@@ -95,6 +102,15 @@ function noSuchVoice(slug: string): VoiceError {
   return new VoiceError(`There's no custom voice called “${slug}”.`, 404);
 }
 
+/** The `:voice` of a sample route — a built-in id or "custom:<slug>"; anything else is no voice. */
+function voiceParam(req: Request): string {
+  const raw = String(req.params.voice ?? "");
+  const ref = parseVoiceValue(raw);
+  if (ref.kind === "builtin") return ref.id;
+  if (ref.kind === "custom") return customVoiceValue(ref.slug);
+  throw new VoiceError(`There's no voice called “${raw}”.`, 404);
+}
+
 export function voicesRouter(): Router {
   const r = express.Router();
   // The API router already parses JSON (12 MB); these keep this router working on its own too
@@ -156,6 +172,28 @@ export function voicesRouter(): Router {
       res.setHeader("Content-Type", "audio/wav");
       res.setHeader("Cache-Control", "no-cache");
       // `root` keeps send's dot-file check to the file name (DATA_DIR may sit under a dot folder).
+      res.sendFile(path.basename(file), { root: path.dirname(file) }, (err) => {
+        if (err && !res.headersSent) res.status(404).json({ error: "The sample file is missing." });
+      });
+    }),
+  );
+
+  // Rendering takes ≈ 10 s (up to ~75 s): Node puts no time limit on a response, and neither does the Vite proxy.
+  r.post(
+    "/voices/:voice/sample",
+    handle(async (req, res) => {
+      const force = req.query.force === "1" || req.query.force === "true";
+      res.json(await renderVoiceSample(voiceParam(req), { force }));
+    }),
+  );
+
+  r.get(
+    "/voices/:voice/sample.wav",
+    handle((req, res) => {
+      const file = sampleFilePath(voiceParam(req));
+      if (!file) throw new VoiceError("There's no sample for this voice yet.", 404);
+      res.setHeader("Content-Type", "audio/wav");
+      res.setHeader("Cache-Control", "no-cache");
       res.sendFile(path.basename(file), { root: path.dirname(file) }, (err) => {
         if (err && !res.headersSent) res.status(404).json({ error: "The sample file is missing." });
       });

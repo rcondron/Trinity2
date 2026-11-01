@@ -10,7 +10,8 @@ const ports = [Number(process.env.PORT) || 8799, ...(process.argv.includes("--we
 function pidsOnPort(port) {
   try {
     if (process.platform === "win32") {
-      const out = execSync(`netstat -ano -p tcp`, { encoding: "utf8" });
+      // (Not "-p tcp": that lists IPv4 only, and Vite listens on [::1] — "localhost" on Node 17+.)
+      const out = execSync(`netstat -ano`, { encoding: "utf8" });
       return [
         ...new Set(
           out

@@ -51,6 +51,7 @@ function systemPrompt(req: ReplyRequest): string {
   return [
     voiceOf(req.persona),
     `You are on a live voice call. ${task}`,
+    "The workspace is the screen beside the caller where helpers show what they make: their 'screen', 'board' or 'window'.",
     guidance,
     "Don't read out everything on screen. Write numbers, money and dates as spoken words. No emojis, symbols, lists, quotes or markdown.",
   ]

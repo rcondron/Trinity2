@@ -3,6 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { DATA_DIR } from "../config.js";
 import { getEndpoints } from "../settings.js";
+// (voice-samples imports this module too; neither uses the other at load time.)
+import { deleteSample, listSamples, type SamplesOverview } from "./voice-samples.js";
 
 /**
  * Voices for PersonaPlex: the built-in presets plus a local library of custom samples that are
@@ -343,6 +345,8 @@ export function prepareSample(input: Buffer): PreparedSample {
 // ─── Library (data/voices) ───────────────────────────────────────────────────
 
 export const VOICES_DIR = path.join(DATA_DIR, "voices");
+/** Rendered voice samples (voice-samples.ts): a subfolder, since a stray .wav in VOICES_DIR itself is adopted as a custom voice. */
+export const SAMPLES_DIR = path.join(VOICES_DIR, "samples");
 const INDEX_FILE = path.join(VOICES_DIR, "index.json");
 
 export interface VoiceRecord {
@@ -393,7 +397,7 @@ function sleepSync(ms: number): void {
 }
 
 /** Write via a temp file + rename, retrying briefly when Windows has the target open. */
-function atomicWrite(dest: string, data: Buffer): void {
+export function atomicWrite(dest: string, data: Buffer): void {
   const tmp = `${dest}.${process.pid}.${crypto.randomBytes(3).toString("hex")}.tmp`;
   fs.writeFileSync(tmp, bytesOf(data));
   for (let attempt = 0; ; attempt++) {
@@ -651,8 +655,9 @@ export function addVoice(name: string, wav: Buffer): VoiceRecord {
 }
 
 /**
- * Remove a custom voice from the library (the pod's copy stays; it's harmless). The sample goes
- * first, so a failure can't leave a stray file that would be re-adopted. False if there was none.
+ * Remove a custom voice from the library, with its rendered sample (the pod's copy stays; it's
+ * harmless). The voice file goes first, so a failure can't leave a stray file that would be
+ * re-adopted. False if there was none.
  */
 export function deleteVoice(slug: string): boolean {
   if (!POD_STEM_RE.test(String(slug ?? ""))) return false;
@@ -677,6 +682,7 @@ export function deleteVoice(slug: string): boolean {
     records.splice(i, 1);
     writeIndex(records);
   }
+  deleteSample(customVoiceValue(slug));
   if (existed) console.log(`[voices] deleted ${slug}.wav`);
   return existed;
 }
@@ -980,6 +986,8 @@ export interface VoicesOverview {
   builtin: BuiltinVoice[];
   custom: CustomVoiceInfo[];
   pod: PodStatus;
+  /** The rendered samples (what they say, who has the voice right now, which voices have one). */
+  samples: SamplesOverview;
 }
 
 /**
@@ -1020,7 +1028,7 @@ export async function voicesOverview(opts: { fresh?: boolean; budgetMs?: number 
     if (rec.syncedTo === base) updateRecord(rec.slug, { syncedTo: null, syncedHash: null }); // the pod lost it
     return toCustomVoiceInfo(rec, false);
   });
-  return { builtin: [...BUILTIN_VOICES], custom, pod };
+  return { builtin: [...BUILTIN_VOICES], custom, pod, samples: listSamples() };
 }
 
 export interface SyncResult {

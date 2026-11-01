@@ -18,7 +18,8 @@ import { getEndpoints, live } from "../settings.js";
  * persisted daily budget stops runaway spend; failures are not cached so they can be
  * retried.
  */
-export type ImageKind = "portrait" | "icon" | "scene" | "title";
+/** Game art by its place on the game screen, and a picture the caller asked for (make_image). */
+export type ImageKind = "portrait" | "icon" | "scene" | "title" | "picture";
 export type ImageJobStatus = "pending" | "ready" | "error";
 
 export interface ImageJob {
@@ -44,6 +45,8 @@ const KIND_HINTS: Record<ImageKind, string> = {
   icon: "a single game item icon, the object centered on a plain dark background, crisp detail, painterly game art, no text, no border",
   scene: "wide cinematic environment concept art, atmospheric lighting, depth, painterly, no text, no people in the foreground",
   title: "epic key art for a tabletop adventure, cinematic composition, painterly, no text, no letters, no logo",
+  // (The caller's own words lead; this only keeps the output clean.)
+  picture: "high quality, detailed, well composed, no text, no watermark",
 };
 
 /**
@@ -56,10 +59,11 @@ const KIND_SIZE: Record<ImageKind, string> = {
   icon: "512x512",
   scene: "1792x1024",
   title: "1792x1024",
+  picture: "1024x1024",
 };
 
-/** Higher runs first: what players look at most. */
-const KIND_PRIORITY: Record<ImageKind, number> = { scene: 4, title: 3, portrait: 2, icon: 1 };
+/** Higher runs first: a picture the caller is waiting for, then what players look at most. */
+const KIND_PRIORITY: Record<ImageKind, number> = { picture: 5, scene: 4, title: 3, portrait: 2, icon: 1 };
 
 const jobs = new Map<string, ImageJob>();
 const byPrompt = new Map<string, { id: string; done: Promise<ImageJob> }>();

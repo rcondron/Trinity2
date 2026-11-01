@@ -6,6 +6,7 @@
 //   stopAudio()    — end the turn-taking (mic off); the session stays warm.
 //   sendText()     — a typed turn, spoken back through the same live voice.
 // Ported from the personaplex-toolcall bench's worklets.
+import { buildVoiceChain, type VoiceChain } from "./voice-chain.js";
 
 const WORKLETS = `
 class Mic extends AudioWorkletProcessor {
@@ -22,6 +23,9 @@ class Mic extends AudioWorkletProcessor {
 class Speaker extends AudioWorkletProcessor {
   constructor() {
     super(); this.q = []; this.cur = null; this.pos = 0; this.queued = 0; this.playing = false;
+    // Audio queued before playback starts: 240 ms, grown by 80 ms each time the queue runs dry mid-phrase
+    // (network jitter over the pod's proxy), up to 400 ms — a gap in a word costs more than the delay.
+    this.cushion = 5760;
     this.port.onmessage = (e) => {
       if (e.data === "flush") { this.q = []; this.cur = null; this.pos = 0; this.queued = 0; this.playing = false; return; }
       this.q.push(e.data); this.queued += e.data.length;
@@ -29,11 +33,15 @@ class Speaker extends AudioWorkletProcessor {
   }
   process(_, outputs) {
     const out = outputs[0][0];
-    if (!this.playing) { if (this.queued < 3600) return true; this.playing = true; }  // 150 ms cushion
+    if (!this.playing) { if (this.queued < this.cushion) return true; this.playing = true; }
     for (let i = 0; i < out.length; i++) {
       if (!this.cur || this.pos >= this.cur.length) {
         this.cur = this.q.shift(); this.pos = 0;
-        if (!this.cur) { this.playing = false; break; }
+        if (!this.cur) {
+          this.playing = false;
+          if (i > 0 && this.cushion < 9600) this.cushion += 1920; // ran dry mid-buffer: an underrun, not the end of a phrase
+          break;
+        }
       }
       out[i] = this.cur[this.pos++]; this.queued--;
     }
@@ -58,6 +66,7 @@ export class LiveCall {
   private ctx?: AudioContext;
   private workletReady?: Promise<void>;
   private speaker?: AudioWorkletNode;
+  private chain?: VoiceChain;
   private stream?: MediaStream;
   private micSource?: MediaStreamAudioSourceNode;
   private mic?: AudioWorkletNode;
@@ -132,8 +141,15 @@ export class LiveCall {
     await this.workletReady;
     if (!this.speaker) {
       this.speaker = new AudioWorkletNode(this.ctx, "speaker", { outputChannelCount: [1] });
-      this.speaker.connect(this.ctx.destination);
+      // Through the clean-up chain (voice-chain.ts): the codec's voice, brought closer; off per browser in Settings → Voices.
+      this.chain = buildVoiceChain(this.ctx, this.ctx.destination);
+      this.speaker.connect(this.chain.input);
     }
+  }
+
+  /** Run the voice through the clean-up chain, or straight to the speakers (Settings → Voices). */
+  setClarity(on: boolean): void {
+    this.chain?.setClarity(on);
   }
 
   /** Start talking: call from the mic-tap gesture. A tap while the mic is still opening joins that start. */

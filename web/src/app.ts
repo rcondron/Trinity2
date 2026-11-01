@@ -2,6 +2,7 @@ import "./styles.css";
 import { Speech } from "./speech.js";
 import { AudioIO } from "./audio.js";
 import { LiveCall, type CallEvent, type CallState } from "./call.js";
+import { CLARITY_KEY, clarityPreferred } from "./voice-chain.js";
 import { mountWorkspace, type WorkspaceHandle } from "./workspace/view.js";
 import type { TrinityBroadcast } from "./workspace/protocol.js";
 import type { Persona, ServerEvent, ServiceStatus, TranscriptTurn } from "./protocol.js";
@@ -40,6 +41,8 @@ let nameTimer: ReturnType<typeof setTimeout> | null = null; // a name re-warm wa
 let wantMic = false; // tapped while the voice was still warming up
 let evicted = false;
 let idlePaused = false; // the engine let an unused session go: wait for a tap or for the tab to come back
+let lent = false; // the engine borrowed this tab's standby session for a voice sample (Settings → Voices): it comes back on its own
+let lentTimer: ReturnType<typeof setTimeout> | null = null; // the safety net on that: a loan nobody reports back on counts as taken
 let rewarmFailures = 0;
 let rewarmTimer: ReturnType<typeof setTimeout> | null = null;
 const partialTurns = new Map<string, HTMLElement>();
@@ -58,7 +61,11 @@ function voiceMode(): VoiceMode {
 function connect() {
   ws = new WebSocket(`${proto}://${location.host}/ws`);
   ws.onopen = () => send({ type: "hello" });
-  ws.onclose = () => setTimeout(connect, 1200);
+  ws.onclose = () => {
+    // The control channel went (the engine restarted): a loan can't have outlived it, so the reconnect warms up as usual.
+    if (lent) setLent(false);
+    setTimeout(connect, 1200);
+  };
   ws.onmessage = (e) => handle(JSON.parse(e.data) as ServerEvent);
 }
 function send(obj: unknown) {
@@ -119,6 +126,15 @@ function handle(ev: ServerEvent) {
       // A reminder or task is coming up and no voice session is up anywhere: warm one so it's said aloud.
       void answerWake();
       break;
+    case "voice":
+      // The session lent out from this tab for a voice sample is free again — or a call took it
+      // meanwhile. Every tab hears this; only the one that lent the voice has anything to do.
+      if (!lent) break;
+      setLent(false);
+      if (ev.status === "taken") evicted = true; // the "use it here" line
+      else if (!document.hidden) warmUp(); // hidden: coming back to the tab warms up as usual
+      renderVoiceState();
+      break;
     case "skill_forged":
       renderEvent("tool", "skill", skillLine(ev.name, ev.source));
       break;
@@ -152,9 +168,9 @@ function applyStatus(p: Persona, s: ServiceStatus, name?: string | null) {
   if (voiceMode() === "stream") {
     // "ready" is broadcast to every open tab (e.g. when another tab switches persona): a tab
     // whose voice moved elsewhere, or that isn't on screen, must not grab the one GPU session —
-    // nor one whose session was let go for being unused.
-    if (evicted || idlePaused || document.hidden) {
-      /* stays put — "use it here", a tap, or coming back to the tab re-warms */
+    // nor one whose session was let go for being unused, or lent out for a voice sample.
+    if (evicted || idlePaused || lent || document.hidden) {
+      /* stays put — "use it here", a tap, coming back to the tab, or the voice coming back re-warms */
     } else if (!liveCall.ready && liveCall.state !== "connecting") warmUp();
     else if (callKey !== personaKey(p)) warmUp(); // another persona, or this one was edited
     else rewarmForName();
@@ -181,7 +197,7 @@ const CALL_WORK = new Set(["caller", "agent", "decision", "pending", "tool", "to
 function rewarmForName() {
   if (nameTimer) clearTimeout(nameTimer);
   nameTimer = null;
-  if (callName === profileName || voiceMode() !== "stream" || evicted || idlePaused || document.hidden) return;
+  if (callName === profileName || voiceMode() !== "stream" || evicted || idlePaused || lent || document.hidden) return;
   if (liveCall.state === "closed") warmUp();
   else if (liveCall.state === "standby") {
     // (A live call checks again when it ends, a connecting one once it's ready.)
@@ -213,10 +229,32 @@ function warmUp(wake = false) {
   rewarmTimer = null;
   evicted = false;
   idlePaused = false;
+  setLent(false); // a tap while lent out takes the voice back: the engine drops the sample
   callCallerEl = callAgentEl = null;
   callKey = personaKey(persona);
   callName = profileName;
   liveCall.connect(`${proto}://${location.host}/call?standby=1${wake ? "&wake=1" : ""}`, { onEvent: handleCallEvent, onState: onCallState });
+}
+
+/** A sample takes ~10 s; a loan with no word back in this long is treated as taken (see "voice" in handle). */
+const LENT_MAX_MS = 5 * 60_000;
+
+/**
+ * Lent out: nothing here re-warms on its own (like evicted) until the engine says the voice is
+ * free again or a call took it — a /ws "voice" event, which goes to every tab, so the flag is
+ * what tells this tab it's the one to act.
+ */
+function setLent(on: boolean) {
+  lent = on;
+  if (lentTimer) clearTimeout(lentTimer);
+  lentTimer = on
+    ? setTimeout(() => {
+        lentTimer = null;
+        lent = false;
+        evicted = true;
+        renderVoiceState();
+      }, LENT_MAX_MS)
+    : null;
 }
 
 const WAKE_LOCK = "trinity-wake"; // held by the one tab warming the voice for a "wake"
@@ -225,15 +263,15 @@ const WAKE_LOCK = "trinity-wake"; // held by the one tab warming the voice for a
  * "wake": the engine sends it only when no voice session exists anywhere, and turns the wake's
  * session away if one came up meanwhile (a tab brought on screen or tapped, another browser), so
  * answering takes the voice from no one. One tab answers: a tab on screen, else a background tab
- * that held the voice before (let go for being unused, or moved to a window that no longer has it)
- * and can play it — after a moment's wait, so a tab on screen wins. It holds the lock while its
- * session connects.
+ * that held the voice before (let go for being unused, moved to a window that no longer has it, or
+ * lent out for a voice sample — a due reminder beats a sample) and can play it — after a moment's
+ * wait, so a tab on screen wins. It holds the lock while its session connects.
  */
 async function answerWake() {
   const free = () => voiceMode() === "stream" && !liveCall.ready && liveCall.state !== "connecting";
   // (A background tab with no playback yet — no tap or typed turn through the call — would have the
   // line said into silence: it leaves it to the browser's voice.)
-  if (!free() || (document.hidden && ((!idlePaused && !evicted) || !liveCall.canPlay))) return;
+  if (!free() || (document.hidden && ((!idlePaused && !evicted && !lent) || !liveCall.canPlay))) return;
   if (!("locks" in navigator)) {
     // No Web Locks (e.g. an insecure origin): nothing picks one background tab, so only a tab on screen answers.
     if (!document.hidden) warmUp(true);
@@ -298,16 +336,18 @@ function renderVoiceState() {
     voiceState.innerHTML = `<span class="dot live"></span>Live with ${escapeText(personaDisplayName)}`;
   } else {
     micLabel.textContent = "Tap to talk";
-    voiceState.innerHTML = evicted
-      ? `<span class="dot off"></span>Voice is open in another window · <button class="linkish" id="takeOverBtn" type="button">use it here</button>`
-      : `<span class="dot off"></span>Voice paused — tap to reconnect`;
+    voiceState.innerHTML = lent
+      ? `<span class="dot warming"></span>Lent out for a voice sample — back in a moment`
+      : evicted
+        ? `<span class="dot off"></span>Voice is open in another window · <button class="linkish" id="takeOverBtn" type="button">use it here</button>`
+        : `<span class="dot off"></span>Voice paused — tap to reconnect`;
     $("takeOverBtn")?.addEventListener("click", () => warmUp());
   }
   voiceState.className = "voice-state";
 }
 
 function scheduleRewarm() {
-  if (rewarmTimer || evicted || idlePaused || document.hidden || voiceMode() !== "stream") return;
+  if (rewarmTimer || evicted || idlePaused || lent || document.hidden || voiceMode() !== "stream") return;
   const delay = Math.min(30_000, 1500 * 2 ** rewarmFailures++);
   rewarmTimer = setTimeout(() => {
     rewarmTimer = null;
@@ -333,6 +373,7 @@ function handleCallEvent(e: CallEvent) {
     case "status":
       if (e.evicted) evicted = true;
       if (e.idle) idlePaused = true; // released for being unused — reconnecting now would just hold it again
+      if (e.lent) setLent(true); // borrowed for a voice sample — the engine says when it's free again (/ws "voice")
       renderEvent("status", "voice", s("text"));
       if (e.error && !e.busy) scheduleRewarm();
       break;
@@ -782,9 +823,9 @@ $("dockBtn").addEventListener("click", () => {
 
 // Coming back to the tab: warm a voice that's paused or never warmed (the tab opened in the
 // background), and re-warm one set up with an older persona (switched or edited meanwhile, e.g. in
-// Settings) or before the caller's name changed.
+// Settings) or before the caller's name changed. Not one that's lent out: it comes back on its own.
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden || voiceMode() !== "stream" || evicted) return;
+  if (document.hidden || voiceMode() !== "stream" || evicted || lent) return;
   if (liveCall.state === "closed" || liveCall.state === "idle" || callKey !== personaKey(persona)) warmUp();
   else rewarmForName();
 });
@@ -796,6 +837,11 @@ const unlockPlayback = () => {
 };
 document.addEventListener("click", unlockPlayback, true);
 document.addEventListener("keydown", unlockPlayback, true);
+
+// The live voice clean-up switch lives in Settings → Voices (another tab): its change reaches a call here at once.
+window.addEventListener("storage", (e) => {
+  if (e.key === null || e.key === CLARITY_KEY) liveCall.setClarity(clarityPreferred());
+});
 
 // ─── Go ───────────────────────────────────────────────────────────────────────
 initSpeech();

@@ -749,14 +749,40 @@ input.check:focus-visible { outline: none; box-shadow: var(--ring); }
 .voice-row:last-child { border-radius: 0 0 var(--radius-lg) var(--radius-lg); }
 .voice-row.is-new { animation: flash-in 1.6s ease; }
 .play-btn {
-  width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; cursor: pointer;
+  position: relative; width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; cursor: pointer;
   border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); color: #ddd6fe; background: var(--accent-soft);
   transition: background 0.15s, transform 0.12s, color 0.15s, border-color 0.15s;
 }
 .play-btn .i { width: 15px; height: 15px; }
-.play-btn:hover { background: color-mix(in srgb, var(--accent) 28%, transparent); transform: scale(1.05); }
+.play-btn:hover:not([disabled]) { background: color-mix(in srgb, var(--accent) 28%, transparent); transform: scale(1.05); }
 .play-btn:focus-visible { outline: none; box-shadow: var(--ring); }
 .play-btn.is-playing { color: #0c0c14; background: var(--accent-2); border-color: transparent; box-shadow: 0 0 16px -2px var(--accent-2); }
+.play-btn[disabled] { opacity: 0.45; cursor: not-allowed; }
+/* Voice samples: a small ▶ on each built-in chip — outlined until its sample exists, spinning while the pod makes it. */
+.play-btn-sm { width: 26px; height: 26px; flex: none; }
+.play-btn-sm .i { width: 11px; height: 11px; }
+.play-btn.is-missing { color: var(--muted); background: transparent; border-color: var(--line-3); }
+.play-btn.is-missing:hover:not([disabled]) { color: #ddd6fe; background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.play-btn.is-busy { color: transparent; pointer-events: none; opacity: 1; }
+.play-btn.is-busy .i { opacity: 0; }
+.play-btn.is-busy::after {
+  content: ""; position: absolute; inset: 0; margin: auto; width: 12px; height: 12px; border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--accent-hi) 30%, transparent); border-top-color: var(--accent-hi); animation: spin 0.7s linear infinite;
+}
+.samples-progress {
+  display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 11px; border-radius: 8px; white-space: nowrap;
+  font-size: 12.5px; font-weight: 560; color: var(--text-2); border: 1px solid var(--line-2); background: rgba(255, 255, 255, 0.03);
+  font-variant-numeric: tabular-nums;
+}
+.samples-progress .spin {
+  width: 12px; height: 12px; border-radius: 50%; flex: none;
+  border: 2px solid var(--line-3); border-top-color: var(--accent-hi); animation: spin 0.7s linear infinite;
+}
+.sample-text { color: var(--faint); }
+/* The side can get wide (progress + Stop, or "Make all" + the in-use chip): wrap it so the sub text keeps its room. */
+@media (min-width: 761px) {
+  .voices-card .card-head-side { flex: 0 1 auto; flex-wrap: wrap; justify-content: flex-end; max-width: 46%; }
+}
 .voice-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .voice-name { font-weight: 620; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .voice-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12.3px; color: var(--muted); }
@@ -775,6 +801,7 @@ a.pod-chip:hover { border-color: var(--line-3); color: var(--text); }
 .pod-ok .pod-dot { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
 .pod-warn { color: #fcd34d; border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
 .pod-warn .pod-dot { background: var(--warn); }
+.voice-busy { height: auto; min-height: 28px; padding-block: 4px; white-space: normal; } /* a sentence: wraps in a narrow card head */
 
 .builtin-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px 28px; padding: 20px 20px 22px; }
 .builtin-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
@@ -787,6 +814,7 @@ a.pod-chip:hover { border-color: var(--line-3); color: var(--text); }
 .vchip-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
 .vchip-label { font-size: 13px; font-weight: 580; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vchip-id { font-size: 11px; color: var(--faint); }
+.vchip-foot { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; } /* id at left, the sample ▶ at right */
 .vchip-users { display: flex; align-items: center; gap: 5px; margin-top: 3px; font-size: 11.5px; color: #c4b5fd; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .vchip-users .i { width: 12px; height: 12px; flex: none; }
 
@@ -1230,7 +1258,7 @@ a.pod-chip:hover { border-color: var(--line-3); color: var(--text); }
   .sec-head h1 { font-size: 23px; }
   .lede { font-size: 13.8px; }
   .card-head { padding: 15px 16px; flex-wrap: wrap; }
-  .card-head-side { width: 100%; padding-left: 50px; }
+  .card-head-side { width: 100%; padding-left: 50px; flex-wrap: wrap; }
   .card-head-side:empty { display: none; }
   .status-row { grid-template-columns: minmax(0, 1fr) auto; padding: 12px 12px 14px 16px; }
   .svc-list { grid-column: 1 / -1; order: 3; }

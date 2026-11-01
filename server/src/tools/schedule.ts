@@ -272,12 +272,15 @@ function wordsForAmounts(text: string): string {
  * zone ("at 7:30 p.m. Eastern", "8 p.m. ET"). The reply writer counts its sentences by the same words.
  */
 export const GOES_ON_AFTER_CLOCK =
-  String.raw`(?:(?:Mon|Tues|Wednes|Thurs|Fri|Satur|Sun)day|Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|` +
+  String.raw`(?:(?:Mon|Tues|Wednes|Thurs|Fri|Satur|Sun)days?|Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|` +
   String.raw`Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?|[ECMPAH][SD]?T|GMT|UTC|BST|CES?T|IST|JST|KST|AE[SD]?T|NZ[SD]?T|AK[SD]?T|UK|Eastern|Central|Mountain|Pacific|Atlantic)\b`;
 /** After a dotted "a.m.", what ends its sentence there: nothing more, or a capital that starts the next one. */
 const ENDS_AFTER_CLOCK = new RegExp(String.raw`^\s*(?:$|(?!${GOES_ON_AFTER_CLOCK})[A-Z])`);
 
 // What the words around a number tell about it, each tried where the number is (see matchesAt).
+/** A unit or scale after a dotted number: then it's an amount, not a time ("peaked at 18.45 percent", "around 14.50 kg"). */
+const UNIT_WORDS = String.raw`percent|per\s?cent|pct|points?|pts|degrees?|thousand|million|billion|trillion|kg|kgs|kilos?|kilograms?|grams?|g|lbs?|pounds?|oz|ounces?|m|meters?|metres?|km|kms|kilomet(?:er|re)s?|miles?|mi|ft|feet|inch(?:es)?|cm|mm|mph|kph|knots?|seconds?|secs?|minutes?|mins?|x|times|lit(?:er|re)s?|ml|gallons?|gal|volts?|amps?|watts?|kw|kwh|mb|gb|tb|hz|ghz|mhz|bpm|psi|ppm|dollars?|euros?|cents?|calories|kcal`;
+const UNIT_AFTER = new RegExp(String.raw`\s?(?:${UNIT_WORDS})\b`, "iy");
 /** After a 12-hour dotted time, a word that makes it a clock time: "at 7.30 tonight", "at 10.15 UK time". */
 const TIME_CUE = /\s+(?:tonight|today|tomorrow|this\s+(?:morning|afternoon|evening)|in\s+the\s+(?:morning|afternoon|evening)|sharp|(?:UK|local|London|Paris|Berlin)\s+time|GMT|BST|CES?T|UTC)\b/iy;
 /** Before a hyphenated pair, a label that names one thing: "room 3-104", "apt #4-2", "part number is 12-345". */
@@ -292,6 +295,16 @@ const SECONDS_LEAD = new RegExp(
     String.raw`\b(?:for|rest|hold|every|each|wait|after|within|another|takes?|lasts?)\s+(?:(?:about|around|roughly|just|only)\s+)?)`,
   "iy",
 );
+/**
+ * After one, what makes it seconds: an interval's "on"/"off" ("20s on, 10s off", "30s on each side", "30s on 30s off" —
+ * not "in the 50s on Tuesday" or "the 80s on vinyl"), "rest", "apart", "intervals".
+ */
+const SECONDS_AFTER = /\s+(?:(?:on|off)(?:(?=\s*(?:[,;/.!?)]|$))|\s+(?:(?:and|then|x)\s+)?\d|\s+(?:each|both|high|low|medium|full|for)\b|\s+the\s+other\b)|rest\b|apart\b|intervals?\b)/iy;
+/** A list of decades ("30s and 40s singles", "the 1920s and 30s") is never seconds. */
+const DECADE_LIST = /\s+(?:and|or|&)\s+(?:the\s+)?(?:['’]?\d0s|\d{4}s)\b/iy;
+/** A decade as an adjective ("80s night", "a 70s playlist", "every 90s kid") is never seconds, whatever leads it. */
+const DECADE_THING =
+  /[\s-]+(?:nights?|day|part(?:y|ies)|proms?|dances?|disco|theme[ds]?|music|songs?|hits?|tunes?|playlists?|mix(?:tape)?s?|albums?|records?|vinyl|bands?|rock|pop|rap|hip[\s-]?hop|punk|metal|grunge|country|jazz|soul|funk|movies?|films?|tv|shows?|sitcoms?|cartoons?|series|fashion|styles?|outfits?|costumes?|clothes|clothing|looks?|hair(?:styles?)?|makeup|vibes?|aesthetic|era|decade|kids?|child(?:ren)?|babies|nostalgia|trivia|revival|classics?|icons?|stars?|cars?|furniture|decor|design|culture|slang|throwback|retro|tribute|remakes?|reboots?|games?|toys?|videos?|commercials?|ads?|radio|stations?|sound|stuff)\b/iy;
 /** After n/5, n/10 or n/100, what makes it a fraction rather than a rating: "1/5 of adults", "1/10 the size", "1/10 to 1/2". */
 const FRACTION_OF = /\s+(?:of|the)\b|\s*(?:to|[-–])\s*\d{1,2}\/\d/iy;
 /** …or two values: a letter glued on, or a unit ("2.4/5GHz", "2.4/5 GHz"; "9/10ths" is still one). */
@@ -307,9 +320,14 @@ const SLASH_DATE_LEAD = new RegExp(
   "iy",
 );
 const CHANGED_BY =
-  /(?<=\b(?:cut|reduc\w*|increas\w*|decreas\w*|grow\w*|grew|shrink\w*|shrank|trim\w*|divid\w*|multipl\w*|rais\w*|drop\w*|fall\w*|fell|ris\w*|rose|lower\w*|boost\w*|slash\w*|discount\w*|down|up|off)\b(?:\s+\S+){0,3}\s+by\s+)/iy;
+  /(?<=\b(?:cut|reduc\w*|increas\w*|decreas\w*|grow\w*|grew|shrink\w*|shrank|trim\w*|divid\w*|multipl\w*|rais\w*|drop\w*|fall\w*|fell|ris\w*|rose|lower\w*|boost\w*|slash\w*|discount\w*|scal(?:e|ed|es|ing)|adjust\w*|tighten\w*|loosen\w*|extend\w*|widen\w*|shorten\w*|lengthen\w*|thin(?:s|ned|ning)?|dilut\w*|overlap\w*|offset\w*|expand\w*|down|up|off)\b(?:\s+\S+){0,3}\s+by\s+)/iy;
 const AMOUNT_OF =
-  /\s*(?:(?:of|a|an|the|cups?|c|tsp|teaspoons?|tbsp|tablespoons?|inch(?:es)?|ft|feet|foot|miles?|mi|pounds?|lbs?|oz|ounces?|hours?|hrs?|minutes?|mins?|liters?|litres?|gallons?|kg|g|grams?|cm|mm|tank|share|price|point|percent|stars?)\b|(?:to|[-–])\s*\d{1,2}\/\d)/iy;
+  /\s*(?:(?:of|a|an|the|cups?|c|tsp|teaspoons?|tbsp|tablespoons?|inch(?:es)?|ft|feet|foot|miles?|mi|pounds?|lbs?|oz|ounces?|hours?|hrs?|minutes?|mins?|liters?|litres?|ml|pints?|quarts?|gallons?|kg|g|grams?|cm|mm|yards?|yd|cans?|sticks?|batch(?:es)?|servings?|tank|share|price|point|percent|stars?|full|empty|power|speed|turns?|strength|doses?|dosage|rations?|heat|volume|capacity|portions?|pay|salary|brightness|throttle|shooting|attempts?|tries|time)\b|(?:to|[-–])\s*\d{1,2}\/\d)/iy;
+/** After a hyphenated pair, a quantity word that makes it a range after all: "room 2-3 degrees cooler", "extension 2-3 days", "1-800 words". */
+const QUANTITY_AFTER =
+  /\s*(?:°|%|-?\s*(?:(?:more|extra|business|working|calendar|school|full|whole)\s+)?(?:seconds?|secs?|degrees?|feet|foot|ft|inch(?:es)?|cm|mm|meters?|metres?|miles?|mi|km|kilomet(?:er|re)s?|yards?|minutes?|mins?|hours?|hrs?|days?|nights?|weeks?|wks?|months?|mos?|years?|yrs?|times?|people|persons?|guests?|adults?|kids|children|blocks?|steps?|stops?|floors?|stories|doors?|beds?|bedrooms?|baths?|bathrooms?|seats?|spots?|shifts?|slots?|words|characters|calories|points|percent)\b)/iy;
+/** After "7-11", what makes it ages or hours rather than the store: "7-11 year olds", "a 7-11 shift". */
+const NOT_STORE = /\s*-?\s*(?:years?|yrs?|year-olds?|age|ages|aged|grade|grades|graders?|shifts?|slots?|window|hours?|hrs?|days?|weeks?|months?)\b/iy;
 /** A slash after money or a percent, before what it's per: "$15.49/month" → "… cents per month" (not "mg/dL", "km/h"). */
 const PER =
   /(?<=\b(?:cents?|dollars?|euros?|pounds?|pence|penny|yen|won|baht|rupees?|reais|pesos?|yuan|percent|thousand|million|billion))\s?\/\s?(?=(?:hour|hr|day|night|week|wk|month|mo|year|yr|person|guest|head|seat|user|ticket|lb|kg|oz|gallon|gal|liter|litre|share|unit|item|piece|sq ?ft)\b)/g;
@@ -325,8 +343,10 @@ function slashDate(month: string, day: string, whole: string, at: number, end: n
  * ("stop at the 7-11"; "open 7-11pm" is hours) or a number after a label ("room 3-104", see ONE_THING).
  */
 function namesOne(a: string, b: string, clock: boolean, whole: string, at: number): boolean {
+  const next = at + a.length + 1 + b.length;
+  if (matchesAt(QUANTITY_AFTER, whole, next)) return false; // "room 2-3 degrees cooler", "1-800 words": a range after all
   if (a === "1" && /^8(?:00|88|77|66|55|44|33)$/.test(b)) return true;
-  if (a === "7" && b === "11" && !clock && matchesAt(/(?<=\b(?:the|a|an|at|to|this|that|nearest|local|my|your|our)\s+)/iy, whole, at)) return true;
+  if (a === "7" && b === "11" && !clock && !matchesAt(NOT_STORE, whole, next) && matchesAt(/(?<=\b(?:the|a|an|at|to|this|that|nearest|local|my|your|our)\s+)/iy, whole, at)) return true;
   return matchesAt(ONE_THING, whole, at);
 }
 
@@ -349,15 +369,25 @@ export function wordsForNumbers(text: string): string {
     // backwards, so can't be two decimals ("9.30-5.30", opening hours): as h:mm, for the clock and range rules below.
     .replace(new RegExp(String.raw`(?<![\d.,:${SYMBOLS}])\b(\d{1,2})\.([0-5]\d)(?=\s*(?:[-–]|to\b|and\b|until\b|till\b)\s*\d{1,2}(?:[.:][0-5]\d)?\s*(?:[ap]\.\s?m\.|[ap]\s?m\b))`, "giu"), (all, h: string, m: string) =>
       Number(h) >= 1 && Number(h) <= 12 ? `${h}:${m}` : all)
-    .replace(new RegExp(String.raw`(?<![\d.,:${SYMBOLS}])\b(\d{1,2})\.([0-5]\d)(\s*[-–]\s*)(\d{1,2})\.([0-5]\d)\b(?![.,]?\d|\s?[%°]|[A-Za-z])`, "gu"), (all, h1: string, m1: string, dash: string, h2: string, m2: string) =>
+    .replace(new RegExp(String.raw`(?<![\d.,:${SYMBOLS}])\b(\d{1,2})\.([0-5]\d)(\s*[-–]\s*)(\d{1,2})\.([0-5]\d)\b(?![.,]?\d|\s?[%°]|[A-Za-z]|\s+(?:${UNIT_WORDS})\b)`, "gu"), (all, h1: string, m1: string, dash: string, h2: string, m2: string) =>
       Number(h1) <= 12 && Number(h2) >= 1 && Number(h2) < Number(h1) ? `${h1}:${m1}${dash}${h2}:${m2}` : all)
     // …and one after "at", "until"…: a 24-hour time ("at 19.45", "until 23.15", "at 07.30"), or 1–12 said with a time
-    // word ("at 7.30 tonight") — "the euro is at 1.08" and "the pH is at 7.40" stay numbers.
-    .replace(/\b(at|until|till|around|before|after|from)\s+(\d{1,2})\.([0-5]\d)\b(?![.,]?\d|\s?[%°]|[A-Za-z])/gi, (all, lead: string, h: string, m: string, at: number, whole: string) => {
-      const hour = Number(h);
-      const clock = (hour >= 13 && hour <= 23) || /^0\d$/.test(h) || (hour >= 1 && hour <= 12 && matchesAt(TIME_CUE, whole, at + all.length));
-      return clock ? `${lead} ${h}:${m}` : all;
-    })
+    // word ("at 7.30 tonight") — "the euro is at 1.08", "the pH is at 7.40" and "at 18.45 percent" stay numbers. A
+    // second time paired with it is one too ("from 17.00 to 19.00", "at 14.10 and 14.40"); a pair with a dotted number
+    // that can't be a time is two amounts ("from 14.20 to 15.80").
+    .replace(
+      /\b(at|until|till|around|before|after|from|between)\s+(\d{1,2})\.([0-5]\d)\b(?![.,]?\d|\s?[%°]|[A-Za-z])(?:(\s*(?:to|and|until|till|[-–])\s*)(\d{1,2})\.([0-5]\d)\b(?![.,]?\d|\s?[%°]|[A-Za-z]))?/gi,
+      (all, lead: string, h: string, m: string, link: string | undefined, h2: string | undefined, m2: string | undefined, at: number, whole: string) => {
+        const hour = Number(h);
+        const end = at + all.length;
+        if (matchesAt(UNIT_AFTER, whole, end)) return all;
+        const clock = (hour >= 13 && hour <= 23) || /^0\d$/.test(h) || (hour >= 1 && hour <= 12 && matchesAt(TIME_CUE, whole, end));
+        if (!clock) return all;
+        if (!h2 && matchesAt(/\s*(?:to|and|until|till|[-–])\s*\d{1,2}\.\d\d\b/iy, whole, end)) return all;
+        if (h2 && Number(h2) <= 23) return `${lead} ${h}:${m}${link}${h2}:${m2}`;
+        return h2 ? `${lead} ${h}:${m}${all.slice(all.indexOf(`${h}.${m}`) + h.length + 1 + m.length)}` : `${lead} ${h}:${m}`;
+      },
+    )
     // A range from a fraction or to a mixed number ("1/4-1/2 teaspoon", "1/2-1 cup", "1-1 1/2 hours"), and a mixed
     // number written with a hyphen ("1-3/4 cups" is one and three quarters, not one to three quarters).
     .replace(/(?<![\d/.,])((?:\d{1,2}\s)?[1-9]\/[2348])\s*[-–]\s*(?=\d)/g, "$1 to ")
@@ -401,7 +431,8 @@ export function wordsForNumbers(text: string): string {
     })
     // A race or video time: "2:01:09" → "two hours, one minute and nine seconds" ("at 10:30:00" is the clock).
     .replace(/\b(\d{1,2}):([0-5]\d):([0-5]\d)\b(?!:\d)/g, (_all, h: string, m: string, s: string, at: number, whole: string) => {
-      if (matchesAt(/(?<=\bat\s+)/iy, whole, at)) return `${h}:${m}`;
+      // (After "at" it's a clock time — "at 10:30:00" — but a finish or a video position keeps its seconds: "at 2:01:09".)
+      if (matchesAt(/(?<=\bat\s+)/iy, whole, at)) return s === "00" ? `${h}:${m}` : `${h}:${m} and ${numberWords(Number(s))} ${s === "01" ? "second" : "seconds"}`;
       const part = (n: number, unit: string) => (n ? `${numberWords(n)} ${unit}${n === 1 ? "" : "s"}` : "");
       const parts = [part(Number(h), "hour"), part(Number(m), "minute"), part(Number(s), "second")].filter(Boolean);
       return parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}` : (parts[0] ?? "zero seconds");
@@ -421,7 +452,8 @@ export function wordsForNumbers(text: string): string {
     // → "thousands" — but "rest 60-90s", "hold for 30s" and "20s on" are seconds.
     .replace(new RegExp(String.raw`(?<![\w.,:${SYMBOLS}'’])(?:(1\d|20)(\d0)|(['’])?([1-9]0))s\b`, "gu"), (all, century: string | undefined, decade: string | undefined, apostrophe: string | undefined, short: string | undefined, at: number, whole: string) => {
       const plural = (w: string) => (w.endsWith("y") ? `${w.slice(0, -1)}ies` : `${w}s`);
-      if (short && !apostrophe && (matchesAt(SECONDS_LEAD, whole, at) || matchesAt(/\s+(?:on|off|rest|apart|intervals?)\b/iy, whole, at + all.length)))
+      const end = at + all.length;
+      if (short && !apostrophe && !matchesAt(DECADE_LIST, whole, end) && !matchesAt(DECADE_THING, whole, end) && (matchesAt(SECONDS_LEAD, whole, at) || matchesAt(SECONDS_AFTER, whole, end)))
         return `${numberWords(Number(short))} seconds`;
       if (short) return plural(numberWords(Number(short)));
       if (decade === "00") return century === "20" ? "two thousands" : century === "10" ? "thousands" : `${numberWords(Number(century))} hundreds`;
@@ -465,6 +497,19 @@ export function wordsForNumbers(text: string): string {
         return /[A-Za-z]/.test(whole[at + all.length] ?? "") ? `${said} ` : said;
       },
     );
+}
+
+/**
+ * A streamed chunk read after the words already said, so the rules that look back ("Cut the recipe" "by 2/3",
+ * "in their" "20-30s") see what they'd see in the whole reply; only the chunk's own words come back. When the
+ * two readings don't line up (a number whose reading the chunk changed), the chunk is read on its own.
+ */
+export function readAfter(before: string, text: string): string {
+  const tail = before.length > 100 ? before.slice(-100).replace(/^\S*\s+/, "") : before;
+  if (!tail.trim()) return wordsForNumbers(text);
+  const alone = wordsForNumbers(tail);
+  const both = wordsForNumbers(`${tail} ${text}`);
+  return both.startsWith(`${alone} `) ? both.slice(alone.length + 1) : wordsForNumbers(text);
 }
 
 /** The caller's words in the assistant's mouth: "call my mom" → "call your mom". */
