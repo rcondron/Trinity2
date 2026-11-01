@@ -1,4 +1,3 @@
-import { config } from "../config.js";
 import { getEndpoints } from "../settings.js";
 
 export interface WebResult {
@@ -22,11 +21,11 @@ const UA =
 export async function search(query: string): Promise<WebSearch> {
   const q = query.trim();
   if (!q) return { results: [] };
-  // Tavily if a key is configured (via .env or the Settings page). We read the
-  // key from config here since Tavily isn't in the runtime endpoint settings.
-  if (config.web.key) {
+  // Tavily if a key is configured (via .env or the Settings page).
+  const key = getEndpoints().tavilyKey;
+  if (key) {
     try {
-      return await tavily(q);
+      return await tavily(q, key);
     } catch (err) {
       console.warn("[web] Tavily failed, falling back to DuckDuckGo:", (err as Error).message);
     }
@@ -35,10 +34,10 @@ export async function search(query: string): Promise<WebSearch> {
 }
 
 // ─── Tavily (keyed) ───────────────────────────────────────────────────────────
-async function tavily(query: string): Promise<WebSearch> {
+async function tavily(query: string, key: string): Promise<WebSearch> {
   const res = await fetch("https://api.tavily.com/search", {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.web.key}` },
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
     body: JSON.stringify({ query, search_depth: "basic", max_results: 6, include_answer: true }),
     signal: AbortSignal.timeout(12_000),
   });

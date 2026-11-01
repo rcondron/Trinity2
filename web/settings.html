@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- The skill test's preview is a srcdoc frame: no frame may navigate anywhere (a skill's render could carry data out in a link's URL). -->
+    <meta http-equiv="Content-Security-Policy" content="frame-src 'none'" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#0c0c14" />
+    <title>Settings — Trinity</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#content">Skip to settings</a>
+
+    <header class="top">
+      <a class="brand" href="/" data-back title="Back to Trinity">
+        <span class="orb" aria-hidden="true"></span>
+        <span class="brand-name">Trinity</span>
+        <span class="brand-sep" aria-hidden="true">/</span>
+        <span class="brand-page">Settings</span>
+      </a>
+      <span class="top-spacer"></span>
+      <a class="btn btn-subtle back-link" href="/" data-back title="Return to Trinity">
+        <span class="i" data-icon="arrowLeft" aria-hidden="true"></span>
+        <span class="btn-label"><span class="back-long">Back to </span>Trinity</span>
+      </a>
+    </header>
+
+    <div class="layout">
+      <aside class="sidebar">
+        <nav class="nav" aria-label="Settings sections">
+          <div class="nav-title">Settings</div>
+          <a class="nav-link" href="#personas" data-section="personas">
+            <span class="i" data-icon="users" aria-hidden="true"></span>
+            <span class="nav-label">Personas</span>
+            <span class="nav-badge" data-badge="personas"></span>
+          </a>
+          <a class="nav-link" href="#models" data-section="models">
+            <span class="i" data-icon="key" aria-hidden="true"></span>
+            <span class="nav-label">Models &amp; <span class="nav-long">API </span>keys</span>
+            <span class="nav-badge" data-badge="models"></span>
+          </a>
+          <a class="nav-link" href="#voices" data-section="voices">
+            <span class="i" data-icon="waveform" aria-hidden="true"></span>
+            <span class="nav-label">Voices</span>
+            <span class="nav-badge" data-badge="voices"></span>
+          </a>
+          <a class="nav-link" href="#skills" data-section="skills">
+            <span class="i" data-icon="sparkles" aria-hidden="true"></span>
+            <span class="nav-label">Skills</span>
+            <span class="nav-badge" data-badge="skills"></span>
+          </a>
+          <a class="nav-link" href="#memory" data-section="memory">
+            <span class="i" data-icon="brain" aria-hidden="true"></span>
+            <span class="nav-label">Memory</span>
+            <span class="nav-badge" data-badge="memory"></span>
+          </a>
+          <a class="nav-link" href="#heartbeat" data-section="heartbeat">
+            <span class="i" data-icon="pulse" aria-hidden="true"></span>
+            <span class="nav-label">Heartbeat</span>
+            <span class="nav-badge" data-badge="heartbeat"></span>
+          </a>
+          <!-- Only the Game Master persona uses this, so it sits apart at the end. -->
+          <div class="nav-sub" aria-hidden="true">Game Master</div>
+          <a class="nav-link nav-link-minor" href="#games" data-section="games" title="Adventures the Game Master persona has run">
+            <span class="i" data-icon="dice" aria-hidden="true"></span>
+            <span class="nav-label">Saved games</span>
+            <span class="nav-badge" data-badge="games"></span>
+          </a>
+        </nav>
+        <div class="sidebar-foot" id="sidebarFoot" aria-live="polite"></div>
+      </aside>
+
+      <main class="content" id="content" tabindex="-1"></main>
+    </div>
+
+    <noscript>
+      <p class="noscript">Trinity settings needs JavaScript.</p>
+    </noscript>
+    <script type="module" src="/src/settings/main.ts"></script>
+  </body>
+</html>

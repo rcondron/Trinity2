@@ -1,5 +1,5 @@
 import { config } from "../config.js";
-import { live } from "../settings.js";
+import { getEndpoints, live } from "../settings.js";
 import type { Persona } from "../types.js";
 
 /**
@@ -44,7 +44,7 @@ export async function personaplexTurn(audioUrl: string, persona: Persona): Promi
 
   const headers = {
     "Content-Type": "application/json",
-    Authorization: `Key ${config.fal.key}`,
+    Authorization: `Key ${getEndpoints().falKey}`,
   };
   const prompt =
     persona.description +

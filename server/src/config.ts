@@ -10,9 +10,12 @@ export const ROOT = path.resolve(__dirname, "..", "..");
 export const DATA_DIR = process.env.TRINITY_DATA_DIR
   ? path.resolve(process.env.TRINITY_DATA_DIR)
   : path.join(ROOT, "data");
+/** Hand-written, trusted skills (source-controlled; run in-process). */
 export const SKILLS_DIR = path.join(ROOT, "server", "skills");
-/** Forged-but-unapproved skills live here; the loader does NOT scan this dir. */
-export const PENDING_SKILLS_DIR = path.join(SKILLS_DIR, "pending");
+/** Skills Trinity creates on the fly (runtime data; each runs in a sandboxed child process). */
+export const FORGED_SKILLS_DIR = path.join(DATA_DIR, "skills");
+/** Forged skills waiting for approval (only when skill approval is set to "manual"). */
+export const PENDING_SKILLS_DIR = path.join(FORGED_SKILLS_DIR, "pending");
 
 /** Default Deepgram live-transcription socket (nova-3, 16-bit PCM @ 24 kHz). */
 const DEEPGRAM_DEFAULT =
@@ -41,6 +44,8 @@ export const config = {
   personaplex: {
     wsUrl: process.env.PERSONAPLEX_WS_URL || "",
     voice: process.env.PERSONAPLEX_VOICE || "NATF2",
+    // Shared secret for the pod's voice-upload route (PP_ADMIN_TOKEN on the pod).
+    adminToken: process.env.PERSONAPLEX_ADMIN_TOKEN || "",
   },
 
   // Deepgram — live transcription of the caller, running beside PersonaPlex.
@@ -56,15 +61,25 @@ export const config = {
     model: process.env.JEV_MODEL || "jev-latest",
   },
 
-  // Mordiem — OpenAI-compatible gateway (Morpheus network). Powers the UI codegen
-  // model, the general-knowledge "brain", and the fast one-sentence reply writer.
+  // Mordiem — OpenAI-compatible gateway (Morpheus network). Powers the coding skill,
+  // the general-knowledge "brain", and the fast one-sentence reply writer.
   mordiem: {
     key: process.env.MORDIEM_API_KEY || process.env.MORPH_API_KEY || "",
     base: process.env.MORDIEM_URL || "https://api.mordiem.com/api/v1",
-    genModel: process.env.MORDIEM_GEN_MODEL || "qwen3-coder-480b-a35b-instruct-turbo",
+    // The coding skill's two coders (UI builds, forged skills, custom screens). Measured
+    // streaming an interactive canvas app: z-ai-glm-5-3-flash first code ~1.2s, done ~16s;
+    // kimi-k3 ~1.1s / ~32s with the most polished result. (Full z-ai-glm-5-3 is
+    // thinking-only on Mordiem: ~16s of reasoning before any code.)
+    glmModel: process.env.MORDIEM_GLM_MODEL || "z-ai-glm-5-3-flash",
+    kimiModel: process.env.MORDIEM_KIMI_MODEL || "kimi-k3",
+    coderDefault: (process.env.CODER_DEFAULT === "kimi" ? "kimi" : "glm") as "glm" | "kimi",
     brainModel: process.env.BRAIN_MODEL || "claude-sonnet-5-5",
     // Fast model that writes the one spoken sentence after a tool runs.
     replyModel: process.env.REPLY_MODEL || "nvidia-nemotron-3-nano-30b-a3b",
+    // Fast JSON model for argument extraction and game content (~2s measured).
+    fastModel: process.env.FAST_MODEL || "nvidia-nemotron-3-nano-30b-a3b",
+    // Image model for game art (krea-2-turbo ~4.7s measured).
+    imageModel: process.env.IMAGE_MODEL || "krea-2-turbo",
   },
 
   web: {
@@ -72,10 +87,17 @@ export const config = {
     key: process.env.TAVILY_API_KEY || process.env.WEB_SEARCH_API_KEY || "",
   },
 
+  skills: {
+    // "auto": a skill Trinity creates is tested in its sandbox and usable at once.
+    // "manual": it waits in Settings → Skills for approval.
+    approval: (process.env.SKILL_APPROVAL === "manual" ? "manual" : "auto") as "auto" | "manual",
+  },
+
   // Live-loop timing defaults (overridable in Settings).
   timing: {
     routeEveryMs: Number(process.env.ROUTE_EVERY_MS) || 400,
     minConfidence: Number(process.env.MIN_CONFIDENCE) || 0.7,
-    fillerAfterMs: Number(process.env.FILLER_AFTER_MS) || 500,
+    // Say "one sec" only if no reply word is ready by then (reply TTFT measured ~0.8s).
+    fillerAfterMs: Number(process.env.FILLER_AFTER_MS) || 900,
   },
 } as const;

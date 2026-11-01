@@ -136,49 +136,30 @@ body {
 .event.heartbeat .tag { color: var(--warn); }
 .event.tool .tag { color: var(--accent-2); }
 
-/* ── Workspace ── */
-.workspace iframe { flex: 1; width: 100%; border: none; background: #0f0f18; }
+/* ── Voice readiness (warm standby) ── */
+.voice-state { min-height: 18px; font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 7px; }
+.voice-state .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--muted); }
+.voice-state .dot.ready { background: var(--ok); box-shadow: 0 0 8px color-mix(in srgb, var(--ok) 60%, transparent); }
+.voice-state .dot.live { background: var(--accent-2); box-shadow: 0 0 10px var(--accent-2); animation: pulse 1.2s ease-in-out infinite; }
+.voice-state .dot.warming { background: var(--warn); animation: pulse 1s ease-in-out infinite; }
+.voice-state .dot.off { background: #5b5b78; }
+.linkish { background: none; border: none; color: var(--accent-2); cursor: pointer; padding: 0; font: inherit; text-decoration: underline; }
+.mic.warming { border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+.orb.warming { box-shadow: 0 0 16px var(--warn); }
+.settings-link { text-decoration: none; font-size: 13px; }
 
-/* ── Settings dialog ── */
-.settings { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); color: var(--text); padding: 0; width: min(560px, 92vw); }
-.settings::backdrop { background: rgba(0,0,0,.6); backdrop-filter: blur(3px); }
-.settings-inner { padding: 20px 22px; display: flex; flex-direction: column; gap: 10px; max-height: 80vh; overflow-y: auto; }
-.settings-head { display: flex; justify-content: space-between; align-items: center; }
-.settings h2 { margin: 0; font-size: 18px; }
-.settings h3 { margin: 16px 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
-.settings label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
-.settings input, .settings textarea {
-  background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
-  border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 14px;
+/* ── Workspace (live view; can pop out into its own window) ── */
+.workspace .pane-head { align-items: center; }
+.workspace-host { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
+.workspace-host > * { flex: 1; min-height: 0; }
+.workspace-host[hidden], .workspace-away[hidden] { display: none; }
+.workspace-away { flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.away-card {
+  text-align: center; display: flex; flex-direction: column; align-items: center; gap: 12px;
+  padding: 28px 30px; border: 1px dashed var(--line); border-radius: 16px; background: var(--panel);
 }
-.settings input:focus, .settings textarea:focus { outline: none; border-color: var(--accent); }
-.task-list { display: flex; flex-direction: column; gap: 6px; }
-.task {
-  display: flex; align-items: center; gap: 10px; font-size: 13px;
-  background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
-}
-.task .t-title { font-weight: 600; }
-.task .t-meta { color: var(--muted); font-size: 11px; margin-left: auto; }
-.task-add { display: grid; grid-template-columns: 1fr 1.6fr 70px auto; gap: 6px; margin-top: 6px; }
-.task-add input { min-width: 0; }
-.switch { cursor: pointer; }
+.away-icon { font-size: 34px; color: var(--accent-2); }
+.away-text { color: var(--muted); font-size: 14px; }
+.away-actions { display: flex; gap: 8px; }
+
 .primary.small { padding: 4px 10px; font-size: 12px; }
-.skill-badge {
-  margin-left: auto; font-size: 10px; text-transform: uppercase; letter-spacing: .08em;
-  color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px;
-}
-.skill-pending { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
-.skill-pending .t-meta { margin-left: 10px; }
-
-/* ── Endpoints & models ── */
-.ep-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.ep-grid label { font-size: 12px; }
-.ep-grid input, .ep-select {
-  background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
-  border-radius: 8px; padding: 7px 9px; font: inherit; font-size: 13px; width: 100%;
-}
-.ep-grid input:focus, .ep-select:focus { outline: none; border-color: var(--accent); }
-.key-state { font-size: 10px; margin-left: 6px; }
-.key-state.ok { color: var(--ok); }
-.key-state.off { color: var(--muted); }
-@media (max-width: 560px) { .ep-grid { grid-template-columns: 1fr; } }

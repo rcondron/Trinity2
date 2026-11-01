@@ -2,6 +2,8 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <!-- Workspace frames are srcdoc documents: no frame may navigate anywhere (a page could carry data out in the URL). -->
+    <meta http-equiv="Content-Security-Policy" content="frame-src 'none'" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Trinity</title>
   </head>
@@ -13,7 +15,7 @@
         <select class="persona-select" id="personaSelect" title="Switch persona"></select>
       </div>
       <div class="status" id="statusChips"></div>
-      <button class="ghost" id="settingsBtn" title="Settings">⚙</button>
+      <a class="ghost settings-link" id="settingsBtn" href="/settings.html" target="trinity-settings" title="Open settings">⚙ Settings</a>
     </header>
 
     <main class="panes" id="panes">
@@ -24,6 +26,7 @@
             <span class="mic-icon">🎙</span>
             <span class="mic-label" id="micLabel">Tap to talk</span>
           </button>
+          <div class="voice-state" id="voiceState"></div>
           <div class="listening" id="listening"></div>
           <form class="textbar" id="textForm">
             <input id="textInput" placeholder="…or type to Trinity" autocomplete="off" />
@@ -42,97 +45,25 @@
         <div class="feed" id="feed"></div>
       </section>
 
-      <!-- WORKSPACE -->
-      <section class="pane workspace">
+      <!-- WORKSPACE (live; can pop out into its own window) -->
+      <section class="pane workspace" id="workspacePane">
         <div class="pane-head">
           <h2 id="workspaceTitle">Workspace</h2>
-          <span class="ws-sub">what Trinity builds appears here</span>
+          <button class="ghost small" id="popoutBtn" title="Open the workspace in its own window">⧉ Pop out</button>
         </div>
-        <iframe id="workspace" title="workspace" sandbox="allow-scripts"></iframe>
+        <div class="workspace-host" id="workspaceHost"></div>
+        <div class="workspace-away" id="workspaceAway" hidden>
+          <div class="away-card">
+            <div class="away-icon">⧉</div>
+            <div class="away-text">The workspace is open in its own window.</div>
+            <div class="away-actions">
+              <button class="primary small" id="focusWindowBtn" type="button">Show it</button>
+              <button class="ghost small" id="dockBtn" type="button">Bring it back here</button>
+            </div>
+          </div>
+        </div>
       </section>
     </main>
-
-    <dialog id="settings" class="settings">
-      <form method="dialog" class="settings-inner">
-        <div class="settings-head">
-          <h2>Trinity settings</h2>
-          <button class="ghost" value="close">✕</button>
-        </div>
-
-        <h3>Persona</h3>
-        <label>Name <input id="pName" /></label>
-        <label>Who she is / how she sounds
-          <textarea id="pDesc" rows="5"></textarea>
-        </label>
-        <label>Voice preset <input id="pVoice" placeholder="NATF2" /></label>
-        <button class="primary" id="savePersona" type="button">Save persona</button>
-
-        <h3>Heartbeat — recurring tasks</h3>
-        <div id="taskList" class="task-list"></div>
-        <div class="task-add">
-          <input id="tTitle" placeholder="Title" />
-          <input id="tInstruction" placeholder="What should Trinity do?" />
-          <input id="tInterval" type="number" placeholder="secs" value="1800" />
-          <button class="primary" id="addTask" type="button">Add</button>
-        </div>
-
-        <h3>Skills library</h3>
-        <div id="skillList" class="task-list"></div>
-
-        <h3>Endpoints &amp; models</h3>
-        <p class="hint" style="text-align:left;margin:0 0 4px">
-          Overrides <code>.env</code> at runtime. Leave a key blank to keep what's in <code>.env</code>.
-        </p>
-        <div class="ep-grid">
-          <label>Real-time PersonaPlex URL (wss, patched server)
-            <input id="epPpUrl" placeholder="wss://…modal.run" />
-          </label>
-          <label>PersonaPlex voice
-            <select id="epVoice" class="ep-select"></select>
-          </label>
-          <label>Transcription endpoint (Deepgram, wss)
-            <input id="epDgUrl" placeholder="wss://api.deepgram.com/v1/listen?…" />
-          </label>
-          <label>Deepgram API key <span id="epDgKeySet" class="key-state"></span>
-            <input id="epDgKey" type="password" placeholder="leave blank to keep .env" />
-          </label>
-          <label>Jev (TypeSafe) URL
-            <input id="epJevUrl" placeholder="https://api.typesafe.ai" />
-          </label>
-          <label>Jev model
-            <input id="epJevModel" placeholder="jev-latest" />
-          </label>
-          <label>TypeSafe API key <span id="epJevKeySet" class="key-state"></span>
-            <input id="epJevKey" type="password" placeholder="leave blank to keep .env" />
-          </label>
-          <label>Mordiem URL
-            <input id="epMordiemUrl" placeholder="https://api.mordiem.com/api/v1" />
-          </label>
-          <label>Mordiem API key <span id="epMordiemKeySet" class="key-state"></span>
-            <input id="epMordiemKey" type="password" placeholder="leave blank to keep .env" />
-          </label>
-          <label>Brain model
-            <input id="epBrainModel" placeholder="claude-sonnet-5-5" />
-          </label>
-          <label>UI codegen model
-            <input id="epGenModel" placeholder="qwen3-coder-480b-a35b-instruct-turbo" />
-          </label>
-          <label>Reply model (fast, one sentence)
-            <input id="epReplyModel" placeholder="nvidia-nemotron-3-nano-30b-a3b" />
-          </label>
-          <label>Route every (ms)
-            <input id="epRouteEvery" type="number" placeholder="400" />
-          </label>
-          <label>Min confidence (0–1)
-            <input id="epMinConf" type="number" step="0.05" placeholder="0.7" />
-          </label>
-          <label>Filler after (ms)
-            <input id="epFiller" type="number" placeholder="500" />
-          </label>
-        </div>
-        <button class="primary" id="saveEndpoints" type="button">Save endpoints</button>
-      </form>
-    </dialog>
 
     <script type="module" src="/src/app.ts"></script>
   </body>

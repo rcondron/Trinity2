@@ -11,6 +11,9 @@ data/
 # Forged-but-unapproved skill drafts
 server/skills/pending/
 
+# Local template preview harnesses (generated; large sample art)
+web/dev/
+
 # OS
 .DS_Store
 Thumbs.db

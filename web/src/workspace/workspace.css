@@ -1,0 +1,865 @@
+/*
+ * Trinity workspace — renderer chrome + overlay.
+ * Shared by the standalone workspace window (chrome on) and the main app's pane (chrome off).
+ * Everything is scoped under .tw-root / .tw-* so it never collides with the app's styles.
+ */
+
+.tw-root {
+  --tw-bg: #0c0c14;
+  --tw-stage: #0f0f18;
+  --tw-panel: #14141f;
+  --tw-panel-2: #1a1a28;
+  --tw-line: #262636;
+  --tw-line-2: #34344a;
+  --tw-text: #e9e9f2;
+  --tw-muted: #9494b4;
+  --tw-accent: #8b5cf6;
+  --tw-accent-2: #22d3ee;
+  --tw-ok: #34d399;
+  --tw-warn: #fbbf24;
+  --tw-err: #f87171;
+  --tw-glass: rgba(17, 17, 28, 0.8);
+  --tw-glass-line: rgba(255, 255, 255, 0.08);
+  --tw-shadow: 0 12px 32px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.3);
+  --tw-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --tw-bar-h: 48px;
+
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  isolation: isolate;
+  container: tw / inline-size;
+  color-scheme: dark;
+  background: var(--tw-bg);
+  color: var(--tw-text);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.tw-root *,
+.tw-root *::before,
+.tw-root *::after {
+  box-sizing: border-box;
+}
+.tw-root [hidden] {
+  display: none !important;
+}
+
+/* ── Title bar (chrome) ─────────────────────────────────────────────────── */
+.tw-bar {
+  position: relative;
+  z-index: 10;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: var(--tw-bar-h);
+  padding: 0 10px 0 16px;
+  background: linear-gradient(180deg, rgba(25, 22, 40, 0.94), rgba(16, 16, 26, 0.94));
+  border-bottom: 1px solid var(--tw-line);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.02), 0 6px 18px rgba(0, 0, 0, 0.25);
+  backdrop-filter: blur(12px);
+  transition: margin-top 0.32s var(--tw-ease), opacity 0.24s ease;
+}
+.tw-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: 0 0 auto;
+  color: var(--tw-muted);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  user-select: none;
+}
+.tw-orb {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, var(--tw-accent-2), var(--tw-accent));
+  box-shadow: 0 0 12px rgba(139, 92, 246, 0.8);
+}
+.tw-root[data-conn="live"] .tw-orb {
+  animation: tw-breathe 4.5s ease-in-out infinite;
+}
+.tw-sep {
+  width: 1px;
+  height: 20px;
+  flex: 0 0 auto;
+  background: var(--tw-line-2);
+}
+.tw-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.tw-title {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--tw-text);
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+.tw-title.is-changed {
+  animation: tw-title-in 0.42s var(--tw-ease);
+}
+.tw-kind {
+  flex: 0 0 auto;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--tw-line-2);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--tw-muted);
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.tw-kind.is-custom {
+  color: #e9d5ff;
+  border-color: rgba(139, 92, 246, 0.55);
+  background: rgba(139, 92, 246, 0.15);
+  box-shadow: 0 0 14px rgba(139, 92, 246, 0.18);
+}
+.tw-kind.is-changed {
+  animation: tw-pop 0.5s var(--tw-ease);
+}
+.tw-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+/* Connection pill (bar) + floating dot (no chrome / focus mode). */
+.tw-conn,
+.tw-conn-float {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border-radius: 999px;
+  font-family: inherit;
+  font-weight: 650;
+  white-space: nowrap;
+  cursor: default;
+  transition: opacity 0.2s ease, background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+.tw-conn {
+  height: 28px;
+  margin-right: 4px;
+  padding: 0 11px 0 9px;
+  border: 1px solid var(--tw-line-2);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--tw-muted);
+  font-size: 11.5px;
+}
+.tw-dot {
+  position: relative;
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--tw-muted);
+}
+.tw-root[data-conn="live"] .tw-dot {
+  background: var(--tw-ok);
+  box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.16), 0 0 10px rgba(52, 211, 153, 0.55);
+}
+.tw-root[data-conn="connecting"] .tw-dot,
+.tw-root[data-conn="reconnecting"] .tw-dot {
+  background: var(--tw-warn);
+  animation: tw-pulse 1.1s ease-in-out infinite;
+}
+.tw-root[data-conn="offline"] .tw-dot {
+  background: var(--tw-err);
+  box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.16);
+}
+.tw-root:not([data-conn="live"]) .tw-conn {
+  cursor: pointer;
+  color: var(--tw-text);
+}
+.tw-root[data-conn="offline"] .tw-conn {
+  border-color: rgba(248, 113, 113, 0.4);
+}
+
+/* Icon buttons. */
+.tw-btn {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--tw-muted);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.tw-btn:hover {
+  color: var(--tw-text);
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--tw-line-2);
+}
+.tw-btn[aria-pressed="true"] {
+  color: var(--tw-accent-2);
+}
+.tw-btn svg {
+  width: 17px;
+  height: 17px;
+}
+.tw-root button:focus-visible {
+  outline: 2px solid var(--tw-accent);
+  outline-offset: 1px;
+}
+
+/* ── Stage + frames ─────────────────────────────────────────────────────── */
+.tw-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--tw-stage);
+}
+.tw-root .tw-frame {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  border: 0;
+  background: var(--tw-stage);
+  color-scheme: dark;
+  opacity: 1;
+  transform: none;
+  transition: opacity 0.28s ease, transform 0.36s var(--tw-ease);
+}
+.tw-root .tw-frame.is-pending {
+  opacity: 0;
+  transform: scale(1.012);
+  pointer-events: none;
+}
+.tw-root .tw-frame.is-leaving {
+  pointer-events: none;
+}
+
+/* ── Overlay (outside the frame) ────────────────────────────────────────── */
+.tw-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
+/* Floating controls, top-right: connection dot (+ exit focus in the window). */
+.tw-float {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: auto;
+}
+.tw-conn-float {
+  justify-content: center;
+  height: 24px;
+  min-width: 24px;
+  padding: 0 10px 0 8px;
+  border: 1px solid var(--tw-glass-line);
+  background: var(--tw-glass);
+  color: var(--tw-text);
+  font-size: 11px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(10px);
+  opacity: 0.8;
+}
+.tw-conn-float:hover {
+  opacity: 1;
+}
+.tw-root[data-conn="live"] .tw-conn-float {
+  width: 24px;
+  padding: 0;
+}
+.tw-root[data-conn="live"] .tw-conn-float .tw-conn-text {
+  display: none;
+}
+.tw-root:not([data-conn="live"]) .tw-conn-float {
+  opacity: 1;
+  cursor: pointer;
+}
+.tw-has-chrome:not(.tw-focus) .tw-float {
+  display: none;
+}
+.tw-exit-focus {
+  display: none;
+  width: 28px;
+  height: 28px;
+  border-color: var(--tw-glass-line);
+  background: var(--tw-glass);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  opacity: 0.55;
+}
+.tw-exit-focus:hover {
+  opacity: 1;
+}
+.tw-focus .tw-exit-focus {
+  display: grid;
+}
+
+/* Activity chips, bottom-left — one per busy item, spinner → check when done. */
+.tw-activity {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  max-width: min(440px, calc(100% - 24px));
+}
+.tw-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  max-width: 100%;
+  padding: 7px 14px 7px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--tw-glass-line);
+  background: var(--tw-glass);
+  box-shadow: var(--tw-shadow);
+  color: var(--tw-text);
+  font-size: 12.5px;
+  font-weight: 550;
+  backdrop-filter: blur(12px);
+  animation: tw-chip-in 0.32s var(--tw-ease) both;
+  transition: border-color 0.25s ease;
+}
+.tw-chip-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.tw-spin {
+  position: relative;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.14);
+  border-top-color: var(--tw-accent-2);
+  border-right-color: var(--tw-accent);
+  animation: tw-spin 0.75s linear infinite;
+}
+.tw-chip.is-done {
+  border-color: rgba(52, 211, 153, 0.4);
+}
+.tw-chip.is-done .tw-spin {
+  animation: tw-pop 0.4s var(--tw-ease);
+  border-color: var(--tw-ok);
+  background: var(--tw-ok);
+}
+.tw-chip.is-done .tw-spin::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 0.5px;
+  width: 4px;
+  height: 7px;
+  border: solid #06281b;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.tw-chip.is-leaving {
+  animation: tw-chip-out 0.26s ease forwards;
+}
+
+/* Toasts, bottom-right — stacked, auto-dismissed, newest nearest the corner. */
+.tw-toasts {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: min(400px, calc(100% - 24px));
+}
+.tw-toast {
+  --tone: var(--tw-accent-2);
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 100%;
+  padding: 10px 15px 10px 11px;
+  border-radius: 12px;
+  border: 1px solid var(--tw-glass-line);
+  background: var(--tw-glass);
+  box-shadow: var(--tw-shadow), inset 3px 0 0 var(--tone);
+  color: var(--tw-text);
+  font-size: 13.5px;
+  line-height: 1.4;
+  backdrop-filter: blur(12px);
+  pointer-events: auto;
+  cursor: pointer;
+  animation: tw-toast-in 0.34s var(--tw-ease) both;
+}
+.tw-toast.tw-tone-success {
+  --tone: var(--tw-ok);
+}
+.tw-toast.tw-tone-warn {
+  --tone: var(--tw-warn);
+}
+.tw-toast.tw-tone-error {
+  --tone: var(--tw-err);
+}
+.tw-toast-icon {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  margin-top: 1px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--tone) 20%, transparent);
+  color: var(--tone);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+.tw-toast-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.tw-toast.is-bumped {
+  animation: tw-bump 0.36s ease;
+}
+.tw-toast.is-leaving {
+  animation: tw-toast-out 0.24s ease forwards;
+  pointer-events: none;
+}
+
+/* Render-error notice, top-center. */
+.tw-notice {
+  position: absolute;
+  top: 12px;
+  left: 0;
+  right: 0;
+  width: fit-content;
+  max-width: min(680px, calc(100% - 110px));
+  margin: 0 auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 8px 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(248, 113, 113, 0.42);
+  background: rgba(42, 17, 24, 0.93);
+  box-shadow: var(--tw-shadow);
+  color: #fde4e4;
+  font-size: 13px;
+  backdrop-filter: blur(12px);
+  pointer-events: auto;
+  animation: tw-notice-in 0.32s var(--tw-ease) both;
+}
+.tw-notice.is-warn {
+  border-color: rgba(251, 191, 36, 0.42);
+  background: rgba(40, 32, 13, 0.93);
+  color: #fef3c7;
+}
+.tw-notice-icon {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  margin-top: 1px;
+  border-radius: 50%;
+  background: rgba(248, 113, 113, 0.22);
+  color: var(--tw-err);
+  font-size: 12px;
+  font-weight: 800;
+}
+.tw-notice.is-warn .tw-notice-icon {
+  background: rgba(251, 191, 36, 0.2);
+  color: var(--tw-warn);
+}
+.tw-notice-body {
+  min-width: 0;
+}
+.tw-notice-title {
+  display: block;
+  font-weight: 650;
+}
+.tw-notice-msg {
+  display: -webkit-box;
+  margin-top: 3px;
+  overflow: hidden;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+  color: rgba(255, 255, 255, 0.72);
+  font: 12px/1.45 ui-monospace, "Cascadia Code", Consolas, Menlo, monospace;
+}
+.tw-notice-close {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  opacity: 0.7;
+  cursor: pointer;
+}
+.tw-notice-close:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.08);
+}
+.tw-notice-close svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Boot screen until the first snapshot arrives (appears only if connecting takes a moment). */
+.tw-boot {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: var(--tw-stage);
+  transition: opacity 0.3s ease;
+}
+.tw-boot.is-gone {
+  opacity: 0;
+}
+.tw-boot-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  color: var(--tw-muted);
+  font-size: 13px;
+  opacity: 0;
+  animation: tw-fade-in 0.4s ease 0.35s forwards;
+}
+.tw-boot .tw-spin {
+  width: 22px;
+  height: 22px;
+  border-width: 2.5px;
+}
+
+/* ── Focus mode: the bar tucks away; hover the top edge to peek ─────────── */
+.tw-peek-zone {
+  display: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 10px;
+  z-index: 11;
+}
+.tw-root.tw-focus .tw-peek-zone {
+  display: block;
+}
+.tw-root.tw-focus .tw-bar {
+  margin-top: calc(-1 * var(--tw-bar-h));
+  opacity: 0;
+  pointer-events: none;
+}
+.tw-root.tw-focus.tw-peek .tw-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  margin-top: 0;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* "Look here" glow (e.g. when the main app asks to focus this window). */
+.tw-root.tw-attention::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 2px rgba(139, 92, 246, 0.9), inset 0 0 48px rgba(139, 92, 246, 0.35);
+  animation: tw-attention 1.3s ease forwards;
+}
+
+/* ── Narrow panes ───────────────────────────────────────────────────────── */
+@container tw (max-width: 560px) {
+  .tw-brand-name,
+  .tw-sep,
+  .tw-kind {
+    display: none;
+  }
+  .tw-bar {
+    gap: 10px;
+    padding-left: 12px;
+  }
+  .tw-conn .tw-conn-text {
+    display: none;
+  }
+  .tw-conn {
+    padding: 0 9px;
+  }
+  .tw-activity {
+    top: 10px;
+    bottom: auto;
+    left: 10px;
+    max-width: calc(100% - 64px);
+  }
+  .tw-toasts {
+    right: 10px;
+    bottom: 10px;
+    left: 10px;
+    max-width: none;
+    align-items: stretch;
+  }
+  .tw-notice {
+    max-width: calc(100% - 20px);
+    top: 44px;
+  }
+}
+
+/* ── Motion ─────────────────────────────────────────────────────────────── */
+@keyframes tw-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes tw-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.8);
+  }
+}
+@keyframes tw-breathe {
+  0%,
+  100% {
+    box-shadow: 0 0 10px rgba(139, 92, 246, 0.75);
+  }
+  50% {
+    box-shadow: 0 0 18px rgba(34, 211, 238, 0.75);
+  }
+}
+@keyframes tw-chip-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes tw-chip-out {
+  to {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+}
+@keyframes tw-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes tw-toast-out {
+  to {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+}
+@keyframes tw-bump {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.04);
+  }
+}
+@keyframes tw-pop {
+  0% {
+    transform: scale(0.85);
+  }
+  60% {
+    transform: scale(1.08);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+@keyframes tw-title-in {
+  from {
+    opacity: 0.15;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes tw-notice-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes tw-fade-in {
+  to {
+    opacity: 1;
+  }
+}
+@keyframes tw-attention {
+  0% {
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tw-root *,
+  .tw-root *::before,
+  .tw-root *::after,
+  .tw-root::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+  .tw-root .tw-spin {
+    animation-duration: 1.6s !important;
+    animation-iteration-count: infinite !important;
+  }
+  .tw-root .tw-frame {
+    transition: opacity 0.14s linear !important;
+  }
+  .tw-root .tw-frame.is-pending {
+    transform: none;
+  }
+}
+
+/* ── Standalone window page (workspace.html) ────────────────────────────── */
+html.tw-page,
+html.tw-page body {
+  height: 100%;
+  margin: 0;
+  background: #0c0c14;
+}
+html.tw-page body {
+  overflow: hidden;
+}
+.tw-page-root {
+  position: fixed;
+  inset: 0;
+  display: flex;
+}
+
+/* "Docked" card shown when the window couldn't close itself (opened by hand). */
+.tw-docked {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(8, 8, 14, 0.78);
+  backdrop-filter: blur(6px);
+  color: #e9e9f2;
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  animation: tw-fade-in-full 0.3s ease both;
+}
+.tw-docked-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-width: 380px;
+  padding: 28px 28px 22px;
+  border-radius: 16px;
+  border: 1px solid #262636;
+  background: #14141f;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  text-align: center;
+}
+.tw-docked-card h2 {
+  margin: 6px 0 0;
+  font-size: 17px;
+}
+.tw-docked-card p {
+  margin: 0;
+  color: #9494b4;
+}
+.tw-docked-orb {
+  display: block;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, #22d3ee, #8b5cf6);
+  box-shadow: 0 0 22px rgba(139, 92, 246, 0.8);
+}
+.tw-docked-actions {
+  margin-top: 8px;
+}
+.tw-docked-keep {
+  padding: 8px 16px;
+  border: 1px solid #34344a;
+  border-radius: 9px;
+  background: transparent;
+  color: #e9e9f2;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.tw-docked-keep:hover {
+  border-color: #8b5cf6;
+}
+@keyframes tw-fade-in-full {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}

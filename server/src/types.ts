@@ -1,4 +1,5 @@
 // Shared types for the Trinity engine.
+import type { MemoryStore } from "./db/memory.js";
 
 export type Speaker = "user" | "trinity" | "system";
 
@@ -6,10 +7,18 @@ export type Speaker = "user" | "trinity" | "system";
 export interface Persona {
   id: string;
   name: string;
-  /** The prompt describing character, role, tone — fed to PersonaPlex + brain. */
+  /** The full personality prompt — character, role, tone — fed to the brain and reply writer. */
   description: string;
-  /** Reference to a voice prompt (fal.ai voice id or a path to a reference clip). */
+  /**
+   * Short prompt (≤ ~160 chars) that conditions the PersonaPlex voice model. Kept separate
+   * from `description` because every prompt token costs a model step at connect time
+   * (measured: 42 chars → 4.5s handshake, 520 chars → 9.4s).
+   */
+  voicePrompt: string;
+  /** Voice: a built-in PersonaPlex preset ("NATF2") or a custom sample ("custom:<slug>"). */
   voice: string;
+  /** Extra tool groups this persona can use, e.g. ["game"] for the Game Master. */
+  toolsets: string[];
   /** Free-form traits, surfaced into the system prompt and used by routing. */
   traits: Record<string, string>;
   updatedAt: number;
@@ -21,6 +30,12 @@ export interface TranscriptTurn {
   text: string;
   /** True while PersonaPlex is still streaming this turn's text. */
   partial?: boolean;
+  /** Said aloud, in full, in the live call (that tab shows it from the call's own transcript). */
+  voiced?: boolean;
+  /** Said unprompted: a due reminder, a scheduled task's result, a finished background job. */
+  proactive?: boolean;
+  /** The caller cut it off while the live call was saying it (talked over it, or ended the turn): shown, never read out again. */
+  cut?: boolean;
   ts: number;
 }
 
@@ -46,6 +61,8 @@ export interface HeartbeatTask {
   nextRunAt: number;
   lastRunAt: number | null;
   enabled: boolean;
+  /** A one-time reminder: it runs once (at nextRunAt), then stays as a finished item (enabled = false). */
+  once?: boolean;
 }
 
 /**
@@ -67,28 +84,67 @@ export interface ToolContext {
   persona: Persona;
   recentTranscript: TranscriptTurn[];
   emit: (event: ServerEvent) => void;
+  /** The caller's words that triggered the tool (the whole sentence when it fired at sentence end). */
+  utterance: string;
+  /** The memory store (remember / recall and any tool that personalizes). */
+  memory: MemoryStore;
+  /** Situation summary from the context providers (persona, active game, …). */
+  situation: string;
+}
+
+export interface ToolArgSpec {
+  type: string;
+  description: string;
+  required?: boolean;
+  /** value → label. Jev picks the argument from these (a second choice question, as in the reference). */
+  options?: Record<string, string>;
 }
 
 export interface Tool {
   name: string;
+  /** Doubles as the Jev choice label: one crisp sentence saying when to pick this tool. */
   description: string;
-  /** JSON-schema-ish description of args, used to prompt Jev and for validation.
-   *  `options` (value→label) lets the live router have Jev pick the argument from
-   *  a fixed set; without it, free-text args are filled from the final sentence. */
-  input: Record<string, { type: string; description: string; required?: boolean; options?: Record<string, string> }>;
+  /** JSON-schema-ish description of args, used to prompt Jev and for validation. */
+  input: Record<string, ToolArgSpec>;
   run: (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>;
   /** Skills loaded from the library mark themselves so we can list provenance. */
-  source?: "builtin" | "skill";
+  source?: "builtin" | "skill" | "forged";
+  /** Only offered to personas whose `toolsets` include this (e.g. "game"). */
+  toolset?: string;
+  /** Tool names hidden while this tool is offered (e.g. game_roll supersedes roll_dice). */
+  supersedes?: string[];
+  /** Dynamic options for an argument (e.g. current player names); merged over static options. */
+  options?: (arg: string, ctx: { persona: Persona }) => Record<string, string> | undefined;
+  /**
+   * Whether the tool makes sense right now (e.g. game tools gated by game phase). Hidden
+   * tools are left out of Jev's choices entirely — fewer, sharper choices route better.
+   */
+  available?: (ctx: { persona: Persona }) => boolean;
+  /**
+   * How free-text (non-option) arguments are filled — this also decides WHEN the tool fires:
+   *  - "llm"  (default): the fast model extracts them from the finished sentence → fires at sentence end.
+   *  - "raw":  the tool reads ctx.utterance itself → fires at sentence end.
+   *  - "none": no free-text arguments → fires mid-sentence as soon as Jev is confident (like the
+   *            reference's CHANGE_COLOR / START_TIMER).
+   */
+  argMode?: "llm" | "raw" | "none";
 }
 
 export interface ToolResult {
   ok: boolean;
-  /** Spoken summary Trinity can say aloud. */
+  /** What happened, in words — the reply writer turns it into one spoken line. */
   say?: string;
-  /** HTML/markup to render into the workspace pane. */
+  /**
+   * A line to speak VERBATIM instead of a reply-writer paraphrase — e.g. grounded
+   * narration or an answer read from the game state.
+   */
+  speak?: string;
+  /** HTML fragment to show in the workspace (freeform tools). */
   render?: string;
   data?: unknown;
   error?: string;
+  /** The work continues in the background (a build streaming in, or queued behind one): the reply must not claim it's done. */
+  inProgress?: "started" | "queued";
 }
 
 // ─── WebSocket protocol ──────────────────────────────────────────────────────
@@ -102,7 +158,7 @@ export type ClientEvent =
   | { type: "stop" };
 
 export type ServerEvent =
-  | { type: "ready"; persona: Persona; services: ServiceStatus }
+  | { type: "ready"; persona: Persona; services: ServiceStatus; profileName: string | null } // the caller's name: the voice hears it at connect
   | { type: "audio"; chunk: string /* base64 PCM from PersonaPlex */ }
   | { type: "transcript"; turn: TranscriptTurn }
   | { type: "route"; decision: RouteDecision }
@@ -111,6 +167,7 @@ export type ServerEvent =
   | { type: "workspace"; html: string; title?: string }
   | { type: "memory"; doc: MemoryDoc; op: "write" | "recall" }
   | { type: "heartbeat"; task: HeartbeatTask; fired: boolean }
+  | { type: "wake" } // a reminder or task is (about to be) due and no voice call is up anywhere: one app tab warms one
   | { type: "skill_forged"; name: string; description: string; source: string }
   | { type: "status"; text: string }
   | { type: "error"; text: string };

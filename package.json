@@ -5,7 +5,9 @@
   "type": "module",
   "description": "Trinity — a real-time voice agent engine. Talk to her; she creates things as you speak.",
   "scripts": {
+    "predev": "node scripts/free-ports.mjs --web",
     "dev": "concurrently -k -n engine,web -c cyan,magenta \"npm:dev:engine\" \"npm:dev:web\"",
+    "prestart": "node scripts/free-ports.mjs",
     "dev:engine": "tsx watch server/src/index.ts",
     "dev:web": "vite",
     "start": "tsx server/src/index.ts",
