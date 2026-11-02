@@ -127,10 +127,12 @@ export function getImageJob(id: string): ImageJob | undefined {
 export function requestImage(
   prompt: string,
   kind: ImageKind,
-  opts: { style?: string } = {},
+  opts: { style?: string; model?: string } = {},
 ): { id: string; done: Promise<ImageJob> } {
+  const { imageModel } = getEndpoints();
+  const model = opts.model?.trim() || imageModel;
   const full = [opts.style?.trim(), prompt.trim().slice(0, 600), KIND_HINTS[kind]].filter(Boolean).join(". ");
-  const key = crypto.createHash("sha1").update(`${kind}\n${full}`).digest("hex");
+  const key = crypto.createHash("sha1").update(`${kind}\n${model}\n${full}`).digest("hex");
   const cached = byPrompt.get(key);
   if (cached) return cached;
 
@@ -143,7 +145,7 @@ export function requestImage(
     if (!takeBudget()) return fail(job, key, `daily image budget of ${DAILY_BUDGET} reached`);
     const started = Date.now();
     try {
-      const png = await generate(full, KIND_SIZE[kind], KIND_PRIORITY[kind]);
+      const png = await generate(full, KIND_SIZE[kind], KIND_PRIORITY[kind], model);
       fs.mkdirSync(IMAGES_DIR, { recursive: true });
       const dest = imagePath(id);
       const tmp = `${dest}.${process.pid}.tmp`;
@@ -177,12 +179,12 @@ function fail(job: ImageJob, key: string, message: string): ImageJob {
 
 type HttpError = Error & { status?: number; retryAfterMs?: number };
 
-async function attempt(prompt: string, size: string): Promise<Buffer<ArrayBuffer>> {
-  const { mordiemUrl, mordiemKey, imageModel } = getEndpoints();
+async function attempt(prompt: string, size: string, model: string): Promise<Buffer<ArrayBuffer>> {
+  const { mordiemUrl, mordiemKey } = getEndpoints();
   const res = await fetch(`${mordiemUrl}/images/generations`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${mordiemKey}` },
-    body: JSON.stringify({ model: imageModel, prompt, n: 1, size, response_format: "b64_json" }),
+    body: JSON.stringify({ model, prompt, n: 1, size, response_format: "b64_json" }),
     signal: AbortSignal.timeout(ATTEMPT_TIMEOUT_MS),
   });
   if (!res.ok) {
@@ -204,13 +206,13 @@ async function attempt(prompt: string, size: string): Promise<Buffer<ArrayBuffer
 }
 
 /** Up to 3 attempts; the slot is released between attempts so a slow retry never blocks the queue. */
-async function generate(prompt: string, size: string, priority: number): Promise<Buffer<ArrayBuffer>> {
+async function generate(prompt: string, size: string, priority: number, model: string): Promise<Buffer<ArrayBuffer>> {
   let sz = size;
   let lastErr: HttpError | null = null;
   for (let i = 0; i < MAX_ATTEMPTS; i++) {
     await acquire(priority);
     try {
-      return await attempt(prompt, sz);
+      return await attempt(prompt, sz, model);
     } catch (err) {
       lastErr = err as HttpError;
     } finally {

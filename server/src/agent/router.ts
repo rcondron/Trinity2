@@ -211,9 +211,38 @@ function toolRules(tools: Tool[]): string[] {
     rules.push("A picture, image, photo, illustration, painting or artwork of something is make_image, even when the caller says 'draw' or 'make'; a chart, diagram, page or app is build_ui.");
   if (has("build_ui") && has("clear_workspace"))
     rules.push("Clearing, closing, resetting or blanking the screen or workspace is clear_workspace; changing what's on it is build_ui.");
-  if (["build_ui", "clear_workspace", "make_image", "make_audio"].some(has))
+  if (has("edit_html") && has("build_ui"))
     rules.push(
-      "The workspace is the live page beside the caller — what they call the screen, the board or the window. Asking to build, change, show something on, picture, or clear it is an action, never small talk.",
+      "Tweaking something already on the board (make a picture smaller/larger, change img/svg/canvas/widget HTML or styles) is edit_html; creating a new interactive widget or rebuilding one from scratch is build_ui.",
+    );
+  if (has("edit_html") && has("make_image"))
+    rules.push(
+      "Resizing or restyling an existing picture on the board is edit_html; generating a brand-new picture is make_image.",
+    );
+  if (has("remove_card") || has("move_card"))
+    rules.push(
+      "Floating cards on the board are numbered and tagged by content: removing one is remove_card, moving one is move_card (by number or by what it shows — 'the tiger', 'under the panda'), wiping every card / the whole screen is clear_workspace. A text sticky/note is make_text; asking for several pictures (a panda and a tiger) is still make_image (one card each).",
+    );
+  if (has("show_card")) {
+    if (has("ask_brain"))
+      rules.push(
+        "A quick question with a short answer (a number, a date, yes/no, a calculation, a one-line fact) is ask_brain, spoken only; a request with substance to look at — a recipe, the news, who someone is, what a place or thing is like, how to do something, a comparison, a plan or a list — is show_card, which also speaks a summary.",
+      );
+    if (has("web_search"))
+      rules.push(
+        "'Search for / look up / google X' to hear what's out there is web_search; news, headlines, the weather, scores or any looked-up information the caller wants laid out is show_card.",
+      );
+    if (has("build_ui"))
+      rules.push("Information to read (a recipe, a profile, a guide, the news) is show_card; an interactive tool, app, game, chart or form to use is build_ui.");
+    if (has("make_image")) rules.push("A picture alone is make_image; information about something is show_card (it adds its own picture).");
+    if (has("make_text"))
+      rules.push("A note in the caller's own words is make_text; researched or written-up information — even 'put the muffin recipe on the board' — is show_card.");
+  }
+  if (has("set_speech_rate"))
+    rules.push("Asking Trinity to talk slower, faster, or at normal speed is set_speech_rate — not small talk.");
+  if (["build_ui", "clear_workspace", "make_image", "make_audio", "make_video", "make_text", "edit_html", "show_card"].some(has))
+    rules.push(
+      "The workspace is the live page beside the caller — what they call the screen, the board or the window. Asking to build, change, show something on, add a card, picture, or clear it is an action, never small talk.",
     );
   return rules;
 }
@@ -267,6 +296,9 @@ export function jevRequest(input: RouteInput) {
   return { tools: prepared.tools.map((t) => t.name), body: buildJevBody(input, prepared, ctx) };
 }
 
+/** Screen ops the keyword heuristic may take when Jev abstains — clear/move/remove are unambiguous. */
+const HEURISTIC_OVERRIDE = /^(clear_workspace|remove_card|move_card|describe_workspace|edit_html|set_speech_rate)$/;
+
 export async function decide(input: RouteInput): Promise<Decision> {
   const started = Date.now();
   const ctx = contextFor(input.persona);
@@ -274,6 +306,7 @@ export async function decide(input: RouteInput): Promise<Decision> {
   if (!live.jev) return heuristic(input, prepared.tools, started);
 
   const ep = getEndpoints();
+  let jev: Decision;
   try {
     const res = await fetch(`${ep.typesafeUrl}/v1/systemone`, {
       method: "POST",
@@ -299,7 +332,7 @@ export async function decide(input: RouteInput): Promise<Decision> {
           options[arg] = { value: a.choice, confidence: a.confidence ?? 0 };
       }
     }
-    return {
+    jev = {
       action: known ? action : "NONE",
       confidence: known ? (answers.tool?.confidence ?? 0) : 0,
       tool,
@@ -308,8 +341,37 @@ export async function decide(input: RouteInput): Promise<Decision> {
       ms: Date.now() - started,
     };
   } catch (err) {
-    return { action: "NONE", confidence: 0, tool: null, options: {}, offered: [], ms: Date.now() - started, error: (err as Error).message };
+    jev = { action: "NONE", confidence: 0, tool: null, options: {}, offered: [], ms: Date.now() - started, error: (err as Error).message };
   }
+
+  // Jev often answers NONE for "clear the workspace" / "clear it" while a page is up. When the
+  // keyword heuristic is sure about a screen action, take that instead of letting the ask drop.
+  // Also: don't let a confident build_ui steal "make the picture smaller" / HTML tweaks.
+  // Never let board heuristics override a game_* pick — story verbs ("put the torch left",
+  // "get rid of the goblin") look like move/remove cards.
+  if (jev.action === "NONE" || jev.confidence < 0.5 || jev.error || jev.action === "build_ui") {
+    const h = heuristic(input, prepared.tools, started);
+    const jevIsGame = jev.action.startsWith("game_");
+    if (!jevIsGame && h.action !== "NONE" && h.confidence >= 0.8 && HEURISTIC_OVERRIDE.test(h.action)) {
+      if (jev.action === "build_ui" && h.action !== "edit_html") {
+        /* keep build_ui unless the heuristic is specifically an HTML tweak */
+      } else {
+        return { ...h, ms: Date.now() - started, error: jev.error };
+      }
+    }
+    // When Jev abstains or is unsure, promote a confident game-tool heuristic so setup and
+    // play still fire (board tooling used to drown these out).
+    if (
+      !jevIsGame &&
+      (jev.action === "NONE" || jev.confidence < 0.5 || jev.error) &&
+      h.action.startsWith("game_") &&
+      h.tool &&
+      h.confidence >= 0.7
+    ) {
+      return { ...h, ms: Date.now() - started, error: jev.error };
+    }
+  }
+  return jev;
 }
 
 // ─── Heuristic fallback (no Jev key) ─────────────────────────────────────────
@@ -341,11 +403,47 @@ const AUDIO = new RegExp(
   String.raw`\b(read (this|that|it|the following|me|the text) (aloud|out loud|back( to me)?)|read aloud|narrat(e|ion)|voice ?(over|note|memo)|text to speech|say (this|that) in (a|an|the|your) \w+ voice` +
     String.raw`|(record|${ASK_FOR.replace("|how about", "|record|how about")}(audio|recording|song|music|jingle|sound effects?))\b)`,
 );
-/** The screen cleared: "clear the workspace", "close that window", "wipe the screen", "reset the board". */
+/**
+ * The screen cleared: "clear the workspace", "clear workspace", "wipe the screen", "clear everything",
+ * "clear all the cards", "clear it/that" (when they mean the board). The old pattern required a
+ * determiner *or* no space before the noun, so "clear workspace" never matched.
+ */
 const CLEAR =
-  /\b(clear|close|reset|wipe|blank|empty|hide|erase|get rid of|take down|remove)\b( (out|up|down|off))?( (the|that|this|my|your|everything (on|from)|what's on|whats on) (the )?)?(workspace|screen|board|window|display|canvas)\b|\bstart (over|fresh|clean) (on|with) the (workspace|screen)\b/;
+  /\b(clear|close|reset|wipe|blank|empty|hide|erase|get rid of|take down|remove)(?:\s+(?:out|up|down|off))?(?:\s+(?:the|that|this|my|your))?(?:\s+everything(?:\s+(?:on|from)(?:\s+the)?)?)?(?:\s+the)?\s+(?:workspace|screen|board|window|display|canvas)\b|\b(?:clear|wipe|empty|reset|erase|delete|remove|dismiss)\s+(?:all\s+)?(?:(?:of\s+)?(?:the\s+)?)?(?:cards?|notes?)\b|\b(?:clear|wipe|reset|blank|empty)\s+(?:it|that|this|everything)\b|\bstart (?:over|fresh|clean) (?:on|with) the (?:workspace|screen)\b/;
+/**
+ * One floating card removed: "remove card 2", "delete the tiger", "get rid of card 1".
+ * Broad content forms are fine on the Trinity desk; the game-table heuristic skips these entirely
+ * so story talk ("get rid of the goblin") never becomes remove_card.
+ */
+const REMOVE_CARD =
+  /\b((remove|delete|dismiss|close|drop|trash|get rid of|take (down|away|off)|throw away) (card|note)s?\s*(number\s*)?\d+|(remove|delete|dismiss|drop) (card|note)s?\b|(remove|delete|get rid of) (the\s+)?\w+)/i;
+/**
+ * Move a card by number or content: "move card 2 left", "move the tiger under the panda".
+ * Skipped entirely while Game Master tools are offered (story "put the torch on the left").
+ */
+const MOVE_CARD =
+  /\b((move|put|place|shift|slide|drag|bring|send) (card|note)s?\s*(number\s*)?\d+|(move|put|place|bring|send) (the\s+)?\w+.*(top|bottom|left|right|center|middle|front|back|corner|under|below|above|beside|next to)|(move|put|place) (card|note)s?\b)/i;
+/** Talk slower / faster. */
+const SPEECH_RATE =
+  /\b((talk|speak|speaking)\s+(a\s+bit\s+|a\s+little\s+|much\s+|way\s+)?(slow(?:er)?|fast(?:er)?|quicker)|slow\s+down|speed\s+up|(slower|faster)\s+(please|please\b)?|(normal|default)\s+(speed|pace)|speak\s+at\s+normal)/i;
+/** A text sticky / note on the board (not a full page build). */
+const TEXT_CARD =
+  /\b((add|put|pin|stick|place|show|write)\b[^.?!]{0,40}?\b(text|note|sticky|memo|message)\b[^.?!]{0,30}?\b(on|to|in)?\s*(the\s+)?(workspace|board|screen|window)?|(add|put|pin)\b[^.?!]{0,20}?\b(to|on)\s+(the\s+)?(workspace|board)\b(?![^.?!]{0,40}\b(picture|image|photo|video|audio|app|page|chart)\b))/i;
+/**
+ * Information to lay out as a card: a recipe, the news, who someone is, what something is, how to do
+ * something, a comparison, a plan, a ranking… ("give me a blueberry muffin recipe", "what's in the news",
+ * "who was Marie Curie", "compare the iPhone and the Pixel") — not a question about the assistant or the caller.
+ */
+const CARD_INFO =
+  /\b(recipes?|ingredients|the news|today'?s news|headlines?|what('s| is) (happening|going on)|who (is|was|were) (?!you\b|i\b|we\b|this\b|that\b|it\b|my\b|your\b)|tell me (about|more about) (?!it\b|that\b|yourself|you\b|my\b|your\b)|facts about|information (on|about)|what('s| is| are) (a|an|the) (?!workspace|screen|board|window|time|date)|what('s| is| are) (?!the\b|a\b|an\b|it\b|that\b|this\b|your\b|my\b|our\b|up\b|on\b|in\b|for\b|wrong\b|new\b|going\b|happening\b|next\b|left\b|\d)[a-z][a-z'-]+(?: [a-z'-]+){0,3}\s*\??$|what does \w+ mean|explain (?!that again|yourself)|how (do|to|can|should) (i|you|we|one) (make|cook|bake|build|fix|install|set up|get|grow|clean|write|change)|compare|versus|\bvs\.?|difference between|which is better|top (\d+|ten|five|three)|best \d+|itinerary|workout (plan|routine)|meal plan|the weather|weather (in|for|today|tomorrow|this week)|forecast|what('s| is) the score|standings|who won)\b/;
 /** The screen asked about: "what's on the screen?", "what does the workspace show right now?". */
 const DESCRIBE = /\b(what('s| is|s)|what do(es)? (the|my) (workspace|screen|board|window) (show|have|display))\b[^.?!]{0,20}?\b(on|in) (the|my) (workspace|screen|board|window)\b|\bwhat do(es)? (the|my) (workspace|screen|board|window) (show|have|display)\b/;
+/**
+ * HTML / layout tweak of something already on the board: "make the picture smaller", "resize card 1",
+ * "change the svg fill", "tweak the canvas", "make the timer font bigger".
+ */
+const EDIT_HTML =
+  /\b(make|resize|scale|shrink|enlarge|tweak|adjust|edit|change|update)\b[^.?!]{0,50}\b(smaller|bigger|larger|tinier|wider|narrower|taller|shorter|half|percent|%|size)\b|\b(smaller|bigger|larger|tinier)\b[^.?!]{0,30}\b(picture|image|photo|card|timer|widget|video|svg|canvas)\b|\b(edit|tweak|adjust|change)\b[^.?!]{0,40}\b(html|svg|canvas|css|style|markup|element)s?\b|\b(make|set)\b[^.?!]{0,40}\b(img|image|picture|video|svg|canvas)\b[^.?!]{0,30}\b(width|height|size)\b/i;
 const EVERY = String.raw`every (day|morning|evening|night|week|hour)\b`;
 
 /** A time said after "remember to …": then it's a reminder to set ("remember to call mom at 5pm"), not a fact to keep. */
@@ -417,16 +515,23 @@ function heuristic(input: RouteInput, tools: Tool[], started: number): Decision 
   // While a game runs (its tools are offered), the caller's words are about the story: a question about a
   // hero's sheet is game_answer and what "I" or "we" do is game_narrate.
   const inGame = has("game_narrate") || has("game_answer");
-  if (has("game_new") && /\b(start|begin|run|set up|play)\b.*\b(game|campaign|adventure|one.?shot)\b/.test(t)) return pick("game_new");
+  // Any Game Master table tool in the offer set — board move/remove heuristics must not steal story verbs.
+  const atGameTable =
+    has("game_new") || has("game_begin") || has("game_add_player") || has("game_narrate") || has("game_configure");
+  // Begin before new: "let's start the adventure" during setup is game_begin, not a fresh game_new.
+  if (has("game_begin") && /\b(let'?s (begin|start)|ready to (begin|play)|start the adventure|that'?s everyone|we'?re ready)\b/.test(t))
+    return pick("game_begin", 0.85);
+  if (has("game_new") && /\b(start|begin|run|set up|play)\b.*\b(game|campaign|adventure|one.?shot)\b/.test(t)) return pick("game_new", 0.85);
   // ("What's my character's armor class?" asks about the sheet; "What's my character going to be? An elf…" makes one.)
   if (has("game_answer") && /\b(what('s| is| are)|how (much|many))\b/.test(t) && /\b(my character's|hp|hit points|armou?r|ac|gear|inventory|gold|stats?)\b/.test(t))
-    return pick("game_answer");
+    return pick("game_answer", 0.85);
   if (has("game_add_player") && /\b(my character|i('| a)m playing|i'll play|playing (a|an)|add (a )?(player|hero|character))\b/.test(t))
-    return pick("game_add_player");
-  if (has("game_roll") && /\broll\b/.test(t)) return pick("game_roll");
-  if (has("game_begin") && /\b(let'?s (begin|start)|ready to (begin|play)|start the adventure)\b/.test(t)) return pick("game_begin");
+    return pick("game_add_player", 0.85);
+  if (has("game_configure") && /\b(genre|setting|tone|campaign|fantasy|sci-?fi|horror|pirate|space|cyberpunk)\b/.test(t))
+    return pick("game_configure", 0.8);
+  if (has("game_roll") && /\broll\b/.test(t)) return pick("game_roll", 0.85);
   if (has("game_narrate") && !ONLINE.test(t) && /^((ok(ay)?|so|and|then|now|alright)\b[\s,]*)*(i|we)('(ll|m|re|ve|d))?\s+\w/.test(t))
-    return pick("game_narrate");
+    return pick("game_narrate", 0.85);
   // Memory, reminders, search and builds share verbs ("remind me to look it up", "build a tracker
   // for every day"): route by the intent the caller leads with — the pattern that matches earliest
   // wins, so a reminder that mentions a chart is still a reminder, and a build that mentions "every
@@ -457,13 +562,28 @@ function heuristic(input: RouteInput, tools: Tool[], started: number): Decision 
   const scheduleAt = at("schedule", SCHEDULE, withoutScene(HABIT));
   const memoryAt = Math.min(recallAt, rememberAt, scheduleAt);
   // A picture, clip or audio asked for by name beats the generic build verbs ("make me a picture of…"), and
-  // clearing the screen is its own request.
+  // clearing the screen is its own request. At the game table, skip card move/remove/edit heuristics so
+  // story verbs never become board ops (those tools are also hidden while a game is active).
   if (at("clear_workspace", CLEAR) < Infinity) return pick("clear_workspace", 0.8);
   if (at("describe_workspace", DESCRIBE) < Infinity) return pick("describe_workspace", 0.8);
+  if (at("set_speech_rate", SPEECH_RATE) < Infinity) return pick("set_speech_rate", 0.88);
+  if (!atGameTable) {
+    const removeAt = at("remove_card", REMOVE_CARD);
+    const moveAt = at("move_card", MOVE_CARD);
+    if (removeAt < Infinity && removeAt <= moveAt) return pick("remove_card", 0.85);
+    if (moveAt < Infinity) return pick("move_card", 0.85);
+    // Size / HTML tweaks of existing cards beat "make a picture" / "build a …" verbs.
+    const editHtmlAt = at("edit_html", EDIT_HTML);
+    if (editHtmlAt < Infinity) return pick("edit_html", 0.88);
+  }
+  // Information asked for by kind (a recipe, the news, who someone is…) is a content card — before the generic
+  // "give me / show me / put … on the board" verbs that would read as a picture, a note, a search or a build.
+  if (at("show_card", CARD_INFO) < Infinity && !IMAGE.test(t) && !VIDEO.test(t)) return pick("show_card", 0.82);
   const imageAt = at("make_image", IMAGE);
   const videoAt = at("make_video", VIDEO);
   const audioAt = at("make_audio", AUDIO);
-  const mediaAt = Math.min(imageAt, videoAt, audioAt);
+  const textAt = at("make_text", TEXT_CARD);
+  const mediaAt = Math.min(imageAt, videoAt, audioAt, textAt);
   const screenAt = Math.min(buildAt, mediaAt);
   if (searchAt < Math.min(memoryAt, skillAt, screenAt)) return pick("web_search", 0.8);
   if (memoryAt < Infinity && memoryAt <= Math.min(skillAt, screenAt)) {
@@ -472,12 +592,18 @@ function heuristic(input: RouteInput, tools: Tool[], started: number): Decision 
     return pick("remember", 0.7);
   }
   if (skillAt < Infinity) return pick("create_skill", 0.7);
-  if (mediaAt < Infinity) return pick(mediaAt === imageAt ? "make_image" : mediaAt === videoAt ? "make_video" : "make_audio");
+  if (mediaAt < Infinity) {
+    if (mediaAt === imageAt) return pick("make_image");
+    if (mediaAt === videoAt) return pick("make_video");
+    if (mediaAt === audioAt) return pick("make_audio");
+    return pick("make_text");
+  }
   if (buildAt < Infinity) return pick("build_ui");
   const words = new Set(t.split(/[^a-z0-9]+/).filter((w) => w.length > 2));
   for (const tool of tools) {
     if (inGame && tool.name === "web_search") continue; // "search the chest": no web words, no web search
-    if (/^(make_image|make_video|make_audio|clear_workspace|describe_workspace)$/.test(tool.name)) continue; // a video or picture mentioned isn't one asked for
+    if (/^(make_image|make_video|make_audio|make_text|show_card|clear_workspace|describe_workspace|remove_card|move_card|edit_html|set_speech_rate)$/.test(tool.name))
+      continue; // a video or picture mentioned isn't one asked for
     if (tool.name.split(/[_\s]+/).some((tok) => tok.length > 3 && words.has(tok))) return pick(tool.name, 0.7);
   }
   return pick("NONE", 0.6);

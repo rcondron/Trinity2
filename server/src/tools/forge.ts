@@ -1,9 +1,9 @@
 import { nanoid } from "nanoid";
 import { noteResult } from "../agent/act.js";
 import { extractArgs } from "../agent/extract.js";
+import { tell as tellLater } from "../agent/tell.js";
 import { jsonChat } from "../services/json-chat.js";
 import { forgeSkill, forgesInFlight, loadForged, type ForgedSkill, type ForgeOutcome } from "../services/skill-forge.js";
-import { announce, type Spoken } from "../services/voice-call.js";
 import { live } from "../settings.js";
 import { bg } from "../util/bg.js";
 import { workspace } from "../workspace/bus.js";
@@ -80,28 +80,9 @@ function failureLine(res: Extract<ForgeOutcome, { ok: false }>): string {
   return `I couldn't make that skill: ${res.reason}.`;
 }
 
-/** How news the call didn't say in full reaches the caller: every open app (index.ts hands this in). */
-let tellFallback: ((text: string, spoken: Spoken) => void) | null = null;
-export function setTellFallback(fn: (text: string, spoken: Spoken) => void): void {
-  tellFallback = fn;
-}
-
-/**
- * Say it in the live call; without one (or if it wasn't said in full) it's Trinity's line in every
- * open app — the call that asked may be gone by now (a reload, a persona switch) — or, with no
- * fallback set, in the asking channel.
- */
+/** A finished forge's news: said in the live call, else Trinity's line in every open app (agent/tell.ts). */
 function tell(ctx: ToolContext, text: string): void {
-  bg("create_skill", async () => {
-    const spoken = await announce(text);
-    if (spoken === "said") return;
-    if (tellFallback) tellFallback(text, spoken);
-    else
-      ctx.emit({
-        type: "transcript",
-        turn: { id: nanoid(8), speaker: "trinity", text, ts: Date.now(), proactive: true, ...(spoken === "cut" ? { cut: true } : {}) },
-      });
-  });
+  tellLater(ctx, text, "create_skill");
 }
 
 function conversation(ctx: ToolContext): string {

@@ -158,7 +158,8 @@ export type ClientEvent =
   | { type: "stop" };
 
 export type ServerEvent =
-  | { type: "ready"; persona: Persona; services: ServiceStatus; profileName: string | null } // the caller's name: the voice hears it at connect
+  | { type: "ready"; persona: Persona; services: ServiceStatus; profileName: string | null; speechRate?: number }
+  | { type: "speech_rate"; rate: number }
   | { type: "audio"; chunk: string /* base64 PCM from PersonaPlex */ }
   | { type: "transcript"; turn: TranscriptTurn }
   | { type: "route"; decision: RouteDecision }

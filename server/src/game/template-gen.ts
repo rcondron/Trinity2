@@ -212,7 +212,7 @@ REQUIRED SECTIONS AND BEHAVIOR
 1. Header bar: the title (large, display treatment, with the ornament), genre and tone chips, a phase badge (SETUP / PLAYING) plus "Round N" while playing, the title art (state.titleImage) as a thumbnail or banner, and state.busy as small pills with a spinner.
 2. Setup card, ONLY while state.phase === "setup": a prominent "Setting up your adventure" card with the checklist from state.setup.steps (✓ done, ○ to do) and a highlighted "Next:" line with state.setup.next. Hidden while playing.
 3. Party (title = state.theme.labels.party): one card per player — portrait (<img> when ready, shimmer skeleton when pending, initials monogram otherwise), name, race · class · level, an HP bar (width = hp / maxHp, color shifting good → accent → danger as it falls, animated), an AC badge, six stat chips with modifiers (+2 / −1), conditions as tags, gold and XP, inventory chips (item names from state.items, colored by rarity). Highlight state.activePlayerId. A player with pending: true is a placeholder card ("A new hero approaches…" with shimmer).
-4. Scene (labels.scene): large 16:9 scene art (shimmer while pending), the scene title, and the description as read-aloud text in an italic storybook style. A graceful empty state when scene is null.
+4. Scene (labels.scene): scene art in a FIXED-HEIGHT frame — e.g. height:clamp(140px,26vh,240px); width:100%; object-fit:cover (shimmer while pending). NEVER use unconstrained aspect-ratio:16/9 on a full-width image: it grows with the column and pushes the log off-screen. Then the scene title and description as read-aloud italic text. A graceful empty state when scene is null.
 5. Log (labels.log): newest first, the latest ~40 entries, an icon per kind (🎲 roll — emphasize the numbers, ⚔ combat, 💰 loot, 🧝 party, 📜 narration, ⚙ system).
 6. Last roll: a big total that animates (pop / tumble) when lastRoll.id differs from prev?.lastRoll?.id; notation, the individual dice, modifier, label and who rolled; celebrate a natural 20 and mourn a natural 1 on single d20 rolls.
 7. NPCs (labels.npcs): portrait thumb, name, role, attitude color (friendly = good, hostile = danger, neutral = muted, unknown = accent2).
@@ -220,7 +220,7 @@ REQUIRED SECTIONS AND BEHAVIOR
 9. Map (labels.map): a <canvas> sized to its container × devicePixelRatio; draw the connection lines, the nodes (visited = filled, unvisited = hollow and dim), a glowing current location (state.currentLocationId) and the labels; redraw on every render and on resize. An empty-state message when there are no locations.
 
 LAYOUT AND LOOK
-- Target a 1280×860 window and degrade gracefully down to ~700px wide (stack the columns) without horizontal overflow. Suggested: the header across the top, then three columns — party on the left, scene + log in the center (widest), last roll / NPCs / items / map on the right. Let columns scroll on their own when content is long; at 1280×860 the page itself shouldn't need to scroll.
+- Target a 1280×860 window and degrade gracefully down to ~700px wide (stack the columns) without horizontal overflow. Suggested: the header across the top, then three columns — party on the left, scene + log in the center (widest), last roll / NPCs / items / map on the right. Let columns scroll on their own when content is long; at 1280×860 the page itself shouldn't need to scroll. Keep #app height-bound to the viewport (height:100%; overflow:hidden; flex column with min-height:0 on columns) so images never expand the page.
 - Make it unmistakably "${genre}": use the "${t.texture}" texture as a CSS-only background (gradients and patterns, no images), the theme's font stack, the ornament in section headers, and genre details — e.g. parchment edges and wax-seal badges for fantasy, HUD corner brackets and scanlines for sci-fi, neon glow for cyberpunk, wood grain and brass for westerns or pirates, grain and vignette for horror.
 - Readable from across a table: clear hierarchy, generous spacing, strong contrast, a consistent card system with subtle depth. Tasteful motion: fade/slide-in for new entities (diff ids against prev to add an "is-new" class) and smooth HP bars; put animations inside @media (prefers-reduced-motion: no-preference).
 - Long names and text wrap or ellipsize. Handle 0–8 players, 0–30 items, 0–15 NPCs, 0–20 locations and up to 200 log entries.
@@ -287,6 +287,10 @@ export function validateTemplate(src: string): TemplateCheck {
   for (const [re, what] of BANNED) if (re.test(src)) return { ok: false, reason: `uses ${what}` };
   if (!/trinity\.esc|\besc\s*\(/.test(src)) return { ok: false, reason: "doesn't escape state text with trinity.esc" };
   if (!/\.players\b|\[["']players["']\]/.test(src)) return { ok: false, reason: "doesn't render state.players" };
+  // Full-width 16:9 scene art expands with the column and shoves the rest of the board off-screen.
+  if (/\.(?:scene-art|art)\s*\{[^}]*aspect-ratio\s*:\s*16\s*\/\s*9/i.test(src)) {
+    return { ok: false, reason: "scene art uses unconstrained aspect-ratio:16/9 (must use a fixed max-height frame)" };
+  }
   const scripts = [...src.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)];
   if (!scripts.length) return { ok: false, reason: "no <script> block" };
   for (const m of scripts) {

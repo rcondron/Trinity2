@@ -132,6 +132,11 @@ export class Orchestrator {
     const recallP = this.recall(userText).catch(() => [] as MemoryDoc[]);
     const d = await decide({ persona, conversation, done: this.done });
     emit({ type: "route", decision: toRouteDecision(d) });
+    workspace.agent("decision", {
+      tool: d.action,
+      text: userText,
+      confidence: d.confidence,
+    });
 
     const ctx = contextFor(persona);
     let outcome: Outcome | null = null;
@@ -163,6 +168,7 @@ export class Orchestrator {
       for (const doc of recalled) emit({ type: "memory", doc, op: "recall" });
       say = await think({ persona, transcript: this.transcript, memories: withName(recalled.map((m) => m.text)), userText, situation: ctx.summary });
     }
+    workspace.agent("reply", { tool: d.action === "NONE" ? undefined : d.action, text: say, ok: true });
     this.pushTurn("trinity", say, emit);
     // In the light of what the action did (see curationAfter); a recall answer is never saved back.
     const how = curationAfter(outcome ? [{ action: outcome.action, ok: outcome.ok }] : []);
@@ -194,6 +200,7 @@ export class Orchestrator {
 
     const d = await decide({ persona, conversation, done: this.done });
     emit({ type: "route", decision: toRouteDecision(d) });
+    workspace.agent("decision", { tool: d.action, text: turn.text, confidence: d.confidence });
     if (firing(d, true, ep.minConfidence) === "fire") {
       const ctx = contextFor(persona);
       const outcome = await act(d, turn.text, {
@@ -258,6 +265,7 @@ export class Orchestrator {
     const hidden = new Set([...NOT_PROACTIVE, ...getTools().filter((t) => t.toolset).map((t) => t.name)]);
     const d = await decide({ persona, conversation: scheduledConversation(task), done: [], hidden });
     emit({ type: "route", decision: toRouteDecision(d) });
+    workspace.agent("decision", { tool: d.action, text: task.instruction, confidence: d.confidence });
 
     let say: string | null;
     const usable = d.tool && !d.tool.toolset && !NOT_PROACTIVE.has(d.tool.name);
@@ -313,7 +321,10 @@ export class Orchestrator {
       say = !task.once && (/^\W*SKIP\b/.test(t) || /^\W*skip\W*$/i.test(t)) ? null : out;
     }
     signal?.throwIfAborted(); // past the run's limit: say nothing (the heartbeat reports it)
-    if (say) await this.proactive(say, emit, task.title);
+    if (say) {
+      workspace.agent("reply", { tool: d.action === "NONE" ? undefined : d.action, text: say, ok: true });
+      await this.proactive(say, emit, task.title);
+    }
     return say;
   }
 }

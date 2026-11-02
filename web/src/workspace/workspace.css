@@ -323,6 +323,67 @@
   display: grid;
 }
 
+/* Agent trail, top-left — every Jev decision / tool / reply, newest at the bottom. */
+.tw-agent {
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  max-width: min(420px, calc(100% - 24px));
+  max-height: min(42vh, 320px);
+  overflow: hidden;
+  pointer-events: none;
+}
+.tw-has-chrome .tw-agent {
+  top: 56px;
+}
+.tw-agent-row {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  max-width: 100%;
+  padding: 5px 10px 5px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--tw-glass-line);
+  background: color-mix(in srgb, var(--tw-glass) 88%, transparent);
+  box-shadow: var(--tw-shadow);
+  color: var(--tw-text);
+  font-size: 12px;
+  line-height: 1.35;
+  backdrop-filter: blur(10px);
+  animation: tw-chip-in 0.28s var(--tw-ease) both;
+}
+.tw-agent-row.is-leaving {
+  animation: tw-chip-out 0.24s ease forwards;
+}
+.tw-agent-tag {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--tw-accent-2);
+  opacity: 0.9;
+}
+.tw-agent-tool .tw-agent-tag {
+  color: #67e8f9;
+}
+.tw-agent-tool_result .tw-agent-tag {
+  color: var(--tw-ok);
+}
+.tw-agent-reply .tw-agent-tag {
+  color: #c4b5fd;
+}
+.tw-agent-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 /* Activity chips, bottom-left — one per busy item, spinner → check when done. */
 .tw-activity {
   position: absolute;
@@ -625,9 +686,18 @@
   .tw-conn {
     padding: 0 9px;
   }
-  .tw-activity {
+  .tw-agent {
     top: 10px;
-    bottom: auto;
+    left: 10px;
+    max-width: calc(100% - 64px);
+    max-height: 28vh;
+  }
+  .tw-has-chrome .tw-agent {
+    top: 52px;
+  }
+  .tw-activity {
+    top: auto;
+    bottom: 12px;
     left: 10px;
     max-width: calc(100% - 64px);
   }

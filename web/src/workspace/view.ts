@@ -10,12 +10,14 @@
  *  - Template / HTML swaps build the new frame underneath and crossfade once it reports
  *    "ready" (it has rendered); the old frame stays visible until then.
  *  - Overlay outside the frame: connection indicator, stacked toasts, activity chips, the
- *    notice (a render error, or a link a page asks to open — it opens only once the viewer
- *    OKs the URL there), and (with chrome) a title bar with focus / full-screen controls.
+ *    agent trail (every Jev decision / tool / reply), the notice (a render error, or a link
+ *    a page asks to open — it opens only once the viewer OKs the URL there), and (with chrome)
+ *    a title bar with focus / full-screen controls.
  */
 import "./workspace.css";
 import { buildFrameDoc, type FrameKind } from "./frame.js";
 import type {
+  AgentKind,
   FrameToHost,
   HostToFrame,
   ToastTone,
@@ -205,9 +207,22 @@ function restartClass(el: Element, cls: string): void {
   el.classList.add(cls);
 }
 
-/** Deep-map strings that start with "/api/" to absolute URLs (srcdoc frames have no useful base). */
+/** The card board hosts its widgets in isolated child frames of its own (see FramePayload.nested). */
+const isBoardTemplate = (t: WorkspaceTemplate | null): boolean => /^board@\d+$/.test(t?.id ?? "");
+
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Deep-map strings that start with "/api/" to absolute URLs (srcdoc frames have no useful base) — and,
+ * inside HTML strings (a widget card's markup), every "/api/images|audio|videos/…" reference too.
+ */
 function absolutize(value: unknown, origin: string, depth = 0): unknown {
-  if (typeof value === "string") return value.startsWith("/api/") ? origin + value : value;
+  if (typeof value === "string") {
+    if (value.startsWith("/api/")) return origin + value;
+    if (value.length > 24 && value.includes("/api/") && value.includes("<"))
+      return value.replace(/(["'(=\s])\/api\/(images|audio|videos)\//g, `$1${origin}/api/$2/`);
+    return value;
+  }
   if (value === null || typeof value !== "object" || depth > 64) return value;
   if (Array.isArray(value)) {
     let out: unknown[] | null = null;
@@ -255,6 +270,29 @@ function frameInfo(f: Frame | null): WorkspaceFrameInfo | null {
   return f ? { id: f.id, kind: f.kind, templateId: f.templateId, ready: f.ready, errored: f.errored } : null;
 }
 
+function agentTag(kind: AgentKind, tool: string): string {
+  if (kind === "decision") return tool && tool !== "NONE" ? "Jev" : "Jev";
+  if (kind === "tool") return "Run";
+  if (kind === "tool_result") return "Done";
+  return "Say";
+}
+
+function agentLabel(kind: AgentKind, tool: string, text: string, ok?: boolean, confidence?: number): string {
+  const pretty = tool && tool !== "NONE" ? tool.replace(/_/g, " ") : "";
+  const clip = (s: string, n = 96) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+  if (kind === "decision") {
+    if (!pretty) return text ? `Listening: ${clip(text, 72)}` : "";
+    const conf = typeof confidence === "number" && Number.isFinite(confidence) ? ` · ${Math.round(confidence * 100)}%` : "";
+    return `${pretty}${conf}${text ? ` — ${clip(text, 64)}` : ""}`;
+  }
+  if (kind === "tool") return pretty ? `${pretty}${text ? ` — ${clip(text, 72)}` : ""}` : clip(text);
+  if (kind === "tool_result") {
+    const mark = ok === false ? "failed" : "ok";
+    return `${pretty || "tool"} ${mark}${text ? `: ${clip(text, 80)}` : ""}`;
+  }
+  return clip(text || pretty);
+}
+
 class WorkspaceView {
   readonly root: HTMLDivElement;
   private readonly opts: MountWorkspaceOptions;
@@ -266,6 +304,7 @@ class WorkspaceView {
   private readonly stage: HTMLDivElement;
   private readonly overlay: HTMLDivElement;
   private readonly activityBox: HTMLDivElement;
+  private readonly agentBox: HTMLDivElement;
   private readonly toastBox: HTMLDivElement;
   private readonly notice: HTMLDivElement;
   private readonly noticeTitle: HTMLElement;
@@ -306,6 +345,9 @@ class WorkspaceView {
   // Overlay state
   private readonly toasts: ToastRecord[] = [];
   private readonly activities = new Map<string, ActivityRecord>();
+  private readonly agentRows: { el: HTMLDivElement; timer: number }[] = [];
+  private static readonly AGENT_KEEP = 10;
+  private static readonly AGENT_TTL_MS = 14_000;
   private noticeTimer = 0;
   private dismissedNoticeFor: Frame | null = null;
   /** A link a page asked to open, waiting in the notice for the viewer's OK; it goes when that page does. */
@@ -358,6 +400,7 @@ class WorkspaceView {
     this.bootEl.append(bootInner);
 
     this.activityBox = h("div", "tw-activity", { role: "status", "aria-live": "polite", "aria-label": "Background work" });
+    this.agentBox = h("div", "tw-agent", { role: "log", "aria-live": "polite", "aria-label": "What Jev is doing" });
     this.toastBox = h("div", "tw-toasts"); // each toast is its own status/alert region
 
     const float = h("div", "tw-float");
@@ -406,7 +449,7 @@ class WorkspaceView {
     });
     this.notice.append(noticeIcon, noticeBody, this.noticeOpen, this.noticeClose);
 
-    this.overlay.append(this.bootEl, this.activityBox, this.toastBox, this.notice, float);
+    this.overlay.append(this.bootEl, this.activityBox, this.agentBox, this.toastBox, this.notice, float);
     this.stage.append(this.overlay);
     root.append(this.stage);
     container.append(root);
@@ -439,6 +482,8 @@ class WorkspaceView {
     for (const f of [this.pending, this.current, ...this.leaving]) if (f) this.dropFrame(f);
     for (const t of this.toasts) window.clearTimeout(t.timer);
     for (const a of this.activities.values()) for (const id of a.timers) window.clearTimeout(id);
+    for (const r of this.agentRows) window.clearTimeout(r.timer);
+    this.agentRows.length = 0;
     for (const off of this.cleanups.splice(0)) off();
     if (document.fullscreenElement === this.root) void document.exitFullscreen().catch(() => undefined);
     void this.releaseWake();
@@ -741,6 +786,9 @@ class WorkspaceView {
       case "activity":
         this.setActivity(evt.id, evt.busy && evt.text ? evt.text : null);
         return;
+      case "agent":
+        this.pushAgent(evt);
+        return;
     }
   }
 
@@ -913,7 +961,10 @@ class WorkspaceView {
     // its canvas from innerWidth at startup would come out blank.
     this.stage.insertBefore(el, this.overlay);
     void el.offsetWidth;
-    el.srcdoc = kind === "app" ? buildFrameDoc("app", { source, state: mapped }) : buildFrameDoc(kind, { source });
+    el.srcdoc =
+      kind === "app"
+        ? buildFrameDoc("app", { source, state: mapped, nested: isBoardTemplate(template) })
+        : buildFrameDoc(kind, { source });
     el.addEventListener("load", () => this.onFrameLoad(frame));
     this.counters.framesBuilt++;
     frame.timers.push(
@@ -969,11 +1020,14 @@ class WorkspaceView {
 
   private sendAssets(frame: Frame, mapped: unknown): void {
     // (Engine images, and the audio clips make_audio records: the frame can't load either itself.)
-    const prefixes = [`${this.httpOrigin}/api/images/`, `${this.httpOrigin}/api/audio/`];
+    const prefixes = [`${this.httpOrigin}/api/images/`, `${this.httpOrigin}/api/audio/`, `${this.httpOrigin}/api/videos/`];
+    // Images embedded in a widget card's HTML (a content card's hero) travel the same way; the frame inlines them.
+    const inlineImages = new RegExp(`${escapeRegExp(this.httpOrigin)}/api/images/[A-Za-z0-9_.-]+`, "g");
     const found = new Set<string>();
     const walk = (v: unknown, depth: number): void => {
       if (typeof v === "string") {
         if (prefixes.some((p) => v.startsWith(p))) found.add(v);
+        else if (v.length > 24 && v.includes("/api/images/")) for (const m of v.matchAll(inlineImages)) found.add(m[0]);
       } else if (v && typeof v === "object" && depth < 64) {
         for (const x of Array.isArray(v) ? v : Object.values(v as Record<string, unknown>)) walk(x, depth + 1);
       }
@@ -1251,6 +1305,46 @@ class WorkspaceView {
       const i = this.toasts.indexOf(rec);
       if (i >= 0) this.toasts.splice(i, 1);
     }, 260);
+  }
+
+  // ── Agent trail (Jev decisions + tools + replies) ────────────────────────
+
+  private pushAgent(evt: Extract<WorkspaceEvent, { type: "agent" }>): void {
+    const kind = (evt.kind ?? "decision") as AgentKind;
+    const tool = typeof evt.tool === "string" ? evt.tool : "";
+    const text = typeof evt.text === "string" ? evt.text.trim() : "";
+    const label = agentLabel(kind, tool, text, evt.ok, evt.confidence);
+    if (!label) return;
+    const el = h("div", `tw-agent-row tw-agent-${kind}`, { title: text || tool || kind });
+    const tag = h("span", "tw-agent-tag");
+    tag.textContent = agentTag(kind, tool);
+    const body = h("span", "tw-agent-text");
+    body.textContent = label;
+    el.append(tag, body);
+    this.agentBox.append(el);
+    const timer = window.setTimeout(() => this.dropAgent(el), WorkspaceView.AGENT_TTL_MS);
+    this.agentRows.push({ el, timer });
+    while (this.agentRows.length > WorkspaceView.AGENT_KEEP) {
+      const old = this.agentRows.shift();
+      if (old) {
+        window.clearTimeout(old.timer);
+        this.dropAgent(old.el, true);
+      }
+    }
+  }
+
+  private dropAgent(el: HTMLDivElement, immediate = false): void {
+    const i = this.agentRows.findIndex((r) => r.el === el);
+    if (i >= 0) {
+      window.clearTimeout(this.agentRows[i]!.timer);
+      this.agentRows.splice(i, 1);
+    }
+    if (immediate || !el.isConnected) {
+      el.remove();
+      return;
+    }
+    el.classList.add("is-leaving");
+    window.setTimeout(() => el.remove(), 260);
   }
 
   // ── Activity chips ───────────────────────────────────────────────────────

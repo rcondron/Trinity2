@@ -44,6 +44,7 @@ export interface PublicEndpoints {
   jevModel: string;
   mordiemUrl: string;
   brainModel: string;
+  cardModel: string;
   /** The coding skill's coders: GLM (fast) and Kimi (stronger), and which one is the default. */
   glmModel?: string;
   kimiModel?: string;
@@ -74,6 +75,8 @@ export interface ModelCatalog {
   image: string[];
   /** Text-to-speech models (older engines leave this out). */
   tts?: string[];
+  /** Text-to-video models (older engines leave this out). */
+  video?: string[];
 }
 
 /** PUT /settings/endpoints body: partial; "" resets a field to its .env default. */
@@ -682,10 +685,12 @@ const IMAGE_MODEL_RE = /image|imagine|flux|krea|chroma|diffusion|sdxl|dall|seedr
 function normalizeCatalog(raw: unknown): ModelCatalog | null {
   const idOf = (m: unknown) => (typeof m === "string" ? m : str(obj(m).id) || str(obj(m).name));
   const o = obj(raw);
-  if (Array.isArray(o.text) || Array.isArray(o.image)) {
+  if (Array.isArray(o.text) || Array.isArray(o.image) || Array.isArray(o.video) || Array.isArray(o.tts)) {
     const text = listOf(o.text).map(idOf).filter(Boolean);
     const image = listOf(o.image).map(idOf).filter(Boolean);
-    return text.length || image.length ? { text, image } : null;
+    const tts = listOf(o.tts).map(idOf).filter(Boolean);
+    const video = listOf(o.video).map(idOf).filter(Boolean);
+    return text.length || image.length || tts.length || video.length ? { text, image, tts, video } : null;
   }
   const all = listOf(raw, "data", "models").map((m) => ({ id: idOf(m), kind: str(obj(m).type) || str(obj(m).kind) }));
   const ids = all.filter((m) => m.id);

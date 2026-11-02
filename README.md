@@ -36,6 +36,7 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design.
 | Tool routing | **Jev** (TypeSafe AI) — System One decision API |
 | Coding skill (UIs, new skills) | **Mordiem** `mercury-3` (quick, default: a page in ~3 s) or `kimi-k3` (strong) |
 | Brain | **Mordiem** `claude-sonnet-5-5` |
+| Card designer (recipes, news, profiles… on the board) | **Mordiem** `mercury-3` (≈1.8 s a card; `claude-sonnet-5-5` for the quality tier) |
 | Fast reply writer + JSON | **Mordiem** `nvidia-nemotron-3-nano` |
 | Images | **Mordiem** `krea-2-turbo` |
 | Web search | Tavily (keyed) or keyless DuckDuckGo |

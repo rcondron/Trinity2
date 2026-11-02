@@ -64,7 +64,8 @@ export type ClientEvent =
   | { type: "stop" };
 
 export type ServerEvent =
-  | { type: "ready"; persona: Persona; services: ServiceStatus; profileName?: string | null } // the caller's name (older engines leave it out)
+  | { type: "ready"; persona: Persona; services: ServiceStatus; profileName?: string | null; speechRate?: number }
+  | { type: "speech_rate"; rate: number }
   | { type: "audio"; chunk: string }
   | { type: "transcript"; turn: TranscriptTurn }
   | { type: "route"; decision: RouteDecision }

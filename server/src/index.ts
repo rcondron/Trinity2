@@ -5,6 +5,7 @@ import { config } from "./config.js";
 import { live, serviceStatus } from "./settings.js";
 import { createMemoryStore } from "./db/memory.js";
 import { getActivePersona, setActivePersona, getPersona, getProfileName } from "./db/sqlite.js";
+import { getSpeechRate, onSpeechRateChange } from "./services/speech-rate.js";
 import { seed } from "./db/seed.js";
 import { emitPersonaActivated } from "./events.js";
 import { createApi } from "./http.js";
@@ -18,7 +19,8 @@ import { registerGameTools } from "./game/tools.js";
 import { registerAskTools } from "./tools/ask.js";
 import { registerBuiltins } from "./tools/builtins.js";
 import { registerCodingTools } from "./tools/coding.js";
-import { loadForgedSkills, registerForgeTools, setTellFallback } from "./tools/forge.js";
+import { setTellFallback } from "./agent/tell.js";
+import { loadForgedSkills, registerForgeTools } from "./tools/forge.js";
 import { registerMemoryTools } from "./tools/memory.js";
 import { loadSkills } from "./tools/registry.js";
 import { registerScheduleTools } from "./tools/schedule.js";
@@ -155,12 +157,19 @@ async function main() {
     const msg = JSON.stringify(e);
     for (const c of clients) if (c.readyState === c.OPEN) c.send(msg);
   };
-  // A finished skill's news that no call said in full goes to every open app, like a heartbeat line.
+  // News from work that finished later (a forged skill, a content card) that no call said in full goes to every open app, like a heartbeat line.
   setTellFallback((text, spoken) => orchestrator.showUnprompted(text, broadcast, spoken));
   // The voice came back from a sample ("free": the tab that lent it re-warms) — or a call took it ("taken").
   setVoiceNotifier((status) => broadcast({ type: "voice", status }));
   // The caller's name rides along: the voice hears it at connect, so the app re-warms a session set up before it changed.
-  const readyEvent = (): ServerEvent => ({ type: "ready", persona: getActivePersona(), services: serviceStatus(), profileName: getProfileName() });
+  const readyEvent = (): ServerEvent => ({
+    type: "ready",
+    persona: getActivePersona(),
+    services: serviceStatus(),
+    profileName: getProfileName(),
+    speechRate: getSpeechRate(),
+  });
+  onSpeechRateChange((rate) => broadcast({ type: "speech_rate", rate }));
 
   wss.on("connection", (ws) => {
     clients.add(ws);

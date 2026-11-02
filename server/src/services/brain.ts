@@ -1,6 +1,7 @@
 import { getEndpoints, live } from "../settings.js";
 import type { Persona, TranscriptTurn } from "../types.js";
 import { mordiemChat, type ChatMessage } from "./llm.js";
+import { pickMordiemModel } from "./mordiem-router.js";
 
 /*
  * The "brain" (BRAIN_MODEL on Mordiem) — general knowledge & reasoning: questions routed to
@@ -30,8 +31,16 @@ export async function answer(input: {
   question: string;
   situation?: string;
   timeoutMs?: number;
+  /** Jev quality option ("fast" / "quality" / "auto"); utterance cues also steer the pick. */
+  quality?: unknown;
 }): Promise<string | null> {
   if (!live.brain) return mockThink({ userText: input.question, memories: input.memories });
+  const pick = pickMordiemModel({
+    modality: "text",
+    need: "brain",
+    quality: input.quality,
+    utterance: input.question,
+  });
   const system: ChatMessage = {
     role: "system",
     content:
@@ -48,9 +57,13 @@ export async function answer(input: {
   };
   try {
     const text = await mordiemChat(
-      getEndpoints().brainModel,
+      pick.model || getEndpoints().brainModel,
       [system, ...historyFor(input.transcript, 6, input.question), { role: "user", content: input.question }],
-      { temperature: 0.3, maxTokens: 300, timeoutMs: input.timeoutMs ?? 12_000 },
+      {
+        temperature: 0.3,
+        maxTokens: 300,
+        timeoutMs: input.timeoutMs ?? (pick.quality === "fast" ? 6_000 : 12_000),
+      },
     );
     return text.trim() || null;
   } catch (err) {

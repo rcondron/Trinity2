@@ -42,13 +42,30 @@ export interface WorkspaceSnapshot {
 
 export type ToastTone = "info" | "success" | "warn" | "error";
 
+/** A Jev / tool lifecycle step mirrored into every workspace window. */
+export type AgentKind = "decision" | "tool" | "tool_result" | "reply";
+
+export interface AgentEvent {
+  type: "agent";
+  kind: AgentKind;
+  at: number;
+  /** Tool name, or the decision action ("NONE", "make_image", …). */
+  tool?: string;
+  /** Short human text (utterance snippet, say line, reply). */
+  text?: string;
+  ok?: boolean;
+  confidence?: number;
+  args?: Record<string, unknown>;
+}
+
 export type WorkspaceEvent =
   | { type: "snapshot"; snapshot: WorkspaceSnapshot }
   | { type: "state"; version: number; state: unknown; title: string }
   | { type: "template"; version: number; template: WorkspaceTemplate; state: unknown; title: string }
   | { type: "html"; version: number; title: string; html: string }
   | { type: "toast"; text: string; tone: ToastTone }
-  | { type: "activity"; id: string; text: string; busy: boolean };
+  | { type: "activity"; id: string; text: string; busy: boolean }
+  | AgentEvent;
 
 export type WorkspaceClientEvent =
   | { type: "hello" }
@@ -216,6 +233,36 @@ export class WorkspaceBus {
     if (text) this.activities.set(id, text);
     else if (!this.activities.delete(id)) return;
     this.broadcast({ type: "activity", id, text: text ?? "", busy: Boolean(text) });
+  }
+
+  /**
+   * Relay a Jev decision / tool lifecycle step into every workspace window.
+   * Not versioned or persisted — it's a live trail of what the agent is doing.
+   */
+  agent(kind: AgentKind, detail: Omit<AgentEvent, "type" | "kind" | "at"> = {}): void {
+    const text = typeof detail.text === "string" ? detail.text.replace(/\s+/g, " ").trim().slice(0, 280) : undefined;
+    const tool = typeof detail.tool === "string" ? detail.tool.slice(0, 64) : undefined;
+    let args: Record<string, unknown> | undefined;
+    if (detail.args && typeof detail.args === "object") {
+      try {
+        args = JSON.parse(JSON.stringify(detail.args, (_k, v) => (typeof v === "string" ? v.slice(0, 120) : v))) as Record<
+          string,
+          unknown
+        >;
+      } catch {
+        args = undefined;
+      }
+    }
+    this.broadcast({
+      type: "agent",
+      kind,
+      at: Date.now(),
+      tool,
+      text: text || undefined,
+      ok: detail.ok,
+      confidence: typeof detail.confidence === "number" ? detail.confidence : undefined,
+      args,
+    });
   }
 
   /** A window reported that a template threw while rendering. Fires once per template id. */

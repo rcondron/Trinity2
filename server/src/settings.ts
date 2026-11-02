@@ -24,6 +24,8 @@ export interface Endpoints {
   mordiemUrl: string;
   mordiemKey: string;
   brainModel: string;
+  /** Writes information cards (show_card): facts, layout, look and picture brief. Blank = brainModel. */
+  cardModel: string;
   /** The coding skill's coders: a quick one (the default; the "glm" slot) and a strong one for big apps (the "kimi" slot). */
   glmModel: string;
   kimiModel: string;
@@ -31,9 +33,17 @@ export interface Endpoints {
   replyModel: string;
   fastModel: string;
   imageModel: string;
+  /** Stronger image model when the caller asks for detail / photorealism (falls back to imageModel if blank). */
+  imageProModel: string;
   /** Text-to-speech for audio clips the caller asks for (make_audio), and the voice name that model takes. */
   ttsModel: string;
+  /** Richer TTS when the caller asks for natural / expressive audio (falls back to ttsModel if blank). */
+  ttsProModel: string;
   ttsVoice: string;
+  /** Default text-to-video model (make_video). */
+  videoModel: string;
+  /** Stronger video model for cinematic / high-quality asks (falls back to videoModel if blank). */
+  videoProModel: string;
   // Other services.
   tavilyKey: string;
   falKey: string;
@@ -63,14 +73,19 @@ function envDefaults(): Endpoints {
     mordiemUrl: config.mordiem.base,
     mordiemKey: config.mordiem.key,
     brainModel: config.mordiem.brainModel,
+    cardModel: config.mordiem.cardModel,
     glmModel: config.mordiem.glmModel,
     kimiModel: config.mordiem.kimiModel,
     coderDefault: config.mordiem.coderDefault,
     replyModel: config.mordiem.replyModel,
     fastModel: config.mordiem.fastModel,
     imageModel: config.mordiem.imageModel,
+    imageProModel: config.mordiem.imageProModel,
     ttsModel: config.mordiem.ttsModel,
+    ttsProModel: config.mordiem.ttsProModel,
     ttsVoice: config.mordiem.ttsVoice,
+    videoModel: config.mordiem.videoModel,
+    videoProModel: config.mordiem.videoProModel,
     tavilyKey: config.web.key,
     falKey: config.fal.key,
     skillApproval: config.skills.approval,

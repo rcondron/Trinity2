@@ -64,12 +64,42 @@ export function defaultTemplateSource(): { source: string; hash: string; builtin
   return { source: FALLBACK_TEMPLATE, hash: FALLBACK_HASH, builtin: true };
 }
 
+/**
+ * Custom screens often paint scene art as `width:100%; aspect-ratio:16/9`, which grows with
+ * the column and shoves the log / party off the board — especially in a narrow workspace.
+ * Rewrite known-bad rules and inject a small CSS guard so the table stays viewport-bound.
+ */
+export function hardenCustomTemplate(src: string): string {
+  let s = src;
+  s = s.replace(/(\.(?:scene-art|art))\s*\{([^}]*)\}/gi, (_full, sel: string, body: string) => {
+    const cleaned = String(body)
+      .replace(/aspect-ratio\s*:\s*[^;]+;?/gi, "")
+      .replace(/(?:max-)?height\s*:\s*[^;]+;?/gi, "");
+    return `${sel}{width:100%;height:clamp(140px,26vh,240px);max-height:240px;object-fit:cover;display:block;${cleaned}}`;
+  });
+  if (!/data-trinity-layout-guard/.test(s)) {
+    s =
+      `<style data-trinity-layout-guard>` +
+      `html,body{height:100%;overflow:hidden!important}` +
+      `#app{max-height:100%!important;min-height:0!important;box-sizing:border-box}` +
+      `#app img.scene-art,#app .scene-art,#app img.art,#app .art,#app #r-scene>img{` +
+      `width:100%!important;height:clamp(140px,26vh,240px)!important;max-height:240px!important;` +
+      `aspect-ratio:auto!important;object-fit:cover!important}` +
+      `#app .cols,#app .board{min-height:0!important;overflow:hidden!important}` +
+      `#app .col{min-height:0!important;overflow:hidden!important}` +
+      `</style>\n` +
+      s;
+  }
+  return s;
+}
+
 function chooseTemplate(game: Game): Chosen {
   const custom = getCustomTemplate(game.id);
   if (custom) {
-    const id = customTemplateId(game.id, custom);
+    const source = hardenCustomTemplate(custom);
+    const id = customTemplateId(game.id, source);
     if (!workspace.isTemplateBad(id)) {
-      return { template: { id, kind: "custom", name: `${game.title} — custom screen`, source: custom }, hash: hash8(custom) };
+      return { template: { id, kind: "custom", name: `${game.title} — custom screen`, source }, hash: hash8(source) };
     }
   }
   const d = defaultTemplateSource();
@@ -279,7 +309,7 @@ h3{margin:10px 0 4px;font-size:18px}
 .small{font:12px/1.45 system-ui,'Segoe UI',sans-serif}
 .bar{height:6px;border-radius:6px;background:rgba(255,255,255,.08);overflow:hidden;margin-top:6px}
 .bar>i{display:block;height:100%;transition:width .4s ease}
-.art{width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:10px;display:block}
+.art{width:100%;height:clamp(140px,26vh,240px);max-height:240px;object-fit:cover;border-radius:10px;display:block}
 .art.shimmer{border-radius:10px}
 .read{font-style:italic;color:var(--ink)}
 .log div{padding:6px 0;border-top:1px solid rgba(255,255,255,.06)}

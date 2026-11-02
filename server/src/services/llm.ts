@@ -37,20 +37,22 @@ export async function mordiemChat(
   return data.choices[0]?.message?.content ?? "";
 }
 
-/** Not chat or image models (speech, music, video, embeddings): left out of the Settings pickers. */
-const NOT_A_PICK = /(tts|music|sound|voice-changer|scribe|whisper|embedding|video|ace-step|-edit$|image-to|text-to-video)/i;
+/** Not chat/image/video models (speech, music, embeddings, edits): left out of the text/image pickers. */
+const NOT_A_PICK = /(tts|music|sound|voice-changer|scribe|whisper|embedding|ace-step|-edit$|image-to)/i;
 /** Image generators (the gateway lists every model with type "model", so go by name). */
-const IMAGE_ID = /(flux|krea|chroma|imagine|image|sdxl|seedream|dall|recraft|ideogram|illustrious|hidream|qwen-image|nano-banana)/i;
+const IMAGE_ID = /(flux|krea|chroma|imagine|image|sdxl|seedream|dall|recraft|ideogram|illustrious|hidream|qwen-image|nano-banana|muse-image)/i;
 /** Text-to-speech models ("tts-kokoro", "elevenlabs-tts-v4"), for the audio clips make_audio records. */
 const TTS_ID = /(^|-)tts(-|$)/i;
-let catalog: { at: number; text: string[]; image: string[]; tts: string[] } | null = null;
+/** Text-to-video (and video) model ids for make_video. */
+const VIDEO_ID = /(text-to-video|video|veo|wan-|seedance|happyhorse|sora)/i;
+let catalog: { at: number; text: string[]; image: string[]; tts: string[]; video: string[] } | null = null;
 
 /**
- * The model ids the gateway offers, split into text, image and text-to-speech models, for the
+ * The model ids the gateway offers, split into text, image, TTS and video models, for the
  * Settings model pickers. Cached 10 minutes; the last good list (or empty lists) when Mordiem can't
  * be reached.
  */
-export async function mordiemModels(): Promise<{ text: string[]; image: string[]; tts: string[] }> {
+export async function mordiemModels(): Promise<{ text: string[]; image: string[]; tts: string[]; video: string[] }> {
   if (catalog && Date.now() - catalog.at < 10 * 60_000) return catalog;
   const { mordiemUrl, mordiemKey } = getEndpoints();
   try {
@@ -61,16 +63,19 @@ export async function mordiemModels(): Promise<{ text: string[]; image: string[]
     if (!res.ok) throw new Error(`Mordiem ${res.status}`);
     const body = (await res.json()) as { data?: { id?: unknown }[] };
     const ids = [...new Set((body.data ?? []).map((m) => m.id).filter((id): id is string => typeof id === "string"))];
-    const picks = ids.filter((id) => !NOT_A_PICK.test(id)).sort();
+    const video = ids.filter((id) => VIDEO_ID.test(id)).sort();
+    const videoSet = new Set(video);
+    const picks = ids.filter((id) => !NOT_A_PICK.test(id) && !videoSet.has(id)).sort();
     catalog = {
       at: Date.now(),
       text: picks.filter((id) => !IMAGE_ID.test(id)),
       image: picks.filter((id) => IMAGE_ID.test(id)),
       tts: ids.filter((id) => TTS_ID.test(id)).sort(),
+      video,
     };
     return catalog;
   } catch {
-    return catalog ?? { text: [], image: [], tts: [] };
+    return catalog ?? { text: [], image: [], tts: [], video: [] };
   }
 }
 

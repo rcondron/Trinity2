@@ -23,27 +23,39 @@ class Mic extends AudioWorkletProcessor {
 class Speaker extends AudioWorkletProcessor {
   constructor() {
     super(); this.q = []; this.cur = null; this.pos = 0; this.queued = 0; this.playing = false;
+    this.rate = 1; this.readPos = 0;
     // Audio queued before playback starts: 240 ms, grown by 80 ms each time the queue runs dry mid-phrase
     // (network jitter over the pod's proxy), up to 400 ms — a gap in a word costs more than the delay.
     this.cushion = 5760;
     this.port.onmessage = (e) => {
-      if (e.data === "flush") { this.q = []; this.cur = null; this.pos = 0; this.queued = 0; this.playing = false; return; }
+      if (e.data === "flush") { this.q = []; this.cur = null; this.pos = 0; this.readPos = 0; this.queued = 0; this.playing = false; return; }
+      if (e.data && typeof e.data === "object" && e.data.rate != null) {
+        var r = Number(e.data.rate); if (isFinite(r) && r >= 0.5 && r <= 2) this.rate = r;
+        return;
+      }
       this.q.push(e.data); this.queued += e.data.length;
     };
   }
   process(_, outputs) {
     const out = outputs[0][0];
     if (!this.playing) { if (this.queued < this.cushion) return true; this.playing = true; }
+    const step = this.rate > 0 ? this.rate : 1;
     for (let i = 0; i < out.length; i++) {
-      if (!this.cur || this.pos >= this.cur.length) {
-        this.cur = this.q.shift(); this.pos = 0;
+      if (!this.cur || this.readPos >= this.cur.length - 1) {
+        if (this.cur) this.queued = Math.max(0, this.queued - this.cur.length);
+        this.cur = this.q.shift(); this.readPos = 0;
         if (!this.cur) {
           this.playing = false;
-          if (i > 0 && this.cushion < 9600) this.cushion += 1920; // ran dry mid-buffer: an underrun, not the end of a phrase
+          if (i > 0 && this.cushion < 9600) this.cushion += 1920;
           break;
         }
       }
-      out[i] = this.cur[this.pos++]; this.queued--;
+      const idx = Math.floor(this.readPos);
+      const frac = this.readPos - idx;
+      const a = this.cur[idx] || 0;
+      const b = this.cur[Math.min(idx + 1, this.cur.length - 1)] || a;
+      out[i] = a + (b - a) * frac;
+      this.readPos += step;
     }
     return true;
   }
@@ -73,6 +85,7 @@ export class LiveCall {
   private micSink?: GainNode;
   private micStarting?: Promise<void>;
   private micEpoch = 0; // bumped by teardownMic: a mic still opening then is stale
+  private speechRate = 1;
 
   get supported(): boolean {
     return typeof navigator !== "undefined" && !!navigator.mediaDevices && !!window.AudioContext;
@@ -118,7 +131,11 @@ export class LiveCall {
       } catch {
         return;
       }
-      if (e.type === "ready") this.setState(this.stream ? "live" : "standby");
+      if (e.type === "ready") {
+        this.setState(this.stream ? "live" : "standby");
+        if (typeof e.speechRate === "number") this.setSpeechRate(e.speechRate);
+      }
+      if (e.type === "speech_rate" && typeof e.rate === "number") this.setSpeechRate(e.rate);
       handlers.onEvent(e);
     };
     ws.onclose = () => {
@@ -144,12 +161,35 @@ export class LiveCall {
       // Through the clean-up chain (voice-chain.ts): the codec's voice, brought closer; off per browser in Settings → Voices.
       this.chain = buildVoiceChain(this.ctx, this.ctx.destination);
       this.speaker.connect(this.chain.input);
+      try {
+        const saved = Number(localStorage.getItem("trinity.speechRate"));
+        if (Number.isFinite(saved) && saved > 0) this.speechRate = saved;
+      } catch {
+        /* ignore */
+      }
+      this.speaker.port.postMessage({ rate: this.speechRate });
     }
   }
 
   /** Run the voice through the clean-up chain, or straight to the speakers (Settings → Voices). */
   setClarity(on: boolean): void {
     this.chain?.setClarity(on);
+  }
+
+  /** Playback pace for streamed PersonaPlex PCM (1 = normal). Also used by browser TTS. */
+  setSpeechRate(rate: number): void {
+    const r = Math.max(0.5, Math.min(2, Number(rate) || 1));
+    this.speechRate = r;
+    try {
+      localStorage.setItem("trinity.speechRate", String(r));
+    } catch {
+      /* private mode */
+    }
+    this.speaker?.port.postMessage({ rate: r });
+  }
+
+  getSpeechRate(): number {
+    return this.speechRate;
   }
 
   /** Start talking: call from the mic-tap gesture. A tap while the mic is still opening joins that start. */

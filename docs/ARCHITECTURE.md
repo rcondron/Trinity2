@@ -17,6 +17,7 @@ Personas can also carry extra tool sets — the Game Master is one example.
 | **Tool routing** | **Jev** (TypeSafe AI System One) | A typed decision model — a `choice` over tools plus per-argument option questions, with page state and recent actions. It decides; it doesn't write text. |
 | **Coding skill** | **Mordiem** `mercury-3` (quick, the default) and `kimi-k3` (strong) | Builds interactive pages for the workspace (streamed) and writes new skills. |
 | **Brain** | **Mordiem** `claude-sonnet-5-5` | Questions that need real knowledge or reasoning (`ask_brain`). |
+| **Card designer** | **Mordiem** `mercury-3` (≈1.8 s a card; `claude-sonnet-5-5` ≈9 s, the most careful) | Information cards on the board (`show_card`): the facts, layout, look and picture brief. |
 | **Fast models** | **Mordiem** `nvidia-nemotron-3-nano-30b-a3b` | The spoken reply after a tool runs (~0.8 s), argument extraction, memory and schedule parsing (JSON). |
 | **Images** | **Mordiem** `krea-2-turbo` | Art for personas that need it (e.g. the Game Master). |
 | **Web** | Tavily when keyed, else keyless DuckDuckGo | Search + a synthesized answer. |
@@ -38,9 +39,9 @@ keys are editable at runtime on the Settings page.
      VoiceCall ─ the real-time loop (one PersonaPlex session, owned by the engine)
      Orchestrator ─ the text channel and the heartbeat's proactive turns
         both use the agent core:  decide (Jev) → act (a tool) → reply
-     tools/ ─ build_ui · make_image · make_audio · clear_workspace · ask_brain · web_search ·
-              create_skill · remember · recall · schedule · get_time · skills Trinity created
-              (sandboxed) · persona tool sets (e.g. game_*)
+     tools/ ─ build_ui · show_card · make_image · make_audio · clear_workspace · ask_brain ·
+              web_search · create_skill · remember · recall · schedule · get_time · skills Trinity
+              created (sandboxed) · persona tool sets (e.g. game_*)
      WorkspaceBus ─ the one shared workspace every window subscribes to
      SQLite (personas, settings, tasks, games) · PouchDB (memories) · data/ (skills, art, voices)
  ─────────────────────────────────────────────────────────────────────────────────────
@@ -105,11 +106,11 @@ keys are editable at runtime on the Settings page.
   reminder, or a recurring task that runs at most hourly, is due within those 15 minutes).
   `/ws` and `/ws/workspace` peers are pinged every 30 s and one that misses a pong is dropped,
   so a phone or laptop that vanished stops counting as someone to tell within about a minute.
-- **Caller's name.** The voice hears the caller's name when a session connects, so when it
-  changes (Settings → Memory, or learned by voice) the main app re-warms the session — never
-  during a live call, and in standby only after 20 s with no sign of work (the caller's last
-  words, an action and its spoken reply finish first). `/api/status` and the `/ws` ready event
-  carry `profileName`.
+- **Caller's name.** Stored as Settings → Memory “Your name” / a `name` memory for the brain
+  and reply writer. It is **not** put in PersonaPlex's `text_prompt` (that model treats the
+  prompt as identity and used to greet as “Hello, this is [caller]”). `/api/status` and the
+  `/ws` ready event still carry `profileName`; a name change may re-warm standby for other
+  session state, never mid-call.
 
 ## The agent core (`server/src/agent/`)
 
@@ -146,40 +147,32 @@ keys are editable at runtime on the Settings page.
 
 | Tool | What it does |
 |------|--------------|
-| `build_ui` | **The coding skill.** Builds, changes, or shows something interactive in the workspace — an app, tool, game, chart, dashboard, form, visualization. |
-| `ask_brain` | Answers questions that need real knowledge, math, or careful reasoning (spoken verbatim). |
-| `web_search` | Current information and news, with a synthesized answer and a results page. |
+| `build_ui` | **The coding skill.** Adds or edits ONE numbered floating widget card (timer, chart, app, …). Other cards on the board stay put. |
+| `edit_html` | **The HTML skill.** Tweaks something already on the board: resize a picture/video (img width/height %), edit SVG/canvas/widget markup and styles. |
+| `show_card` | **Content cards.** A recipe, the news, who someone is, a place, a product or comparison, a how-to, an explainer, an event, the weather, scores, a film or book, a plan or a list — laid out as a designed widget card with a fitting picture, plus a spoken summary. |
+| `ask_brain` | Answers a quick question that needs real knowledge, math, or careful reasoning (spoken verbatim, nothing on screen). |
+| `web_search` | A quick fact or link from the web, spoken; its results go up as a card on the board. |
 | `create_skill` | Writes a brand-new skill on the fly, tests it in a sandbox, and makes it usable at once. |
 | `remember` / `recall` | Saves a fact the caller asks Trinity to keep; answers from what they told her before. |
 | `schedule` | Reminders ("in ten minutes…") and recurring tasks ("every morning at eight…"). |
 | `get_time` | The date and time. |
-| `make_image` / `make_audio` / `make_video` | A picture, a spoken audio clip or a video the caller asks for: a card in the workspace that fills in when the model is done (video has no provider yet, and says so). |
-| `clear_workspace` / `describe_workspace` | Clears the workspace window; says what it's showing. |
+| `make_image` / `make_audio` / `make_video` / `make_text` | Adds numbered floating card(s) (loader first). Several subjects (“a panda and a tiger”) → one card each, tagged by content. |
+| `remove_card` / `move_card` | Remove or reposition by number or content (“remove the tiger”, “move the tiger under the panda”). |
+| `set_speech_rate` | Talk slower / faster / normal speed (browser playback rate). |
+| `clear_workspace` / `describe_workspace` | Clears the whole board / window; lists what's showing (including card numbers). |
 | skills Trinity created | Each runs sandboxed; listed (and switchable) in Settings → Skills. |
 | persona tool sets | Extra tools a persona enables, e.g. `game_*` for the Game Master. |
 
 ### The coding skill (`tools/coding.ts`, `services/mordiem.ts`)
 
-- **Two coders on Mordiem.** A quick one, Mercury 3 (`mercury-3`: first code ~1.1 s, a complete
-  page in ~3 s, measured on a timer and a chart), is the default; a strong one, Kimi K3 (`kimi-k3`:
-  ~20–30 s, the most polished output), is for big or complex apps. (The two slots keep their first
-  names in the settings keys, `glmModel` and `kimiModel`.) Jev picks one through the tool's `coder`
-  option ("use Kimi to build…"), whose labels name the configured models; keyless, a coder named
-  in the words is taken;
-  otherwise the Settings default writes it. If a coder fails (an HTTP error, a stall, no usable
-  page, or a reply that didn't finish — an error inside the stream, a stop at the token limit or
-  a content filter, a stream that ends with neither a finish reason nor `[DONE]`), the other
-  takes over once, in the same preview. The skill forge falls back the same way.
-- **Streaming.** The page streams into a live preview (`build-preview@1`): it materializes as
-  it's written (markup only, no scripts) under a progress pill, then the finished page goes
-  live. A thinking-only model (full `z-ai-glm-5-3`) shows "Thinking…" until its code starts.
-- **Edits and order.** Builds run one at a time in request order, so "make it bigger" said
-  mid-build waits and then edits the finished page. The coder names each page in a leading
-  `<!-- title: … -->` comment (every finished build carries one), and keeps the name on a real
-  edit; "Updating <name>" applies only when the page on screen is a build, never a tool card
-  such as the search results. The coder gets the situation, the last few lines of conversation
-  and recent tool results, so "chart what we just found" has the data. On failure the previous
-  screen returns.
+- **One floating card per build.** `build_ui` adds (or edits) a numbered **widget** card on the
+  board — it does not replace the whole workspace. A picture in card 1 stays when you ask for a
+  timer as card 2. The coder is told to build only that one widget (no multi-card panel).
+- **Two coders on Mordiem.** Quick Mercury 3 vs strong Kimi K3 (settings keys `glmModel` /
+  `kimiModel`). Jev's `coder` option or a name in the utterance picks one; Settings default
+  otherwise. On failure the other coder takes over once on the same card.
+- **Streaming.** HTML streams into the pending widget card, then marks ready. Edits target
+  "card N" or the latest matching widget. Builds run one at a time in request order.
 - **Untrusted text.** What tools found on the web, the agent's own lines and the situation are
   given to the coder quoted and marked as data (URLs removed from tool results) — so is a tool's
   card on screen (the search results) when "chart these" edits it; it uses their facts but never
@@ -188,17 +181,64 @@ keys are editable at runtime on the Settings page.
   from finished builds and from the streaming preview (a refresh would navigate; a preconnect
   hint reaches its host whatever the CSP says).
 
-### Pictures and audio (`tools/media.ts`, `services/images.ts`, `services/speech.ts`)
+### Content cards (`tools/content.ts`, `services/content-spec.ts`, `workspace/content-card.ts`)
 
-- **make_image** asks Mordiem's image endpoint (the Settings image model, `krea-2-turbo` by
-  default, ~5 s) for the described picture and shows a picture card in the workspace at once; the
-  card fills in when the PNG is on disk (`data/images/`), and the same words again show the cached
-  one. **make_audio** reads a text aloud with Mordiem's text-to-speech (`tts-kokoro`, voice
-  `af_heart` by default; mp3, or wav when the model can't make mp3) into `data/audio/` and shows
-  a player card; music and sound effects are declined, since the gateway exposes no path to those
-  models. **make_video** exists so the request lands somewhere honest: there's no video provider
-  yet. The cards are app templates (`workspace/media-cards.ts`): a sandboxed frame can't load the
-  engine's files itself, so the host posts the bytes in, as it does for game art.
+- **The ask.** "Give me a blueberry muffin recipe", "what's in the news", "who was Marie Curie",
+  "compare the iPhone and the Pixel", "how do I fix a leaking tap", "what's the weather in Austin",
+  "top ten sci-fi novels"… Jev picks `show_card` with a `type` option (sixteen kinds: recipe, news,
+  person, place, explainer, how-to, comparison, product, event, weather, sports, media, plan, health,
+  list, other); keyless routing guesses the kind from the words. A quick fact stays `ask_brain`
+  (spoken only); "search for X" stays `web_search`; a picture alone is `make_image`; a note in the
+  caller's own words is `make_text`.
+- **What happens.** The card goes up at once (a masthead and shimmer lines; a tall widget card). The
+  web is searched first when the kind or the words are fresh — news, sports and events take real
+  headlines from Google News's RSS (`services/news.ts`; a web search for "the news" only finds front
+  pages), everything else the usual search. Then the **card designer** (`CARD_MODEL`, Mercury 3 by
+  default; the Brain when Jev's `quality` option or the words ask for care) returns a **ContentSpec**:
+  title, subtitle, a spoken summary, a look (mood + accent), a picture brief, meta chips, up to ten
+  typed **blocks** (text, list, steps, facts, stats, timeline, table, pros/cons, headlines, quote,
+  note, tags, schedule) and sources. Each kind has a design brief (a recipe: chips for prep / bake /
+  serves, a check-list of ingredients, numbered steps, a tip; a profile: born / died chips, a
+  biography, a timeline; news: headlines with source and time from the sources only…). The engine
+  **renders** the spec with its own design system — six moods (warm, editorial, cool, playful,
+  elegant, calm) × the accent, a hero with the picture (or a shimmer while it paints, or a
+  typographic masthead), one styled layout per block kind — so every card is laid out for its
+  content yet always valid, consistent and fast; `edit_html` can still restyle it afterwards.
+- **The picture.** Concrete subjects (a dish, a place, a product, a how-to) start their hero picture
+  at once from the topic, in parallel with the writing; otherwise the designer writes the brief (a
+  scene evoking the subject — never a real person's face, a poster or a logo); news, weather,
+  scores, comparisons and health get none. The picture lands into the card when Mordiem has painted
+  it. Inside a widget card's frame an engine image can only load as a `data:` URL (the nested
+  sandboxed frame is another opaque origin — it can load neither the board frame's `blob:` URLs nor
+  localhost), so the host fetches it once and the board frame inlines it.
+- **Grounding.** Sources are numbered data to the designer, never instructions; it may only cite
+  URLs it was given (an invented link is dropped), and every string is escaped by the renderer.
+- **The spoken line.** The tool waits up to ~9 s for the designer so the reply is the real summary
+  ("Here's a recipe that makes twelve… It's on the board as card 3"). When the designer is slower,
+  Trinity says the card is coming and tells the summary when it's written (into the live call, or as
+  a line in every open app — `agent/tell.ts`, shared with finished skills).
+
+### Floating card board (`workspace/board.ts`, `tools/media.ts`, `tools/screen.ts`, `tools/html.ts`)
+
+- Media, notes, builds and content cards share one board app (`board@4`): each **make_image** /
+  **make_audio** / **make_video** / **make_text** / **build_ui** / **show_card** call adds a
+  **numbered floating card** at an absolute position (a tool's rendered page — search results — too).
+  Cards show a loader while Mordiem works, then fill in when ready (`data/images|audio|videos/`).
+  Numbers stay stable so the caller can say **remove_card** / **move_card** (“remove card 2”,
+  “move card 1 to the top-left”). **clear_workspace** wipes the whole board.
+- **edit_html** adjusts existing cards without regenerating them: size-only asks (“make the
+  picture smaller”) set the img/video width % immediately; deeper asks stream a surgical HTML
+  edit (SVG, canvas, widget CSS/DOM). Media cards can be opened into editable HTML when needed.
+- Quality routing is unchanged: Jev’s `quality` option or prompt cues pick fast vs pro Mordiem
+  models via `mordiem-router.ts`. Every Jev decision / tool / reply is also relayed as an `agent`
+  event. Sandboxed frames still receive media bytes from the host (same as game art).
+- **Widget frames.** Each widget card (a build, a content card, an HTML edit) is its own isolated
+  `srcdoc` frame inside the board's frame (`sandbox="allow-scripts"`: no same-origin, no top
+  navigation, no `src`). The workspace frame runtime removes every other nested frame; the board
+  template alone runs in `nested` mode (`FramePayload.nested`, set by the host for `board@*`), and
+  it hardens each widget document itself: WebRTC constructors neutralized, frames of its own removed,
+  and a link clicked inside a card handed to the host through the board (the card never navigates).
+  Images for those documents go in as `data:` URLs (see Content cards).
 - **The screen as context** (`tools/screen.ts`). The situation Jev and the reply writer see says
   what the workspace shows ("The workspace window shows a picture: “Picture: a red fox…”", "…is
   empty"), so "clear that" and "what's on screen?" mean something, and **clear_workspace** blanks

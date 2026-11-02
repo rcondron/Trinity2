@@ -86,7 +86,14 @@ export class Speech {
       voices.find((v) => /female|samantha|zira|aria|jenny/i.test(v.name)) ||
       voices.find((v) => v.lang.startsWith("en"));
     if (pick) u.voice = pick;
-    u.rate = 1.03;
+    let rate = 1.03;
+    try {
+      const saved = Number(localStorage.getItem("trinity.speechRate"));
+      if (Number.isFinite(saved) && saved > 0) rate = Math.max(0.5, Math.min(2, saved * 1.03));
+    } catch {
+      /* ignore */
+    }
+    u.rate = rate;
     u.pitch = 1.05;
     u.onstart = () => { this.speaking = true; this.onSpeakingChange?.(true); };
     u.onend = () => { this.speaking = false; this.onSpeakingChange?.(false); };

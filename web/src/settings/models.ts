@@ -101,6 +101,13 @@ const CODER_MODELS = [
 ];
 const IMAGE_MODELS = ["krea-2-turbo", "chroma", "grok-imagine-image", "flux-2-pro"];
 const TTS_MODELS = ["tts-kokoro", "elevenlabs-tts-v4", "elevenlabs-tts-v4-turbo", "tts-chatterbox-hd", "tts-inworld-1-5-max", "tts-minimax-speech-02-hd", "tts-orpheus"];
+const VIDEO_MODELS = [
+  "veo3.1-fast-text-to-video",
+  "wan-3-0-text-to-video",
+  "wan-3-0-prime-text-to-video",
+  "seedance-2-5-text-to-video-basic",
+  "happyhorse-1-1-text-to-video",
+];
 /** Kokoro's voice names (other models take their own ids). */
 const TTS_VOICES = ["af_heart", "af_bella", "af_nova", "af_sarah", "af_sky", "am_adam", "am_michael", "am_eric", "bf_emma", "bf_isabella", "bm_george", "bm_lewis"];
 const JEV_MODELS = ["jev-latest"];
@@ -206,14 +213,21 @@ const GROUPS: GroupDef[] = [
       {
         title: "Conversation & tools",
         icon: "sparkles",
-        sub: "The models behind answers, spoken replies, tool arguments, pictures, spoken audio clips, and tool choice.",
+        sub: "The models behind answers, spoken replies, tool arguments, pictures, audio, video, and tool choice. Jev (or the Mordiem router reading the prompt) picks the fast vs quality slot for each request.",
         fields: [
           {
             key: "brainModel",
             label: "Brain",
             kind: "model",
             list: "dl-text-models",
-            hint: "Questions that need real knowledge or careful reasoning, and scheduled heartbeat turns.",
+            hint: "Careful answers (math, reasoning) and scheduled heartbeat turns. Used when Jev picks the quality text tier.",
+          },
+          {
+            key: "cardModel",
+            label: "Card designer",
+            kind: "model",
+            list: "dl-text-models",
+            hint: "Writes information cards (recipes, news, profiles, how-tos…): the facts, layout, look and picture brief. mercury-3 ≈ 1.8 s a card · deepseek-v4-flash-0731-fast ≈ 6 s · claude-sonnet-5-5 ≈ 9 s (most careful). Blank = the Brain; the quality tier always uses the Brain.",
           },
           { key: "replyModel", label: "Reply writer", kind: "model", list: "dl-text-models", hint: "The one spoken sentence after a tool runs." },
           {
@@ -221,21 +235,35 @@ const GROUPS: GroupDef[] = [
             label: "Fast JSON",
             kind: "model",
             list: "dl-text-models",
-            hint: "Tool arguments, memory notes, and reminder times. nemotron-3-nano ≈ 2 s, supports JSON mode.",
+            hint: "Tool arguments, snappy ask_brain answers, memory notes, reminder times. nemotron-3-nano ≈ 2 s.",
           },
           {
             key: "imageModel",
-            label: "Images",
+            label: "Images (fast)",
             kind: "model",
             list: "dl-image-models",
-            hint: "Pictures for the workspace. krea-2-turbo ≈ 4.7 s · chroma ≈ 6.5 s · grok-imagine-image ≈ 9.4 s · flux-2-pro ≈ 15.6 s.",
+            hint: "Default pictures. krea-2-turbo ≈ 4.7 s · chroma ≈ 6.5 s · grok-imagine-image ≈ 9.4 s.",
+          },
+          {
+            key: "imageProModel",
+            label: "Images (quality)",
+            kind: "model",
+            list: "dl-image-models",
+            hint: "When the caller asks for detail / photorealism. flux-2-pro ≈ 15.6 s. Falls back to Images (fast) if blank.",
           },
           {
             key: "ttsModel",
-            label: "Speech",
+            label: "Speech (fast)",
             kind: "model",
             list: "dl-tts-models",
-            hint: "Spoken audio clips the caller asks for (“read this aloud”). tts-kokoro ≈ 1 s a sentence; elevenlabs-tts-v4 and tts-chatterbox-hd are richer and slower.",
+            hint: "Spoken audio clips (“read this aloud”). tts-kokoro ≈ 1 s a sentence.",
+          },
+          {
+            key: "ttsProModel",
+            label: "Speech (quality)",
+            kind: "model",
+            list: "dl-tts-models",
+            hint: "Richer / more natural TTS when asked for. Falls back to Speech (fast) if blank.",
           },
           {
             key: "ttsVoice",
@@ -243,6 +271,20 @@ const GROUPS: GroupDef[] = [
             kind: "model",
             list: "dl-tts-voices",
             hint: "The voice name that speech model takes — kokoro: af_heart, af_bella, af_nova, am_adam, am_michael, bm_george…; ElevenLabs: a voice id.",
+          },
+          {
+            key: "videoModel",
+            label: "Video (fast)",
+            kind: "model",
+            list: "dl-video-models",
+            hint: "Default text-to-video for make_video (Mordiem/Venice /video/queue). veo3.1-fast-text-to-video is a good start.",
+          },
+          {
+            key: "videoProModel",
+            label: "Video (quality)",
+            kind: "model",
+            list: "dl-video-models",
+            hint: "Cinematic / high-quality video asks. Falls back to Video (fast) if blank.",
           },
           { key: "jevModel", label: "Jev model", kind: "model", list: "dl-jev-models", hint: "The decision model on TypeSafe." },
         ],
@@ -370,6 +412,7 @@ function renderDatalists(catalog: ModelCatalog | null | undefined): void {
     ["dl-coder-models", merge(CODER_MODELS, catalog?.text)],
     ["dl-image-models", merge(IMAGE_MODELS, catalog?.image)],
     ["dl-tts-models", merge(TTS_MODELS, catalog?.tts)],
+    ["dl-video-models", merge(VIDEO_MODELS, catalog?.video)],
     ["dl-tts-voices", TTS_VOICES],
     ["dl-jev-models", JEV_MODELS],
   ];

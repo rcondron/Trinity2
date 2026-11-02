@@ -1,4 +1,5 @@
 import type { MemoryStore } from "../db/memory.js";
+import { addCard, boardBlocked } from "../workspace/board.js";
 import { workspace } from "../workspace/bus.js";
 import type { Persona, ServerEvent, ToolResult, TranscriptTurn } from "../types.js";
 import { extractArgs } from "./extract.js";
@@ -87,12 +88,24 @@ export function recentResults(maxAgeMs = 10 * 60_000): RecentResult[] {
 
 // ─── Running a tool ──────────────────────────────────────────────────────────
 
+/** A tool's HTML (search results, a skill's page) goes up as a widget card on the board; a page of its own only while a game owns the screen. */
+function showRender(toolName: string, html: string): void {
+  const title = toolName.replace(/_/g, " ");
+  if (boardBlocked()) {
+    workspace.showHtml(html, title);
+    return;
+  }
+  addCard({ kind: "widget", title: title.charAt(0).toUpperCase() + title.slice(1), text: title, status: "ready", html, w: 40, h: 60 });
+}
+
 export async function act(d: Decision, utterance: string, io: ActIO): Promise<Outcome> {
   const tool = d.tool;
   if (!tool) return { ok: false, say: "I'm not sure what to do with that.", action: d.action, args: {} };
   const preset = confidentOptions(d, io.minConfidence);
   const args = argModeOf(tool) === "llm" ? await extractArgs(tool, utterance, io.situation, preset) : { ...preset };
   io.emit({ type: "tool", tool: tool.name, args });
+  // Every Jev action is mirrored into the workspace window (decisions arrive from the caller).
+  workspace.agent("tool", { tool: tool.name, text: utterance, args });
 
   let result: ToolResult;
   try {
@@ -112,7 +125,12 @@ export async function act(d: Decision, utterance: string, io: ActIO): Promise<Ou
   }
   // Keep channel events small: rendered HTML goes to the workspace, not the transcript.
   io.emit({ type: "tool_result", tool: tool.name, result: { ok: result.ok, say: result.say, error: result.error } });
-  if (result.render) workspace.showHtml(result.render, tool.name.replace(/_/g, " "));
+  workspace.agent("tool_result", {
+    tool: tool.name,
+    ok: result.ok,
+    text: result.ok ? result.say : (result.say ?? result.error),
+  });
+  if (result.render) showRender(tool.name, result.render);
   noteResult(tool.name, result);
 
   // A failed tool's own words (a decline, a clarifying question) come first.

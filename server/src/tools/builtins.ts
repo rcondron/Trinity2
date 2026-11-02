@@ -1,9 +1,12 @@
 import { jsonChat } from "../services/json-chat.js";
 import { search } from "../services/web.js";
 import type { Tool } from "../types.js";
+import { registerContentTools } from "./content.js";
+import { registerHtmlTools } from "./html.js";
 import { registerMediaTools } from "./media.js";
 import { registerTool } from "./registry.js";
 import { registerScreenTools } from "./screen.js";
+import { registerVoiceTools } from "./voice.js";
 
 /** Web text as HTML text or an attribute value: a result's title or URL can't add tags or attributes to the card. */
 const html = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -27,7 +30,7 @@ async function synthesizeAnswer(query: string, results: { title: string; snippet
 
 const webSearch: Tool = {
   name: "web_search",
-  description: "Search the web for current information, facts, or news and report what you find.",
+  description: "Search the web for a quick fact, link or answer and say what you find (news or anything to lay out on the board is show_card).",
   input: { query: { type: "string", description: "What to search for", required: true } },
   source: "builtin",
   async run(args) {
@@ -78,4 +81,7 @@ export function registerBuiltins(): void {
   [webSearch, getTime].forEach(registerTool);
   registerScreenTools();
   registerMediaTools();
+  registerContentTools();
+  registerHtmlTools();
+  registerVoiceTools();
 }

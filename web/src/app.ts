@@ -88,6 +88,10 @@ function handle(ev: ServerEvent) {
   switch (ev.type) {
     case "ready":
       applyStatus(ev.persona, ev.services, ev.profileName);
+      if (typeof ev.speechRate === "number") liveCall.setSpeechRate(ev.speechRate);
+      break;
+    case "speech_rate":
+      liveCall.setSpeechRate(ev.rate);
       break;
     case "audio":
       audio.play(ev.chunk);
@@ -191,8 +195,9 @@ const CALL_QUIET_MS = 20_000;
 const CALL_WORK = new Set(["caller", "agent", "decision", "pending", "tool", "tool_result", "reply", "memory", "announce"]);
 
 /**
- * The caller's name changed since the session was warmed (the voice hears it when it connects):
- * warm a fresh one — never in the middle of a live call, and in standby once the call has gone quiet.
+ * The caller's name changed since the session was warmed: refresh standby — never in the
+ * middle of a live call, and in standby once the call has gone quiet. (The name is for the
+ * brain/memory; PersonaPlex's text_prompt stays name-free so it doesn't greet as the caller.)
  */
 function rewarmForName() {
   if (nameTimer) clearTimeout(nameTimer);

@@ -32,6 +32,8 @@ export interface WorkspaceSnapshot {
 
 export type ToastTone = "info" | "success" | "warn" | "error";
 
+export type AgentKind = "decision" | "tool" | "tool_result" | "reply";
+
 /** Server → window. */
 export type WorkspaceEvent =
   | { type: "snapshot"; snapshot: WorkspaceSnapshot }
@@ -39,7 +41,17 @@ export type WorkspaceEvent =
   | { type: "template"; version: number; template: WorkspaceTemplate; state: unknown; title?: string }
   | { type: "html"; version: number; title: string; html: string }
   | { type: "toast"; text: string; tone: ToastTone }
-  | { type: "activity"; id: string; text: string; busy: boolean };
+  | { type: "activity"; id: string; text: string; busy: boolean }
+  | {
+      type: "agent";
+      kind: AgentKind;
+      at: number;
+      tool?: string;
+      text?: string;
+      ok?: boolean;
+      confidence?: number;
+      args?: Record<string, unknown>;
+    };
 
 /** Window → server. */
 export type WorkspaceClientEvent =

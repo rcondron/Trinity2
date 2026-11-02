@@ -2,7 +2,8 @@ import { nanoid } from "nanoid";
 import { WebSocket } from "ws";
 import type { RawData } from "ws";
 import { getEndpoints } from "../settings.js";
-import { dueForVoice, getActivePersona, getProfileName } from "../db/sqlite.js";
+import { dueForVoice, getActivePersona } from "../db/sqlite.js";
+import { getSpeechRate, onSpeechRateChange } from "./speech-rate.js";
 import type { MemoryStore } from "../db/memory.js";
 import { act, type Outcome } from "../agent/act.js";
 import { contextFor } from "../agent/context.js";
@@ -12,6 +13,7 @@ import { bg, safeInterval } from "../util/bg.js";
 import { readAfter, wordsForNumbers } from "../tools/schedule.js";
 import { curateExchange, curationAfter } from "./curator.js";
 import { voicePromptFile as mapVoiceFile } from "./voices.js";
+import { workspace } from "../workspace/bus.js";
 import type { Persona, TranscriptTurn } from "../types.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -66,16 +68,22 @@ export function voicePromptFile(voice: string): string {
 /**
  * The text that conditions PersonaPlex. Every token costs a model step at connect
  * (measured 42 chars → 4.5s, 520 chars → 9.4s), and an EMPTY prompt hangs the server,
- * so: the persona's short voice prompt, else its first sentence — never empty. When the
- * caller's name is known it rides along as one short sentence (≤ ~60 chars) so the voice
- * can use it.
+ * so: the persona's short voice prompt, else its first sentence — never empty.
+ *
+ * Do NOT put the caller's name (Settings → Memory "Your name") in this prompt.
+ * PersonaPlex treats text_prompt as its own identity; any other proper name made it
+ * open with "Hello, this is <caller>". The brain/memory still know the caller's name
+ * for conversation — only the voice handshake stays name-free.
  */
-export function voicePromptText(p: Persona, override?: string, callerName: string | null = getProfileName()): string {
+export function voicePromptText(p: Persona, override?: string): string {
+  const who = (p.name || "Trinity").split(/[—\-–|:/]/)[0]!.trim() || "Trinity";
   const pick = (override ?? p.voicePrompt ?? "").trim() || (p.description.split(/(?<=[.!?])\s/)[0] ?? "").trim();
-  const text = pick || `You are ${p.name}, a helpful voice assistant.`;
-  const base = text.length > MAX_VOICE_PROMPT ? `${text.slice(0, MAX_VOICE_PROMPT - 1).replace(/\s+\S*$/, "")}.` : text;
-  if (!callerName) return base;
-  return `${base}${/[.!?]$/.test(base) ? "" : "."} The caller's name is ${callerName}.`;
+  let text = pick || `You are ${who}, a helpful voice assistant.`;
+  // Make the agent name unmistakable when a custom prompt forgot to lead with it.
+  if (!new RegExp(String.raw`\byou are\b[^.]{0,40}\b${who.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\b`, "i").test(text)) {
+    text = `You are ${who}. ${text}`;
+  }
+  return text.length > MAX_VOICE_PROMPT ? `${text.slice(0, MAX_VOICE_PROMPT - 1).replace(/\s+\S*$/, "")}.` : text;
 }
 
 /** Optional hook so the voices module can make sure a custom voice exists on the pod first. */
@@ -299,6 +307,7 @@ export class VoiceCall {
   /** The pod said hello: before that it's conditioning on the prompt, and words sent to it are lost. */
   private ready = false;
   private closed = false;
+  private unsubSpeechRate: (() => void) | null = null;
   private resolveStopped!: () => void;
   private stopped = new Promise<void>((r) => (this.resolveStopped = r));
 
@@ -426,7 +435,16 @@ export class VoiceCall {
       else this.dg = dg;
       this.flushDgBuffer();
       this.ready = true;
-      this.send({ type: "ready", handshake_ms: Date.now() - started, standby: !this.micOn, persona: this.persona.name });
+      this.send({
+        type: "ready",
+        handshake_ms: Date.now() - started,
+        standby: !this.micOn,
+        persona: this.persona.name,
+        speechRate: getSpeechRate(),
+      });
+      this.unsubSpeechRate = onSpeechRateChange((rate) => {
+        if (!this.closed) this.send({ type: "speech_rate", rate });
+      });
     } catch (err) {
       this.send({ type: "status", text: `Could not connect: ${(err as Error).message}`, error: true, busy: err instanceof BusyError });
       // Deepgram may still be connecting (or connected) on its own — never leave it open.
@@ -635,6 +653,8 @@ export class VoiceCall {
   stop(): void {
     if (this.closed) return;
     this.closed = true;
+    this.unsubSpeechRate?.();
+    this.unsubSpeechRate = null;
     if (activeCall === this) activeCall = null;
     for (const t of this.timers) clearInterval(t);
     try {
@@ -896,6 +916,14 @@ export class VoiceCall {
         options: d.options,
         error: d.error,
       });
+      // Mirror Jev into the workspace: every non-NONE pick, and every finished sentence.
+      if (d.action !== "NONE" || final) {
+        workspace.agent("decision", {
+          tool: d.action,
+          text: final ? text : `${text}…`,
+          confidence: d.confidence,
+        });
+      }
       const policy = firing(d, final, this.ep.minConfidence);
       if (policy === "fire") fired = this.fire(utterance, d, text);
       else if (policy === "hold" && !this.holds.has(`pend:${utterance}`)) {
@@ -1099,9 +1127,10 @@ export class VoiceCall {
         chunk = more ? await words.get(8000) : null;
       }
       if (fillerTimer) clearTimeout(fillerTimer);
+      const replyText = said.join(" ");
       this.send({
         type: "reply",
-        text: said.join(" "),
+        text: replyText,
         filler,
         // first_ms: until the first reply words went to the voice; ms: until the last did.
         first_ms: firstMs,
@@ -1110,6 +1139,7 @@ export class VoiceCall {
         interrupted: this.bargedIn,
         ...(outcome ? {} : { error: "the action didn't finish in time" }),
       });
+      if (replyText) workspace.agent("reply", { tool: outcome?.action, text: replyText, ok: !this.bargedIn });
     } catch {
       this.send({ type: "reply", text: said.join(" "), error: "the reply took too long" });
     } finally {

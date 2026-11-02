@@ -76,15 +76,25 @@ export const config = {
     kimiModel: process.env.STRONG_CODER || process.env.MORDIEM_KIMI_MODEL || "kimi-k3",
     coderDefault: (process.env.CODER_DEFAULT === "kimi" || process.env.CODER_DEFAULT === "strong" ? "kimi" : "glm") as "glm" | "kimi",
     brainModel: process.env.BRAIN_MODEL || "claude-sonnet-5-5",
+    // The card designer: writes information cards (show_card) — the facts, layout, look and picture
+    // brief of a recipe / news / profile card. Measured on the real prompt (recipe / profile / explainer):
+    // mercury-3 ~1.8 s a card, nemotron-nano ~4.5–5 s (thin), deepseek-v4-flash ~6 s, kimi-k3 6–20 s,
+    // claude-sonnet-5-5 ~8.5–9 s (the most careful). The quality tier always uses the brain. Blank = the brain.
+    cardModel: process.env.CARD_MODEL || "mercury-3",
     // Fast model that writes the one spoken sentence after a tool runs.
     replyModel: process.env.REPLY_MODEL || "nvidia-nemotron-3-nano-30b-a3b",
     // Fast JSON model for argument extraction and game content (~2s measured).
     fastModel: process.env.FAST_MODEL || "nvidia-nemotron-3-nano-30b-a3b",
-    // Image model for game art and pictures the caller asks for (krea-2-turbo ~4.7s measured).
+    // Image models for game art and pictures the caller asks for. Jev / the router pick turbo vs pro.
     imageModel: process.env.IMAGE_MODEL || "krea-2-turbo",
+    imageProModel: process.env.IMAGE_PRO_MODEL || "flux-2-pro",
     // Text-to-speech for audio clips the caller asks for (tts-kokoro ~1s measured), and its voice.
     ttsModel: process.env.TTS_MODEL || "tts-kokoro",
+    ttsProModel: process.env.TTS_PRO_MODEL || "elevenlabs-tts-v4",
     ttsVoice: process.env.TTS_VOICE || "af_heart",
+    // Text-to-video via Mordiem/Venice (POST /video/queue → /video/retrieve). Fast vs cinematic slots.
+    videoModel: process.env.VIDEO_MODEL || "veo3.1-fast-text-to-video",
+    videoProModel: process.env.VIDEO_PRO_MODEL || "wan-3-0-text-to-video",
   },
 
   web: {

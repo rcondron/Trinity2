@@ -1,12 +1,14 @@
 import { speakable } from "../agent/reply.js";
 import { answer } from "../services/brain.js";
+import { QUALITY_OPTIONS } from "../services/mordiem-router.js";
 import type { MemoryDoc, Tool } from "../types.js";
 import { registerTool } from "./registry.js";
 
 /**
- * ask_brain: questions that need real knowledge or careful reasoning go to the brain model
- * (PersonaPlex is a small speech model) and the answer is spoken verbatim — grounded in the
- * situation and in what Trinity remembers about the caller.
+ * ask_brain: questions that need real knowledge or careful reasoning go to a Mordiem text
+ * model (PersonaPlex is a small speech model) and the answer is spoken verbatim — grounded in
+ * the situation and in what Trinity remembers about the caller. Jev / the router pick the fast
+ * JSON model for snappy asks and the brain model when the prompt needs careful reasoning.
  */
 const ANSWER_MS = 12_000;
 const MEMORY_MS = 1_500;
@@ -44,12 +46,18 @@ async function relevantMemories(docs: Promise<MemoryDoc[]>, question: string): P
 const askBrain: Tool = {
   name: "ask_brain",
   description:
-    "Answer a question that needs real knowledge, math, or careful reasoning (not small talk, and not today's news — that's web search).",
-  input: {},
+    "Answer a question that needs real knowledge, math, or careful reasoning, spoken only (not small talk; not the news or anything to lay out on the board — that's show_card).",
+  input: {
+    quality: {
+      type: "string",
+      description: "which Mordiem text model should answer",
+      options: QUALITY_OPTIONS,
+    },
+  },
   // The question is the caller's whole sentence (ctx.utterance): fires when it ends.
   argMode: "raw",
   source: "builtin",
-  async run(_args, ctx) {
+  async run(args, ctx) {
     const question = ctx.utterance.trim();
     if (!question) return { ok: false, say: "I didn't catch the question." };
     const memories = await relevantMemories(ctx.memory.search(question, { limit: 8 }), question);
@@ -60,6 +68,7 @@ const askBrain: Tool = {
       question,
       situation: ctx.situation,
       timeoutMs: ANSWER_MS,
+      quality: args.quality,
     });
     const said = text ? speakable(text) : "";
     if (!said) return { ok: false, say: "I couldn't work that out just now: the brain model didn't answer in time." };

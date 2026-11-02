@@ -5,6 +5,7 @@ import { deletePersona, getActivePersona, getPersona, getProfileName, listPerson
 import type { MemoryStore } from "./db/memory.js";
 import { imagesRouter } from "./services/images.js";
 import { audioRouter } from "./services/speech.js";
+import { videosRouter } from "./services/videos.js";
 import { voicesRouter } from "./services/voices-routes.js";
 import { gamesRouter } from "./game/routes.js";
 import { heartbeatRouter } from "./routes/heartbeat.js";
@@ -56,6 +57,7 @@ export function createApi(memory: MemoryStore, hooks: ApiHooks = {}): Router {
   api.use(express.json({ limit: "12mb" }));
   api.use(imagesRouter());
   api.use(audioRouter());
+  api.use(videosRouter());
 
   // ── Workspace ──
   api.get("/workspace", (_req, res) => res.json(workspace.snapshot()));

@@ -27,6 +27,12 @@ export interface FramePayload {
    * absolutized "/api/..." strings). Omit it to wait for the first posted state instead.
    */
   state?: unknown;
+  /**
+   * app only: the template hosts its own isolated child frames (the card board's widget cards). Each
+   * must be a sandboxed srcdoc frame with neither allow-same-origin nor allow-top-navigation and no
+   * src URL; any other nested frame is still removed. Off for every other template and for builds.
+   */
+  nested?: boolean;
 }
 
 /**
@@ -134,6 +140,14 @@ var lastErrorAt = 0;
 var rawShown = null;
 var assets = Object.create(null);
 var missing = Object.create(null);
+// The posted bytes themselves, and data: URLs made from them for images embedded in a widget's HTML
+// (a content card's hero): a nested sandboxed frame is another opaque origin, so it can load neither
+// this frame's blob: URLs nor http://localhost — only data: (measured). Made once per image, on demand.
+var blobs = Object.create(null);
+var inline = Object.create(null);
+var converting = Object.create(null);
+var TRANSPARENT = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
+var INLINE_IMAGE = /https?:\/\/[^\s"'()<>]+?\/api\/images\/[A-Za-z0-9_.-]+/g;
 
 function post(msg) {
   try { host.postMessage(msg, "*"); } catch (err) { /* the host went away */ }
@@ -191,13 +205,42 @@ function findRender() {
 }
 
 function isAssetUrl(value) {
-  return typeof value === "string" && /\/api\/(?:images|audio)\/[^\/?#]+$/.test(value);
+  return typeof value === "string" && /\/api\/(?:images|audio|videos)\/[^\/?#]+$/.test(value);
 }
 
 // The state as the template should see it: engine image URLs swapped for this frame's blob:
 // URLs. An image whose bytes haven't arrived yet shows as "pending" (the templates' shimmer).
+function swapInline(html) {
+  return html.replace(INLINE_IMAGE, function (url) {
+    if (inline[url]) return inline[url];
+    if (blobs[url]) toDataUrl(url);
+    return TRANSPARENT; // not here yet (or never coming): the card's own placeholder shows through
+  });
+}
+
+function toDataUrl(url) {
+  if (converting[url] || inline[url]) return;
+  converting[url] = true;
+  try {
+    var reader = new FileReader();
+    reader.onload = function () { inline[url] = String(reader.result); converting[url] = false; redrawSoon(); };
+    reader.onerror = function () { converting[url] = false; missing[url] = true; };
+    reader.readAsDataURL(blobs[url]);
+  } catch (e) { converting[url] = false; }
+}
+
+// Redraw with an image now in place (a burst of images coalesces into one render).
+function redrawSoon() {
+  if (booted && hasShown && !hasLatest) { latest = rawShown; hasLatest = true; }
+  if (booted && hasLatest) schedule();
+}
+
 function swapAssets(value, depth) {
-  if (typeof value === "string") return assets[value] || value;
+  if (typeof value === "string") {
+    if (assets[value]) return assets[value];
+    if (value.length > 24 && value.indexOf("/api/images/") !== -1 && value.indexOf("<") !== -1) return swapInline(value);
+    return value;
+  }
   if (value === null || typeof value !== "object" || depth > 64) return value;
   var out, i, key;
   if (Array.isArray(value)) {
@@ -220,13 +263,12 @@ function takeAsset(data) {
   var url = typeof data.url === "string" ? data.url : "";
   if (!url || assets[url]) return;
   if (data.blob) {
+    blobs[url] = data.blob;
     try { assets[url] = URL.createObjectURL(data.blob); } catch (e) { missing[url] = true; }
   } else {
     missing[url] = true;
   }
-  // Redraw with the image in place (a burst of images coalesces into one render).
-  if (booted && hasShown && !hasLatest) { latest = rawShown; hasLatest = true; }
-  if (booted && hasLatest) schedule();
+  redrawSoon();
 }
 
 function draw(nextRaw) {
@@ -466,7 +508,9 @@ try {
 // No network side channels and no nested realms. The frame's CSP has no directive for WebRTC, so a
 // page could reach any host over STUN/TURN (ICE) — the RTC constructors are made unusable. A nested
 // frame would be a fresh realm with its own un-neutralized constructors, so creating one yields a
-// plain <div>, and any frame that still reaches the DOM (innerHTML, etc.) is removed. A <link> a
+// plain <div>, and any frame that still reaches the DOM (innerHTML, etc.) is removed — except, when
+// NESTED (the card board), an isolated srcdoc frame (sandboxed, no same-origin, no top navigation, no
+// src), which is how each widget card is shown; the board hardens those documents itself. A <link> a
 // script creates is a <div> too: a preconnect hint reaches its host the moment it's inserted, which
 // neither the CSP nor an observer can stop (a build's own <link> tags are stripped before it gets
 // here; one a script writes in as markup, through innerHTML and the like, still goes out). Neither
@@ -517,15 +561,23 @@ try {
   });
 } catch (e) { /* leave it */ }
 try {
+  // A widget card's frame on the board: nothing else keeps a nested frame. (A src set later navigates
+  // it to a URL, which the CSP's frame-src 'none' blocks; a sandbox changed later applies only then.)
+  var keepFrame = function (el) {
+    if (!NESTED || !/^iframe$/i.test(el.nodeName)) return false;
+    var sandbox = el.getAttribute("sandbox");
+    if (typeof sandbox !== "string" || /allow-same-origin|allow-top-navigation/i.test(sandbox)) return false;
+    return !el.hasAttribute("src");
+  };
   var dropFrames = function (node) {
     if (!node || node.nodeType !== 1) return;
     if (NESTED_FRAME.test(node.nodeName)) {
-      if (node.parentNode) node.parentNode.removeChild(node);
+      if (!keepFrame(node) && node.parentNode) node.parentNode.removeChild(node);
       return;
     }
     if (node.querySelectorAll) {
       var nested = node.querySelectorAll("iframe,frame,object,embed");
-      for (var i = 0; i < nested.length; i++) if (nested[i].parentNode) nested[i].parentNode.removeChild(nested[i]);
+      for (var i = 0; i < nested.length; i++) if (!keepFrame(nested[i]) && nested[i].parentNode) nested[i].parentNode.removeChild(nested[i]);
     }
   };
   // (The document itself, not its root element: a page that replaces either is still watched.)
@@ -609,9 +661,9 @@ export function scriptJson(value: unknown): string {
     .split(PARA_SEP).join("\\u2029");
 }
 
-function runtimeScript(kind: FrameKind, init?: { state: unknown }): string {
+function runtimeScript(kind: FrameKind, init?: { state: unknown }, nested = false): string {
   return (
-    "(function (MODE, HAS_INIT, INIT) {" +
+    "(function (MODE, HAS_INIT, INIT, NESTED) {" +
     RUNTIME_BODY +
     "\n})(" +
     JSON.stringify(kind) +
@@ -619,11 +671,13 @@ function runtimeScript(kind: FrameKind, init?: { state: unknown }): string {
     (init ? "true" : "false") +
     ", " +
     (init ? scriptJson(init.state) : "null") +
+    ", " +
+    (nested ? "true" : "false") +
     ");"
   );
 }
 
-function headFor(kind: FrameKind, init?: { state: unknown }): string {
+function headFor(kind: FrameKind, init?: { state: unknown }, nested = false): string {
   return (
     '<meta charset="utf-8">' +
     `<meta http-equiv="Content-Security-Policy" content="${frameCsp()}">` +
@@ -635,7 +689,7 @@ function headFor(kind: FrameKind, init?: { state: unknown }): string {
     (kind === "empty" ? EMPTY_CSS : "") +
     "</style>" +
     "<script>" +
-    runtimeScript(kind, init) +
+    runtimeScript(kind, init, nested) +
     "</script>"
   );
 }
@@ -706,7 +760,7 @@ export function buildFrameDoc(kind: FrameKind, payload: string | FramePayload = 
   const source = typeof p.source === "string" ? p.source : "";
   if (kind === "app") {
     const init = Object.prototype.hasOwnProperty.call(p, "state") ? { state: p.state } : undefined;
-    return compose(source, headFor("app", init), BOOT_TAG);
+    return compose(source, headFor("app", init, p.nested === true), BOOT_TAG);
   }
   if (kind === "html") return compose(withoutLinks(source), headFor("html"), BOOT_TAG);
   return compose(emptyMarkup(source), headFor("empty"), BOOT_TAG, "tw-empty");
