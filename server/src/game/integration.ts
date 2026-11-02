@@ -36,6 +36,13 @@ const HIDDEN_DURING_GAME = [
   "ask_brain",
   "roll_dice",
   "get_time",
+  "browser_open",
+  "browser_tabs",
+  "browser_read",
+  "browser_act",
+  "browser_modify",
+  "browser_save",
+  "browser_share",
 ];
 /**
  * The Game Master without a game: hide board/media tooling so Jev can find game_new / game_load
@@ -54,6 +61,13 @@ const HIDDEN_WITHOUT_GAME = [
   "remove_card",
   "move_card",
   "edit_html",
+  "browser_open",
+  "browser_tabs",
+  "browser_read",
+  "browser_act",
+  "browser_modify",
+  "browser_save",
+  "browser_share",
 ];
 
 export function registerGameContext(): void {

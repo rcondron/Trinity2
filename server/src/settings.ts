@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { config, DATA_DIR } from "./config.js";
+import { browserConnected } from "./services/browser-bridge.js";
 import type { ServiceStatus } from "./types.js";
 
 /**
@@ -46,6 +47,8 @@ export interface Endpoints {
   videoProModel: string;
   // Other services.
   tavilyKey: string;
+  /** SerpApi: live Google Shopping / Flights / Hotels results for the shopping and travel cards. */
+  serpapiKey: string;
   falKey: string;
   // Behaviour.
   /** "auto": skills Trinity creates are sandbox-tested and usable at once; "manual": they wait for approval. */
@@ -58,7 +61,7 @@ export interface Endpoints {
 
 const STORE = path.join(DATA_DIR, "endpoints.json");
 /** Keys are secret — never returned to the browser. */
-const SECRET_KEYS: (keyof Endpoints)[] = ["deepgramKey", "typesafeKey", "mordiemKey", "personaplexAdminToken", "tavilyKey", "falKey"];
+const SECRET_KEYS: (keyof Endpoints)[] = ["deepgramKey", "typesafeKey", "mordiemKey", "personaplexAdminToken", "tavilyKey", "serpapiKey", "falKey"];
 
 function envDefaults(): Endpoints {
   return {
@@ -87,6 +90,7 @@ function envDefaults(): Endpoints {
     videoModel: config.mordiem.videoModel,
     videoProModel: config.mordiem.videoProModel,
     tavilyKey: config.web.key,
+    serpapiKey: config.web.serpapiKey,
     falKey: config.fal.key,
     skillApproval: config.skills.approval,
     routeEveryMs: config.timing.routeEveryMs,
@@ -208,6 +212,14 @@ export const live = {
   get web(): boolean {
     return true; // keyless DuckDuckGo baseline; Tavily is used when its key is set
   },
+  /** Live shopping, flight and hotel results (SerpApi). Without it those cards fall back to web search. */
+  get travel(): boolean {
+    return Boolean(getEndpoints().serpapiKey);
+  },
+  /** The Chrome extension is connected: Trinity can drive the caller's browser. */
+  get browser(): boolean {
+    return browserConnected();
+  },
 };
 
 export function serviceStatus(): ServiceStatus {
@@ -219,5 +231,7 @@ export function serviceStatus(): ServiceStatus {
     brain: m(live.brain),
     mordiem: m(live.mordiem),
     web: m(live.web),
+    travel: m(live.travel),
+    browser: m(live.browser),
   };
 }

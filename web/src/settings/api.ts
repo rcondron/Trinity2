@@ -65,8 +65,28 @@ export interface PublicEndpoints {
   mordiemKeySet: boolean;
   personaplexAdminTokenSet: boolean;
   tavilyKeySet?: boolean;
+  serpapiKeySet?: boolean;
   falKeySet?: boolean;
   [key: string]: unknown;
+}
+
+export interface BrowserTabInfo {
+  id: number;
+  title: string;
+  url: string;
+  active: boolean;
+}
+
+/** GET /browser — the Chrome extension's connection, its tabs and the pairing token (Settings → Browser extension). */
+export interface BrowserInfo {
+  connected: boolean;
+  since: number;
+  version: string;
+  chrome: string;
+  caps: { userScripts: boolean; pageCapture: boolean };
+  tabs: BrowserTabInfo[];
+  token: string;
+  extensionDir: string;
 }
 
 /** Model ids for the Models card's suggestions (GET /settings/models, when the engine has it). */
@@ -740,6 +760,11 @@ export const api = {
         return null;
       }
     },
+  },
+
+  browser: {
+    get: (opts: RequestOptions = {}) => request<BrowserInfo>("GET", "/browser", undefined, { action: "load the browser extension's state", ...opts }),
+    rotateToken: (opts: RequestOptions = {}) => request<{ token: string }>("POST", "/browser/token", {}, { action: "make a new token", ...opts }),
   },
 
   heartbeat: {

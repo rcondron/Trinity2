@@ -182,4 +182,8 @@ export interface ServiceStatus {
   brain: "live" | "mock";
   mordiem: "live" | "mock";
   web: "live" | "mock";
+  /** Live shopping, flight and hotel results (a SerpApi key). */
+  travel: "live" | "mock";
+  /** The Chrome extension is connected. */
+  browser: "live" | "mock";
 }

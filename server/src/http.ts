@@ -1,8 +1,11 @@
+import path from "node:path";
 import express, { type Router } from "express";
 import { nanoid } from "nanoid";
+import { ROOT } from "./config.js";
 import { serviceStatus, publicEndpoints, setEndpoints, type Endpoints } from "./settings.js";
 import { deletePersona, getActivePersona, getPersona, getProfileName, listPersonas, savePersona, setActivePersona } from "./db/sqlite.js";
 import type { MemoryStore } from "./db/memory.js";
+import { browserState, browserToken, rotateBrowserToken } from "./services/browser-bridge.js";
 import { imagesRouter } from "./services/images.js";
 import { audioRouter } from "./services/speech.js";
 import { videosRouter } from "./services/videos.js";
@@ -114,6 +117,9 @@ export function createApi(memory: MemoryStore, hooks: ApiHooks = {}): Router {
   });
   // Model ids the gateway offers, for the Settings model pickers ({text: [...], image: [...]}).
   api.get("/settings/models", ah(async (_req, res) => res.json(await mordiemModels())));
+  // The Chrome extension: connection state, its tabs, and the pairing token (Settings → Browser extension).
+  api.get("/browser", (_req, res) => res.json({ ...browserState(), token: browserToken(), extensionDir: path.join(ROOT, "extension") }));
+  api.post("/browser/token", (_req, res) => res.json({ token: rotateBrowserToken() }));
   // Voice library (built-in presets + custom samples synced to the pod) and saved games.
   api.use(voicesRouter());
   api.use(gamesRouter());

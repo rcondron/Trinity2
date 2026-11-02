@@ -15,6 +15,18 @@ export function setTellFallback(fn: (text: string, spoken: Spoken) => void): voi
   tellFallback = fn;
 }
 
+/** The same, from somewhere with no tool context (a share from the browser): the live call, else every open app. */
+export function tellEveryone(text: string, label = "tell"): void {
+  const line = text.replace(/\s+/g, " ").trim();
+  if (!line) return;
+  bg(label, async () => {
+    const spoken = await announce(line);
+    if (spoken === "said") return;
+    if (tellFallback) tellFallback(line, spoken);
+    else console.log(`[${label}] ${line}`);
+  });
+}
+
 export function tell(ctx: ToolContext, text: string, label = "tell"): void {
   const line = text.replace(/\s+/g, " ").trim();
   if (!line) return;

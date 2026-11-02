@@ -20,6 +20,8 @@ import { registerAskTools } from "./tools/ask.js";
 import { registerBuiltins } from "./tools/builtins.js";
 import { registerCodingTools } from "./tools/coding.js";
 import { setTellFallback } from "./agent/tell.js";
+import { handleBrowserUpgrade } from "./services/browser-bridge.js";
+import { registerBrowserTools } from "./tools/browser.js";
 import { loadForgedSkills, registerForgeTools } from "./tools/forge.js";
 import { registerMemoryTools } from "./tools/memory.js";
 import { loadSkills } from "./tools/registry.js";
@@ -80,6 +82,7 @@ async function main() {
   registerGameTools();
   registerStoryTools();
   registerGameContext();
+  registerBrowserTools();
   // Custom voices are uploaded to the pod (if missing) before a call connects with them.
   setVoiceResolver(ensureVoiceOnPod);
   const skills = await loadSkills();
@@ -110,11 +113,21 @@ async function main() {
   dropSilentPeers(wss);
   dropSilentPeers(workspaceWss);
   server.on("upgrade", (req, socket, head) => {
-    if (!isAllowedHost(req.headers.host) || !isAllowedOrigin(req.headers.origin)) {
+    const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+    // /ext = the Chrome extension (its origin is chrome-extension://…; the pairing token is the gate).
+    const origin = req.headers.origin;
+    const extensionOrigin = origin === undefined || origin.startsWith("chrome-extension://") || isAllowedOrigin(origin);
+    if (pathname === "/ext") {
+      if (!isAllowedHost(req.headers.host) || !extensionOrigin) {
+        socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+        return socket.destroy();
+      }
+      return handleBrowserUpgrade(req, socket, head);
+    }
+    if (!isAllowedHost(req.headers.host) || !isAllowedOrigin(origin)) {
       socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
       return socket.destroy();
     }
-    const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
     if (pathname === "/ws") wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
     else if (pathname === "/call") callWss.handleUpgrade(req, socket, head, (ws) => callWss.emit("connection", ws, req));
     else if (pathname === "/ws/workspace")

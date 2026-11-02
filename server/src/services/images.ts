@@ -230,13 +230,13 @@ async function generate(prompt: string, size: string, priority: number, model: s
   throw lastErr ?? new Error("image generation failed");
 }
 
-/** Serves generated images at GET /images/<id>.png (mounted under /api). */
+/** Serves generated images (GET /images/<id>.png) and cached remote pictures (remote-images.ts: .jpg / .webp / .gif too), mounted under /api. */
 export function imagesRouter(): Router {
   const r = express.Router();
   r.get("/images/:file", (req, res) => {
-    const m = /^([A-Za-z0-9_-]{6,40})\.png$/.exec(String(req.params.file ?? ""));
+    const m = /^([A-Za-z0-9_-]{6,40})\.(png|jpg|webp|gif)$/.exec(String(req.params.file ?? ""));
     if (!m) return res.status(400).end();
-    const p = path.join(IMAGES_DIR, `${m[1]}.png`);
+    const p = path.join(IMAGES_DIR, `${m[1]}.${m[2]}`);
     if (!fs.existsSync(p)) return res.status(404).end();
     res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
     res.sendFile(p);

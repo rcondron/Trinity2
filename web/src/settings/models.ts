@@ -152,6 +152,13 @@ const GROUPS: GroupDef[] = [
         hint: "Better web search. Without it Trinity uses keyless DuckDuckGo.",
       },
       {
+        key: "serpapiKey",
+        label: "SerpApi",
+        kind: "secret",
+        flag: "serpapiKeySet",
+        hint: "Live Google Shopping, Flights and Hotels results for the shopping, flight and hotel cards (serpapi.com; the free tier is 250 searches a month). Without it those cards use web search and link to the same search on Google.",
+      },
+      {
         key: "falKey",
         label: "fal",
         kind: "secret",
@@ -390,6 +397,18 @@ const SERVICE_INFO: Record<string, { label: string; icon: IconName; live: string
     mock: "No Mordiem key — the coding skill, spoken replies, and images are off.",
   },
   web: { label: "Web search", icon: "search", live: "Keyless DuckDuckGo, or Tavily when its key is set.", mock: "Web search is off." },
+  travel: {
+    label: "Shopping & travel",
+    icon: "map",
+    live: "SerpApi key is set — live prices on the shopping, flight and hotel cards.",
+    mock: "No SerpApi key — shopping, flight and hotel cards use web search, without live prices.",
+  },
+  browser: {
+    label: "Browser extension",
+    icon: "monitor",
+    live: "The Trinity extension is connected in Chrome — Trinity can open, read and act on your tabs.",
+    mock: "No Chrome extension connected — set it up under Browser extension.",
+  },
   voice: {
     label: "Turn-based voice",
     icon: "waveform",
@@ -397,7 +416,7 @@ const SERVICE_INFO: Record<string, { label: string; icon: IconName; live: string
     mock: "The legacy fal voice path isn't configured — the real-time call doesn't need it.",
   },
 };
-const SERVICE_ORDER = ["stream", "jev", "brain", "mordiem", "web", "voice"];
+const SERVICE_ORDER = ["stream", "jev", "brain", "mordiem", "web", "travel", "browser", "voice"];
 
 function humanize(key: string): string {
   const s = key.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ");

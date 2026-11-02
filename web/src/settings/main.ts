@@ -5,6 +5,7 @@
 
 import "./settings.css";
 import { onBroadcast, type SettingsTopic } from "./channel.js";
+import { createBrowserSection } from "./browser.js";
 import { createGamesSection } from "./games.js";
 import { createHeartbeatSection } from "./heartbeat.js";
 import { isIconName, svgIcon } from "./icons.js";
@@ -26,7 +27,7 @@ import {
 import { avatar, confirmAction, h, icon, setChildren, type Section } from "./ui.js";
 import { createVoicesSection } from "./voices.js";
 
-type SectionId = "personas" | "models" | "voices" | "skills" | "memory" | "heartbeat" | "games";
+type SectionId = "personas" | "models" | "voices" | "skills" | "memory" | "heartbeat" | "browser" | "games";
 
 // Nav order. Saved games is last: only the Game Master persona uses it.
 const SECTIONS: Record<SectionId, { title: string; create: () => Section }> = {
@@ -36,6 +37,7 @@ const SECTIONS: Record<SectionId, { title: string; create: () => Section }> = {
   skills: { title: "Skills", create: createSkillsSection },
   memory: { title: "Memory", create: createMemorySection },
   heartbeat: { title: "Heartbeat", create: createHeartbeatSection },
+  browser: { title: "Browser extension", create: createBrowserSection },
   games: { title: "Saved games", create: createGamesSection },
 };
 const ORDER = Object.keys(SECTIONS) as SectionId[];

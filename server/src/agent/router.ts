@@ -237,6 +237,9 @@ function toolRules(tools: Tool[]): string[] {
     if (has("make_image")) rules.push("A picture alone is make_image; information about something is show_card (it adds its own picture).");
     if (has("make_text"))
       rules.push("A note in the caller's own words is make_text; researched or written-up information — even 'put the muffin recipe on the board' — is show_card.");
+    rules.push(
+      "Something to buy or compare prices on, flights, hotels, or a trip plan is show_card too (its type option says which: shopping, flights, hotels, itinerary) — it runs a live search and lays the results out with prices; never web_search or ask_brain for those.",
+    );
   }
   if (has("set_speech_rate"))
     rules.push("Asking Trinity to talk slower, faster, or at normal speed is set_speech_rate — not small talk.");
@@ -409,7 +412,7 @@ const AUDIO = new RegExp(
  * determiner *or* no space before the noun, so "clear workspace" never matched.
  */
 const CLEAR =
-  /\b(clear|close|reset|wipe|blank|empty|hide|erase|get rid of|take down|remove)(?:\s+(?:out|up|down|off))?(?:\s+(?:the|that|this|my|your))?(?:\s+everything(?:\s+(?:on|from)(?:\s+the)?)?)?(?:\s+the)?\s+(?:workspace|screen|board|window|display|canvas)\b|\b(?:clear|wipe|empty|reset|erase|delete|remove|dismiss)\s+(?:all\s+)?(?:(?:of\s+)?(?:the\s+)?)?(?:cards?|notes?)\b|\b(?:clear|wipe|reset|blank|empty)\s+(?:it|that|this|everything)\b|\bstart (?:over|fresh|clean) (?:on|with) the (?:workspace|screen)\b/;
+  /\b(clear|close|reset|wipe|blank|empty|hide|erase|get rid of|take down|remove)(?:\s+(?:out|up|down|off))?(?:\s+(?:the|that|this|my|your))?(?:\s+everything(?:\s+(?:on|from)(?:\s+the)?)?)?(?:\s+the)?\s+(?:workspace|screen|board|window|display|canvas)\b|\b(?:clear|wipe|empty|reset|erase|delete|remove|dismiss)\s+(?:all\s+)?(?:(?:of\s+)?(?:the\s+)?)?(?:cards|notes|(?:card|note)(?!\s*(?:number\s*)?\d))\b|\b(?:clear|wipe|reset|blank|empty)\s+(?:it|that|this|everything)\b|\bstart (?:over|fresh|clean) (?:on|with) the (?:workspace|screen)\b/;
 /**
  * One floating card removed: "remove card 2", "delete the tiger", "get rid of card 1".
  * Broad content forms are fine on the Trinity desk; the game-table heuristic skips these entirely
@@ -423,6 +426,24 @@ const REMOVE_CARD =
  */
 const MOVE_CARD =
   /\b((move|put|place|shift|slide|drag|bring|send) (card|note)s?\s*(number\s*)?\d+|(move|put|place|bring|send) (the\s+)?\w+.*(top|bottom|left|right|center|middle|front|back|corner|under|below|above|beside|next to)|(move|put|place) (card|note)s?\b)/i;
+/**
+ * The caller's Chrome (only while the extension is connected — the tools are hidden otherwise). Each pattern
+ * names what makes it a browser request: a site, a tab, the page, something to click or type, a look change.
+ */
+const BROWSER_OPEN =
+  /\b(?:(?:open|go to|goto|navigate to|take me to|pull up|bring up|visit|load|launch|head to|browse to)\s+(?:up\s+)?(?:the\s+|a\s+|my\s+)?(?:[a-z][\w' .-]*?\s+)?(?:youtube|gmail|google|maps|amazon|netflix|reddit|twitter|facebook|instagram|tiktok|github|wikipedia|outlook|spotify|twitch|linkedin|ebay|walmart|target|best buy|bbc|cnn|espn|weather|chatgpt|claude|apple|whatsapp|yahoo|bing|zillow|airbnb|expedia|imdb|discord|slack|notion|figma|canva|paypal|news|calendar|drive|docs|translate|\w+ dot (?:com|org|net|io|co)|\w+\.(?:com|org|net|io|co|edu|gov|ai|app|dev|tv))\b|\b(?:search|look|find|browse|shop)(?:\s+(?:up|for|me))*\s+.+?\s+(?:on|in|at)\s+(?:youtube|google|amazon|wikipedia|reddit|github|ebay|maps|netflix|spotify|imdb|walmart|target|best buy|etsy|linkedin|tiktok|pinterest|zillow|airbnb|bing|duckduckgo|twitter|images)\b|\b(?:google|youtube|wikipedia|bing)\s+(?!tab\b)\w+|\b(?:open|make|create)\s+(?:a\s+)?(?:new|blank)\s+tab\b|\bdirections to\b|\b(?:search|look up|look for|find)\s+.+?\s+(?:online|on the web|in the browser)\b)/;
+const BROWSER_TABS =
+  /\b(?:(?:close|shut|kill)\s+(?:this|that|the current|the|all|the other|all the other|my)?\s*(?:\w+\s+)?tabs?\b|\b(?:next|previous|last|other)\s+tab\b|\bswitch\s+(?:tabs?|to\s+(?:the\s+)?\w+(?:\s+\w+)?\s+tab)\b|\b(?:go\s+to|jump\s+to|show)\s+(?:the\s+)?\w+(?:\s+\w+)?\s+tab\b|\bgo\s+back(?:\s+a\s+page)?$|\bgo\s+back\s+(?:a|one)\s+page\b|\bgo\s+forward\b|\b(?:reload|refresh)\s+(?:the\s+|this\s+)?(?:page|tab|site|it)?\b|\bzoom\s+(?:in|out|to|back)\b|\breset\s+(?:the\s+)?zoom\b|\b(?:what|which)\s+tabs\b|\btabs?\s+(?:are|do i have)\s+open\b|\blist\s+(?:the\s+|my\s+)?tabs\b)/;
+const BROWSER_READ =
+  /\b(?:(?:read|summari[sz]e|skim|go over)\s+(?:me\s+)?(?:this|the|that)\s+(?:page|article|site|website|tab|post|story)\b|\bread\s+(?:the\s+)?(?:selected|highlighted|selection)\b|\bwhat(?:'s| is| does)?\s+(?:on\s+)?(?:this|the)\s+(?:page|article|site|website|tab)\s*(?:say|about|say about)?\b|\bwhat\s+does\s+(?:this|the)\s+(?:page|article|site)\s+say\b|\bwhat\s+are\s+the\s+(?:sections|headings|links)\b|\btl;?dr\b)/;
+const BROWSER_ACT =
+  /\b(?:(?:click|tap|press|hit|push)\s+(?:on\s+)?(?:the\s+)?(?!enter|escape|tab\b|space|backspace)[a-z][\w' -]{1,40}?(?:\s+(?:button|link|tab|icon|menu|option))?$|\bpress\s+(?:the\s+)?(?:enter|return|escape|esc|tab|space|backspace|delete|page (?:up|down))\b|\bscroll\s+(?:up|down|to)\b|\bpage\s+(?:up|down)\b|\b(?:type|enter|write|fill in|input)\s+.+?\s+(?:in|into)\s+(?:the\s+)?.+?(?:box|field|bar|form|input)\b|\bsearch\s+(?:this|the)\s+(?:page|site)\s+for\b|\bsearch\s+for\s+.+?\s+on\s+(?:this|the)\s+(?:page|site)\b|\b(?:select|choose|pick)\s+.+?\s+(?:from|in)\s+(?:the\s+)?.+?(?:dropdown|menu|list)\b)/;
+const BROWSER_MODIFY =
+  /\b(?:(?:make|turn|put|switch)\s+(?:this|the|that)?\s*(?:page|site|website|tab|screen)?\s*(?:to\s+|into\s+|in\s+)?(?:dark|night|light|reader|reading)\s*(?:mode|theme|view)?\b|\b(?:dark|night|reader|reading)\s+(?:mode|view)\b|\binvert(?:\s+the)?\s+colou?rs\b|\b(?:hide|remove|get rid of|block|kill|zap|nuke|strip|dismiss)\s+(?:the\s+|all\s+|those\s+|these\s+|that\s+)?(?:ads?|adverts?|advertisements?|side ?bars?|comments?|pop-?ups?|cookie\s+\w+|banners?|header|footer|navigation|nav bar|menus?|images?|pictures?|videos?|chat (?:widget|bubble|box)|paywall|overlay|modal|newsletter\s+\w+)\b|\b(?:make\s+(?:the\s+)?(?:text|font|words|letters)\s+(?:bigger|larger|smaller|huge)|(?:bigger|larger|smaller)\s+(?:text|font))\b|\b(?:inject|run|execute)\s+(?:some\s+|this\s+|a\s+)?(?:javascript|js|script|css|code)\b|\b(?:add|insert|put)\s+(?:a\s+)?(?:banner|note|box|message|heading|button|div)\s+(?:at the|to the|on the|up)?\s*(?:top|bottom)?\s*(?:of\s+(?:this|the)\s+page)?\b|\b(?:change|set|make)\s+(?:the\s+)?(?:background|font|colou?rs?|links?|text colou?r)\s+(?:of\s+(?:this|the)\s+page\s+)?(?:to|into)?\b|\bundo\s+(?:the|those|your|that)?\s*(?:changes?|edits?|tweaks?)\b|\bput\s+(?:the\s+page|it)\s+back\b)/;
+const BROWSER_SAVE =
+  /\b(?:(?:save|download|keep|grab)\s+(?:me\s+)?(?:a\s+copy\s+of\s+)?(?:this|the|that)\s+(?:page|article|site|website|tab|image|picture|photo|graphic|link|file|pdf|attachment|video)\b|\b(?:save|take|grab)\s+(?:me\s+)?(?:a\s+)?screenshot\b|\bscreenshot\s+(?:this|the)\s+(?:page|tab)\b|\bsave\s+(?:this|the|it)\s+(?:as|to)\s+(?:a\s+)?(?:text|markdown|md|txt|file)\b|\bdownload\s+(?:that|it)\b)/;
+const BROWSER_SHARE =
+  /\b(?:(?:put|add|send|share|bring|copy|pin)\s+(?:this|the|that)\s+(?:page|article|site|website|tab|selection|selected text|highlighted text|image|picture|photo|screenshot|link)\s+(?:on|onto|to|with|into)\s+(?:the\s+)?(?:board|workspace|screen)\b|\b(?:share|put)\s+(?:this|the)\s+(?:page|article|image|picture|screenshot)\s+with\s+(?:the\s+)?(?:workspace|board|trinity)\b|\bput\s+a\s+screenshot\s+(?:of\s+(?:this|the)\s+(?:page|tab|site)\s+)?(?:on|onto)\s+(?:the\s+)?(?:board|workspace)\b)/;
 /** Talk slower / faster. */
 const SPEECH_RATE =
   /\b((talk|speak|speaking)\s+(a\s+bit\s+|a\s+little\s+|much\s+|way\s+)?(slow(?:er)?|fast(?:er)?|quicker)|slow\s+down|speed\s+up|(slower|faster)\s+(please|please\b)?|(normal|default)\s+(speed|pace)|speak\s+at\s+normal)/i;
@@ -435,7 +456,7 @@ const TEXT_CARD =
  * "who was Marie Curie", "compare the iPhone and the Pixel") — not a question about the assistant or the caller.
  */
 const CARD_INFO =
-  /\b(recipes?|ingredients|the news|today'?s news|headlines?|what('s| is) (happening|going on)|who (is|was|were) (?!you\b|i\b|we\b|this\b|that\b|it\b|my\b|your\b)|tell me (about|more about) (?!it\b|that\b|yourself|you\b|my\b|your\b)|facts about|information (on|about)|what('s| is| are) (a|an|the) (?!workspace|screen|board|window|time|date)|what('s| is| are) (?!the\b|a\b|an\b|it\b|that\b|this\b|your\b|my\b|our\b|up\b|on\b|in\b|for\b|wrong\b|new\b|going\b|happening\b|next\b|left\b|\d)[a-z][a-z'-]+(?: [a-z'-]+){0,3}\s*\??$|what does \w+ mean|explain (?!that again|yourself)|how (do|to|can|should) (i|you|we|one) (make|cook|bake|build|fix|install|set up|get|grow|clean|write|change)|compare|versus|\bvs\.?|difference between|which is better|top (\d+|ten|five|three)|best \d+|itinerary|workout (plan|routine)|meal plan|the weather|weather (in|for|today|tomorrow|this week)|forecast|what('s| is) the score|standings|who won)\b/;
+  /\b(recipes?|ingredients|the news|today'?s news|headlines?|what('s| is) (happening|going on)|who (is|was|were) (?!you\b|i\b|we\b|this\b|that\b|it\b|my\b|your\b)|tell me (about|more about) (?!it\b|that\b|yourself|you\b|my\b|your\b)|facts about|information (on|about)|what('s| is| are) (a|an|the) (?!workspace|screen|board|window|time|date)|what('s| is| are) (?!the\b|a\b|an\b|it\b|that\b|this\b|your\b|my\b|our\b|up\b|on\b|in\b|for\b|wrong\b|new\b|going\b|happening\b|next\b|left\b|\d)[a-z][a-z'-]+(?: [a-z'-]+){0,3}\s*\??$|what does \w+ mean|explain (?!that again|yourself)|how (do|to|can|should) (i|you|we|one) (make|cook|bake|build|fix|install|set up|get|grow|clean|write|change)|compare|versus|\bvs\.?|difference between|which is better|top (\d+|ten|five|three)|best \d+|itinerary|workout (plan|routine)|meal plan|the weather|weather (in|for|today|tomorrow|this week)|forecast|what('s| is) the score|standings|who won|flights? (to|from|for|between)|fly(ing)? (to|from|out of)|airfares?|plane tickets?|hotels? (in|near|for|around|at)|places? to stay|where (can|should) (i|we) stay|(cheapest|best|lowest) (price|prices|deal|deals|place to buy)|compare prices|price check|where can (i|we) (buy|get|find|order)|shop(ping)? for|deals? on|how much (does|do|would) \w+( \w+){0,6} cost|plan (a|my|our) (trip|vacation|holiday)|trip to (?=[a-z])|(\d+|two|three|four|five) days? in (?=[a-z])|what to do in)\b/;
 /** The screen asked about: "what's on the screen?", "what does the workspace show right now?". */
 const DESCRIBE = /\b(what('s| is|s)|what do(es)? (the|my) (workspace|screen|board|window) (show|have|display))\b[^.?!]{0,20}?\b(on|in) (the|my) (workspace|screen|board|window)\b|\bwhat do(es)? (the|my) (workspace|screen|board|window) (show|have|display)\b/;
 /**
@@ -564,6 +585,15 @@ function heuristic(input: RouteInput, tools: Tool[], started: number): Decision 
   // A picture, clip or audio asked for by name beats the generic build verbs ("make me a picture of…"), and
   // clearing the screen is its own request. At the game table, skip card move/remove/edit heuristics so
   // story verbs never become board ops (those tools are also hidden while a game is active).
+  // The caller's Chrome, while the extension is connected (the tools are hidden otherwise, so these never fire
+  // without it). A look change on the live site ("hide the ads") beats remove_card; a page share beats make_text.
+  if (at("browser_share", BROWSER_SHARE) < Infinity) return pick("browser_share", 0.85);
+  if (at("browser_modify", BROWSER_MODIFY) < Infinity && !IMAGE.test(t) && !VIDEO.test(t)) return pick("browser_modify", 0.82);
+  if (at("browser_tabs", BROWSER_TABS) < Infinity) return pick("browser_tabs", 0.85);
+  if (at("browser_save", BROWSER_SAVE) < Infinity && !IMAGE.test(t)) return pick("browser_save", 0.82);
+  if (at("browser_read", BROWSER_READ) < Infinity) return pick("browser_read", 0.82);
+  if (at("browser_open", BROWSER_OPEN) < Infinity && !IMAGE.test(t) && !VIDEO.test(t)) return pick("browser_open", 0.85);
+  if (at("browser_act", BROWSER_ACT) < Infinity) return pick("browser_act", 0.8);
   if (at("clear_workspace", CLEAR) < Infinity) return pick("clear_workspace", 0.8);
   if (at("describe_workspace", DESCRIBE) < Infinity) return pick("describe_workspace", 0.8);
   if (at("set_speech_rate", SPEECH_RATE) < Infinity) return pick("set_speech_rate", 0.88);

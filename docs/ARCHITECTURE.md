@@ -40,8 +40,8 @@ keys are editable at runtime on the Settings page.
      Orchestrator ─ the text channel and the heartbeat's proactive turns
         both use the agent core:  decide (Jev) → act (a tool) → reply
      tools/ ─ build_ui · show_card · make_image · make_audio · clear_workspace · ask_brain ·
-              web_search · create_skill · remember · recall · schedule · get_time · skills Trinity
-              created (sandboxed) · persona tool sets (e.g. game_*)
+              web_search · browser_* (the Chrome extension) · create_skill · remember · recall ·
+              schedule · get_time · skills Trinity created (sandboxed) · persona tool sets (e.g. game_*)
      WorkspaceBus ─ the one shared workspace every window subscribes to
      SQLite (personas, settings, tasks, games) · PouchDB (memories) · data/ (skills, art, voices)
  ─────────────────────────────────────────────────────────────────────────────────────
@@ -197,7 +197,7 @@ keys are editable at runtime on the Settings page.
   default; the Brain when Jev's `quality` option or the words ask for care) returns a **ContentSpec**:
   title, subtitle, a spoken summary, a look (mood + accent), a picture brief, meta chips, up to ten
   typed **blocks** (text, list, steps, facts, stats, timeline, table, pros/cons, headlines, quote,
-  note, tags, schedule) and sources. Each kind has a design brief (a recipe: chips for prep / bake /
+  note, tags, schedule — plus products, flights and hotels, which only the engine writes) and sources. Each kind has a design brief (a recipe: chips for prep / bake /
   serves, a check-list of ingredients, numbered steps, a tip; a profile: born / died chips, a
   biography, a timeline; news: headlines with source and time from the sources only…). The engine
   **renders** the spec with its own design system — six moods (warm, editorial, cool, playful,
@@ -211,12 +211,71 @@ keys are editable at runtime on the Settings page.
   it. Inside a widget card's frame an engine image can only load as a `data:` URL (the nested
   sandboxed frame is another opaque origin — it can load neither the board frame's `blob:` URLs nor
   localhost), so the host fetches it once and the board frame inlines it.
+- **Shopping & travel** (`services/serpapi.ts`, `services/travel-query.ts`, `services/live-results.ts`,
+  `services/remote-images.ts`). "Find me the cheapest noise-cancelling headphones under $200",
+  "flights from Austin to Denver next Friday, back Sunday", "a hotel in Lisbon for three nights" are
+  the `shopping`, `flights` and `hotels` kinds: a **live search** runs first — Google Shopping,
+  Flights or Hotels through SerpApi (one key, `SERPAPI_KEY` / Settings → API keys) — and the engine
+  lays those results out itself as product tiles, flight rows (times, stops, layovers, fares,
+  Google's price insight) or hotel rows (rates, stars, ratings, amenities), so every price, time and
+  link is exactly what came back; the designer only writes around them (title, the spoken summary
+  naming the pick and the cheapest, advice). Shopping is parsed from the words (the product, a price
+  cap, "cheapest" → sorted by price); flights and hotels ask the card model to read the route, dates
+  and travellers (a word-level parser is the fallback and the cross-check), what's missing is
+  **assumed and said** ("no date was given, so this is for Fri, Nov 20"; one way; one adult) or, when
+  the origin or destination isn't there, becomes a **question** instead of a card. Product photos,
+  hotel pictures and airline logos are remote: `remote-images.ts` fetches each once (public host,
+  image type by header and first bytes, size cap) into the image store, so they reach the offline
+  card frame like any engine image. Without a key, or when the search fails or finds nothing, the
+  card says so in a note, falls back to web search and knowledge, and links the same search on
+  Google. `itinerary` is a fourth kind, written by the designer: one schedule block per day, facts,
+  a packing list, a destination hero picture.
 - **Grounding.** Sources are numbered data to the designer, never instructions; it may only cite
   URLs it was given (an invented link is dropped), and every string is escaped by the renderer.
 - **The spoken line.** The tool waits up to ~9 s for the designer so the reply is the real summary
   ("Here's a recipe that makes twelve… It's on the board as card 3"). When the designer is slower,
   Trinity says the card is coming and tells the summary when it's written (into the live call, or as
   a line in every open app — `agent/tell.ts`, shared with finished skills).
+
+### Browser extension (`extension/`, `services/browser-bridge.ts`, `services/browser-words.ts`, `tools/browser.ts`)
+
+- **What it is.** A Chrome extension (Manifest V3, loaded unpacked from `extension/`) that keeps one
+  WebSocket to the engine at `/ext`, paired with a token the engine makes (Settings → Browser
+  extension shows it; `POST /api/browser/token` rotates it; a wrong token is closed with 4401). The
+  engine never listens for pages: the extension's service worker runs the engine's **calls** through
+  Chrome's APIs — `tabs.list / open / close / activate / navigate / history / zoom`, `page.snapshot`
+  (text, headings, every clickable thing given a `data-trinity-ref`, pictures, the page's ids and
+  classes, the selection), `page.act` (click / type / select / scroll / press), `page.inject` (CSS
+  through `insertCSS`, static HTML, JavaScript in the page's main world and, on sites whose CSP
+  refuses eval, through `chrome.userScripts` when the user turned on *Allow User Scripts*),
+  `page.restore`, `page.capture` (a screenshot), `files.download`, `files.savePage` (an MHTML
+  archive) — and reports its tabs whenever they change. Right-clicking a page, a selection, a link
+  or an image (or the popup's button) **shares** it: the engine puts it on the board as a note or a
+  picture card and Trinity says so.
+- **The tools.** Seven, offered to Jev only while the extension is connected (`available`), hidden
+  at the game table: `browser_open` (a site, a search on a site, an address, a new tab),
+  `browser_tabs` (close / close others / next / previous / switch / back / forward / reload / zoom /
+  list), `browser_read` (a spoken summary or an answer from the page, the selection, the headings,
+  the links), `browser_act` (click / type / select / scroll / press), `browser_modify` (dark mode,
+  reader mode, hide the ads / sidebar / popups…, bigger text — presets as CSS; anything else written
+  by the quick coder as CSS / HTML / JS from the page's own structure; undo), `browser_save` (the page
+  as an archive, its text as markdown, a screenshot, a picture, a link — to the downloads folder),
+  `browser_share` (the page, the selection, a screenshot or a picture onto the board).
+- **Fast by words.** Jev picks the tool in a few hundred milliseconds; `browser-words.ts` fills the
+  arguments from the words at once — sixty spoken site names and site searches ("search for X on
+  Amazon", "youtube cute cats", "directions to…"), tab phrases, click / type / select / scroll /
+  press phrases, hide-and-restyle presets — so most commands run with no model call. A model is asked
+  only when the words don't settle it: the fast model picks an element the names didn't match, the
+  quick coder writes a tweak with no preset, the fast model (or the brain) reads a page. Keyless
+  routing has matching cues; Jev gets the same as rules from the browser context provider, which
+  also tells it and the reply writer which tabs are open.
+- **Kept safe whatever a page says.** Page text is data to every model prompt, never instructions.
+  Password fields are never listed in a snapshot nor typed into. A control whose name spends, sends
+  or destroys (buy, order, pay, checkout, confirm, submit, send, delete, sign out…) is clicked only
+  when the caller's own words contain that word; otherwise Trinity names it and asks. Chrome's own
+  pages are left alone; only web and `data:` URLs are opened or downloaded; injected HTML is stripped
+  of scripts and handlers. The extension's host permissions are broad (it must read and change any
+  site), so the pairing token is the gate: it lives in Chrome's storage and the engine's SQLite.
 
 ### Floating card board (`workspace/board.ts`, `tools/media.ts`, `tools/screen.ts`, `tools/html.ts`)
 

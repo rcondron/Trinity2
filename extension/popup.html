@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Trinity</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="head">
+      <img src="icons/48.png" alt="" width="28" height="28" />
+      <div>
+        <h1>Trinity Browser Bridge</h1>
+        <p class="status"><span class="dot" id="dot"></span><span id="statusText">Checking…</span></p>
+      </div>
+    </header>
+
+    <section class="actions">
+      <button id="shareBtn" class="primary" type="button">Share this page with Trinity</button>
+      <p class="hint">Right-click a page, a selection, a link or an image for the same.</p>
+    </section>
+
+    <details id="setup">
+      <summary>Connection</summary>
+      <label>
+        <span>Engine</span>
+        <input id="engine" type="text" placeholder="ws://127.0.0.1:8799" autocomplete="off" spellcheck="false" />
+      </label>
+      <label>
+        <span>Pairing token <small>(Trinity → Settings → Browser extension)</small></span>
+        <span class="token-row">
+          <input id="token" type="password" placeholder="Paste the token" autocomplete="off" spellcheck="false" />
+          <button id="showToken" type="button" class="ghost" title="Show the token">Show</button>
+        </span>
+      </label>
+      <div class="row">
+        <button id="saveBtn" type="button">Save &amp; connect</button>
+        <span id="saveNote" class="note"></span>
+      </div>
+    </details>
+
+    <section id="scriptsHint" class="tip" hidden>
+      <strong>JavaScript on strict sites.</strong> Some sites block injected scripts. To let Trinity run JavaScript there, open this extension's
+      <a href="#" id="detailsLink">details page</a> and turn on <em>Allow User Scripts</em>. Styling changes work everywhere regardless.
+    </section>
+
+    <footer class="foot">
+      <span id="version"></span>
+      <span>Everything stays on this computer.</span>
+    </footer>
+    <script src="popup.js"></script>
+  </body>
+</html>

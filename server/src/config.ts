@@ -100,6 +100,9 @@ export const config = {
   web: {
     // Tavily search. Reads TAVILY_API_KEY (or legacy WEB_SEARCH_API_KEY).
     key: process.env.TAVILY_API_KEY || process.env.WEB_SEARCH_API_KEY || "",
+    // SerpApi: live Google Shopping / Flights / Hotels results for the shopping and travel cards
+    // (free tier 250 searches a month). Without it those cards fall back to web search and say so.
+    serpapiKey: process.env.SERPAPI_KEY || process.env.SERPAPI_API_KEY || "",
   },
 
   skills: {

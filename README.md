@@ -40,6 +40,8 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design.
 | Fast reply writer + JSON | **Mordiem** `nvidia-nemotron-3-nano` |
 | Images | **Mordiem** `krea-2-turbo` |
 | Web search | Tavily (keyed) or keyless DuckDuckGo |
+| Shopping & travel cards (live prices, flights, hotels) | SerpApi (`SERPAPI_KEY`; free tier 250 searches/month) — without it the cards fall back to web search |
+| Browser control (tabs, reading, clicking, restyling, saving, sharing) | The **Trinity Browser Bridge** Chrome extension in `extension/` — see Settings → Browser extension |
 | Memory | SQLite (structured) + **PouchDB** (documents) |
 | Voice — turn-based fallback | PersonaPlex via **fal.ai** (queue API) |
 
@@ -52,7 +54,7 @@ browser does speech via the Web Speech API). Add keys in `.env`, or on the **Set
 Open **⚙ Settings** (a full page at `/settings.html`):
 
 - **Personas** — create and edit who Trinity is: name, personality, voice, voice prompt, tool sets.
-- **Models & API keys** — every key (Mordiem, TypeSafe/Jev, Deepgram, Tavily, fal, PersonaPlex
+- **Models & API keys** — every key (Mordiem, TypeSafe/Jev, Deepgram, Tavily, SerpApi, fal, PersonaPlex
   admin token) and every model (the coding skill's quick and strong coders and which is the
   default, brain, reply writer, fast JSON, images, Jev), plus endpoints and live-loop timing.
 - **Voices** — make a new voice from a short recorded or uploaded sample.

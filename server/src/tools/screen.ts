@@ -224,7 +224,7 @@ export function registerScreenTools(): void {
     // game screen owns the workspace (covers a game left up after the active id was cleared).
     hiddenActions: (persona) =>
       isGameMaster(persona) && gameOwned()
-        ? ["clear_workspace", "describe_workspace", "remove_card", "move_card", "make_text", "show_card", "edit_html", "set_speech_rate"]
+        ? ["clear_workspace", "describe_workspace", "remove_card", "move_card", "make_text", "show_card", "edit_html", "set_speech_rate", "browser_open", "browser_tabs", "browser_read", "browser_act", "browser_modify", "browser_save", "browser_share"]
         : [],
   });
 }

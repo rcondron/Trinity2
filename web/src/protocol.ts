@@ -54,7 +54,12 @@ export interface HeartbeatTask {
   once?: boolean;
 }
 
-export type ServiceStatus = Record<"voice" | "stream" | "jev" | "brain" | "mordiem" | "web", "live" | "mock">;
+export type ServiceStatus = Record<"voice" | "stream" | "jev" | "brain" | "mordiem" | "web", "live" | "mock"> & {
+  /** Live shopping, flight and hotel results (older engines leave it out). */
+  travel?: "live" | "mock";
+  /** The Chrome extension is connected (older engines leave it out). */
+  browser?: "live" | "mock";
+};
 
 export type ClientEvent =
   | { type: "hello" }
