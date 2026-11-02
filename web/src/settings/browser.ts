@@ -22,7 +22,7 @@ const SAY: [string, string][] = [
   ["Act", "“Click sign in”, “type blue shoes in the search box”, “search this page for muffins”, “scroll down”, “press enter”, “choose large”"],
   ["Change the page", "“Make this page dark mode”, “hide the ads”, “reader mode”, “make the text bigger”, “add a banner at the top saying hello”, “undo the changes”"],
   ["Save", "“Save this page”, “save the article as a text file”, “download this image”, “save a screenshot”"],
-  ["Share to the board", "“Put this page on the board”, “put the selected text on the board”, “put a screenshot of this on the board” — or right-click any page, selection, link or image → Share with Trinity"],
+  ["Put on the board", "“Put this page on the board”, “put the selected text on the board”, “put a screenshot of this on the board” — or right-click any page, selection, link or image → Put … on Trinity's board"],
 ];
 
 export function createBrowserSection(): Section {

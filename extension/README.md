@@ -1,8 +1,8 @@
 # Trinity Browser Bridge
 
 A Chrome extension that lets Trinity, the voice assistant running on this computer, drive this browser:
-open and close tabs, read pages, click and type, restyle or script a site, save files, and take pages,
-pictures and selections you share onto her workspace board. Everything stays on this computer: the
+open and close tabs, read pages, click and type, restyle or script a site, save files, and take the
+pages, pictures and selections you put on her workspace board. Everything stays on this computer: the
 extension talks only to the Trinity engine at `ws://127.0.0.1:8799`.
 
 ## Install (unpacked)
@@ -36,9 +36,9 @@ cuts the link and keeps it cut — no reconnecting, even after Chrome restarts �
   bigger", "add a banner at the top saying hello", "run javascript that…", "undo the changes".
 - **Save** — "save this page", "save the article as a text file", "download this image", "save a
   screenshot" (to Chrome's downloads folder).
-- **Share to the board** — "put this page on the board", "put the selected text on the board", "put a
-  screenshot of this on the board"; or right-click a page, selection, link or image → *Share with
-  Trinity*; or the popup's button.
+- **Put on the board** — "put this page on the board", "put the selected text on the board", "put a
+  screenshot of this on the board"; or right-click a page, selection, link or image → *Put … on
+  Trinity's board*; or the popup's button.
 
 ## Kept safe, whatever a page says
 
@@ -54,6 +54,6 @@ cuts the link and keeps it cut — no reconnecting, even after Chrome restarts �
 
 - `manifest.json` — Manifest V3; permissions: tabs, scripting, activeTab, downloads, storage,
   contextMenus, pageCapture, alarms, userScripts; all sites.
-- `background.js` — the service worker: the socket to the engine, the calls, tab reports, shares.
-- `popup.html` / `popup.js` / `popup.css` — status, Disconnect / Connect, the token, "share this page".
+- `background.js` — the service worker: the socket to the engine, the calls, tab reports, what you put on the board.
+- `popup.html` / `popup.js` / `popup.css` — status, Disconnect / Connect, the token, "put this page on the board".
 - `icons/` — the toolbar icon.

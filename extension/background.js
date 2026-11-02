@@ -1,7 +1,8 @@
 // Trinity Browser Bridge — the service worker. One WebSocket to the Trinity engine on this computer
 // (ws://127.0.0.1:8799/ext, paired with the token from Settings → Browser extension); the engine's
-// calls run here through Chrome's extension APIs, tab changes are reported back, and what you share
-// from a page's menu goes to Trinity's workspace. Everything is local; nothing leaves the machine.
+// calls run here through Chrome's extension APIs, tab changes are reported back, and a page, selection,
+// link or image you put on her board from the page's menu goes to Trinity's workspace. Everything is
+// local; nothing leaves the machine.
 //
 // What the engine may ask for (services/browser-bridge.ts in the engine lists the same):
 //   tabs.list / open / close / activate / navigate / history / zoom
@@ -681,10 +682,10 @@ async function share(kind, info, tab) {
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({ id: "share-page", title: "Share this page with Trinity", contexts: ["page"] });
-    chrome.contextMenus.create({ id: "share-selection", title: "Share selection with Trinity", contexts: ["selection"] });
-    chrome.contextMenus.create({ id: "share-link", title: "Share this link with Trinity", contexts: ["link"] });
-    chrome.contextMenus.create({ id: "share-image", title: "Share this image with Trinity", contexts: ["image"] });
+    chrome.contextMenus.create({ id: "share-page", title: "Put this page on Trinity's board", contexts: ["page"] });
+    chrome.contextMenus.create({ id: "share-selection", title: "Put the selection on Trinity's board", contexts: ["selection"] });
+    chrome.contextMenus.create({ id: "share-link", title: "Put this link on Trinity's board", contexts: ["link"] });
+    chrome.contextMenus.create({ id: "share-image", title: "Put this image on Trinity's board", contexts: ["image"] });
   });
   chrome.alarms.create("trinity-keepalive", { periodInMinutes: 0.5 });
   void connect();

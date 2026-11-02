@@ -1,4 +1,4 @@
-// The toolbar popup: connection status, Disconnect / Connect, the pairing token, and "share this page".
+// The toolbar popup: connection status, Disconnect / Connect, the pairing token, and "put this page on the board".
 
 const $ = (id) => document.getElementById(id);
 const dot = $("dot");
@@ -15,11 +15,11 @@ function paint(res) {
   dot.className = `dot ${s.state}`;
   statusText.textContent =
     s.state === "connected"
-      ? "Connected to Trinity"
+      ? "Connected — Trinity drives this browser"
       : s.state === "connecting"
         ? "Connecting…"
         : s.state === "paused"
-          ? "Disconnected"
+          ? "Disconnected — Trinity can't use this browser"
           : s.state === "error"
             ? s.detail || "Something's wrong"
             : s.detail || "Not connected";
@@ -89,9 +89,9 @@ $("shareBtn").addEventListener("click", async () => {
   const btn = $("shareBtn");
   btn.disabled = true;
   const res = await ask({ type: "share" });
-  btn.textContent = res && res.ok ? "Shared — it's on Trinity's board" : "Not connected — press Connect, or check the token below";
+  btn.textContent = res && res.ok ? "On the board." : "Not connected — press Connect, or check the token below";
   setTimeout(() => {
-    btn.textContent = "Share this page with Trinity";
+    btn.textContent = "Put this page on Trinity's board";
     btn.disabled = false;
   }, 2200);
   if (!(res && res.ok)) $("setup").open = true;
