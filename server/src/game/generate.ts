@@ -7,7 +7,7 @@ import type { Attitude, Game, GameTheme, Item, ItemType, LogKind, Player, Rarity
  * default nemotron ≈1.5s for a two-character sheet) with strict validation, clamping and a
  * deterministic fallback for every generator — a tool always succeeds, even offline.
  *
- * Prompt-injection safety: the caller's words are passed as a JSON-quoted transcript and
+ * Prompt-injection safety: the user's words are passed as a JSON-quoted transcript and
  * every system prompt says to treat them strictly as data.
  */
 
@@ -254,7 +254,7 @@ function pick<T>(arr: readonly T[], seed: string): T {
   return arr[hash(seed) % arr.length] as T;
 }
 
-/** JSON-quote the caller's words so they can't break out of the data section of a prompt. */
+/** JSON-quote the user's words so they can't break out of the data section of a prompt. */
 function quoted(utterance: string, max = 700): string {
   return JSON.stringify(
     utterance
@@ -318,7 +318,7 @@ export interface DiceSpec {
   count: number;
   sides: number;
   modifier: number;
-  /** True when the caller stated the modifier ("d20 plus 5") — then no ability modifier is added. */
+  /** True when the user stated the modifier ("d20 plus 5") — then no ability modifier is added. */
   explicitModifier: boolean;
   advantage: "adv" | "dis" | null;
 }
@@ -841,7 +841,7 @@ export interface GameFrame {
   artStyle: string;
   theme: GameTheme;
   titleArtPrompt: string;
-  /** False when the caller only asked to start a game without saying what kind. */
+  /** False when the user only asked to start a game without saying what kind. */
   described: boolean;
   source: "model" | "fallback";
 }
@@ -860,7 +860,7 @@ const FILLER = new Set(
 );
 
 /**
- * Did the caller say anything about the KIND of game ("a pirate adventure", "something spooky")
+ * Did the user say anything about the KIND of game ("a pirate adventure", "something spooky")
  * — or just ask to start one? `ignore` adds words like the persona's own name.
  */
 export function hasAdventureDetails(utterance: string, ignore: string[] = []): boolean {
@@ -1330,7 +1330,7 @@ Already in the party: ${party.map((p) => `${p.name} (${[p.race, p.className].fil
 
 /**
  * Character sheets for the hero(es) in the words (1–6; "Thorin the dwarf fighter and Lyra the
- * elf wizard" gives two). Ids are left empty — the caller assigns them. Never fails: falls
+ * elf wizard" gives two). Ids are left empty — the user assigns them. Never fails: falls
  * back to a deterministic parse of the words.
  */
 export async function genPlayers(
@@ -1854,7 +1854,7 @@ Return JSON: {"title": "scene title, 2-5 words", "locationName": "the place, 1-4
   };
 }
 
-// ─── Synchronous fallbacks (for callers' hard caps) ──────────────────────────
+// ─── Synchronous fallbacks (for users' hard caps) ──────────────────────────
 
 export function frameFromWords(utterance: string, ignoreWords: string[] = []): GameFrame {
   return fallbackFrame(utterance, presetFor(utterance), hasAdventureDetails(utterance, ignoreWords));

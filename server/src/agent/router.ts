@@ -5,7 +5,7 @@ import { contextFor, type AgentContext } from "./context.js";
 
 /**
  * The router: Jev (TypeSafe "System One") decides — from the conversation so far,
- * possibly mid-sentence — whether the caller's words call for one of the tools, and which
+ * possibly mid-sentence — whether the user's words call for one of the tools, and which
  * argument when the tool enumerates options. Request shape mirrors the reference
  * project (personaplex-toolcall/server.py `jev_body`): one `tool` choice question with
  * goal+rules instructions, plus one choice question per option argument, with
@@ -16,10 +16,10 @@ import { contextFor, type AgentContext } from "./context.js";
 export type PseudoAction = "NONE";
 
 export const PSEUDO_LABELS: Record<PseudoAction, string> = {
-  NONE: "Nothing to do: small talk, a greeting or reaction, a question about the assistant itself, or the caller is still thinking aloud.",
+  NONE: "Nothing to do: small talk, a greeting or reaction, a question about the assistant itself, or the user is still thinking aloud.",
 };
 
-/** What was already done for the caller's words — sent to Jev so it doesn't repeat itself. */
+/** What was already done for the user's words — sent to Jev so it doesn't repeat itself. */
 export interface RecentAction {
   action: string;
   kind: "tool";
@@ -29,7 +29,7 @@ export interface RecentAction {
 
 export interface RouteInput {
   persona: Persona;
-  /** Conversation text in the reference format ("Conversation so far…\n\nCaller's latest words (…): …"). */
+  /** Conversation text in the reference format ("Conversation so far…\n\nUser's latest words (…): …"). */
   conversation: string;
   done: RecentAction[];
   /** Tools this decision may not pick, beyond the context's own (a scheduled run can't schedule or forge). */
@@ -194,7 +194,7 @@ export function confidentOptions(d: Decision, min: number): Record<string, strin
 
 // ─── Jev request ─────────────────────────────────────────────────────────────
 
-/** Situation first, then the conversation — so the caller's latest words come last. */
+/** Situation first, then the conversation — so the user's latest words come last. */
 function pageText(conversation: string, ctx: AgentContext): string {
   return `Situation: ${ctx.summary.slice(0, 700)}\n\n${conversation}`;
 }
@@ -208,9 +208,13 @@ function toolRules(tools: Tool[]): string[] {
       "Something to see or use on screen (a page, app, chart, game or form) is build_ui; a new ability the assistant should keep using later (a converter, a lookup, a connection to a web service) is create_skill.",
     );
   if (has("build_ui") && has("make_image"))
-    rules.push("A picture, image, photo, illustration, painting or artwork of something is make_image, even when the caller says 'draw' or 'make'; a chart, diagram, page or app is build_ui.");
+    rules.push("A picture, image, photo, illustration, painting or artwork of something is make_image, even when the user says 'draw' or 'make'; a chart, diagram, page or app is build_ui.");
   if (has("build_ui") && has("clear_workspace"))
     rules.push("Clearing, closing, resetting or blanking the screen or workspace is clear_workspace; changing what's on it is build_ui.");
+  if (has("undo_workspace"))
+    rules.push(
+      "Bringing back cards or a screen that was just cleared or removed (undo, put it back, restore, go back, oops) is undo_workspace — not clear_workspace and not building something new.",
+    );
   if (has("edit_html") && has("build_ui"))
     rules.push(
       "Tweaking something already on the board (make a picture smaller/larger, change img/svg/canvas/widget HTML or styles) is edit_html; creating a new interactive widget or rebuilding one from scratch is build_ui.",
@@ -219,9 +223,9 @@ function toolRules(tools: Tool[]): string[] {
     rules.push(
       "Resizing or restyling an existing picture on the board is edit_html; generating a brand-new picture is make_image.",
     );
-  if (has("remove_card") || has("move_card"))
+  if (has("remove_card") || has("move_card") || has("undo_workspace"))
     rules.push(
-      "Floating cards on the board are numbered and tagged by content: removing one is remove_card, moving one is move_card (by number or by what it shows — 'the tiger', 'under the panda'), wiping every card / the whole screen is clear_workspace. A text sticky/note is make_text; asking for several pictures (a panda and a tiger) is still make_image (one card each).",
+      "Floating cards on the board are numbered and tagged by content: removing one is remove_card, moving one is move_card (by number or by what it shows — 'the tiger', 'under the panda'), wiping every card / the whole screen is clear_workspace, and restoring a mistaken clear or remove is undo_workspace. A text sticky/note is make_text; asking for several pictures (a panda and a tiger) is still make_image (one card each).",
     );
   if (has("show_card")) {
     if (has("ask_brain"))
@@ -230,22 +234,22 @@ function toolRules(tools: Tool[]): string[] {
       );
     if (has("web_search"))
       rules.push(
-        "'Search for / look up / google X' to hear what's out there is web_search; news, headlines, the weather, scores or any looked-up information the caller wants laid out is show_card.",
+        "'Search for / look up / google X' to hear what's out there is web_search; news, headlines, the weather, scores or any looked-up information the user wants laid out is show_card.",
       );
     if (has("build_ui"))
       rules.push("Information to read (a recipe, a profile, a guide, the news) is show_card; an interactive tool, app, game, chart or form to use is build_ui.");
     if (has("make_image")) rules.push("A picture alone is make_image; information about something is show_card (it adds its own picture).");
     if (has("make_text"))
-      rules.push("A note in the caller's own words is make_text; researched or written-up information — even 'put the muffin recipe on the board' — is show_card.");
+      rules.push("A note in the user's own words is make_text; researched or written-up information — even 'put the muffin recipe on the board' — is show_card.");
     rules.push(
       "Something to buy or compare prices on, flights, hotels, or a trip plan is show_card too (its type option says which: shopping, flights, hotels, itinerary) — it runs a live search and lays the results out with prices; never web_search or ask_brain for those.",
     );
   }
   if (has("set_speech_rate"))
     rules.push("Asking Trinity to talk slower, faster, or at normal speed is set_speech_rate — not small talk.");
-  if (["build_ui", "clear_workspace", "make_image", "make_audio", "make_video", "make_text", "edit_html", "show_card"].some(has))
+  if (["build_ui", "clear_workspace", "undo_workspace", "make_image", "make_audio", "make_video", "make_text", "edit_html", "show_card"].some(has))
     rules.push(
-      "The workspace is the live page beside the caller — what they call the screen, the board or the window. Asking to build, change, show something on, add a card, picture, or clear it is an action, never small talk.",
+      "The workspace is the live page beside the user — what they call the screen, the board or the window. Asking to build, change, show something on, add a card, picture, clear it, or undo a clear is an action, never small talk.",
     );
   return rules;
 }
@@ -256,9 +260,9 @@ export function buildJevBody(input: RouteInput, prepared: Prepared, ctx: AgentCo
   for (const t of prepared.tools) criteria[t.name] = t.description;
 
   const rules = [
-    "Pick an action only when the caller is asking for it, not when they merely mention the topic.",
+    "Pick an action only when the user is asking for it, not when they merely mention the topic.",
     "Actions already done for these words are listed in recent_actions; do not repeat them.",
-    "Choose NONE for small talk, greetings, reactions, questions about the assistant itself, or when the caller is still mid-thought.",
+    "Choose NONE for small talk, greetings, reactions, questions about the assistant itself, or when the user is still mid-thought.",
     ...toolRules(prepared.tools),
     ...ctx.rules,
   ];
@@ -268,7 +272,7 @@ export function buildJevBody(input: RouteInput, prepared: Prepared, ctx: AgentCo
       type: "choice",
       criteria,
       instructions: {
-        goal: "Decide whether the caller's latest words ask the assistant to do one of these things right now.",
+        goal: "Decide whether the user's latest words ask the assistant to do one of these things right now.",
         rules,
       },
     },
@@ -277,7 +281,7 @@ export function buildJevBody(input: RouteInput, prepared: Prepared, ctx: AgentCo
     questions[d.key] = {
       type: "choice",
       criteria: d.options,
-      instructions: { goal: `If the caller's words call for one of the actions: which ${d.description.replace(/\.$/, "")}?` },
+      instructions: { goal: `If the user's words call for one of the actions: which ${d.description.replace(/\.$/, "")}?` },
     };
   }
 
@@ -299,8 +303,8 @@ export function jevRequest(input: RouteInput) {
   return { tools: prepared.tools.map((t) => t.name), body: buildJevBody(input, prepared, ctx) };
 }
 
-/** Screen ops the keyword heuristic may take when Jev abstains — clear/move/remove are unambiguous. */
-const HEURISTIC_OVERRIDE = /^(clear_workspace|remove_card|move_card|describe_workspace|edit_html|set_speech_rate)$/;
+/** Screen ops the keyword heuristic may take when Jev abstains — clear/move/remove/undo are unambiguous. */
+const HEURISTIC_OVERRIDE = /^(clear_workspace|undo_workspace|remove_card|move_card|describe_workspace|edit_html|set_speech_rate)$/;
 
 export async function decide(input: RouteInput): Promise<Decision> {
   const started = Date.now();
@@ -380,7 +384,7 @@ export async function decide(input: RouteInput): Promise<Decision> {
 // ─── Heuristic fallback (no Jev key) ─────────────────────────────────────────
 
 function latestWords(conversation: string): string {
-  const m = /Caller's latest words \([^)]*\): ([\s\S]*)$/.exec(conversation);
+  const m = /User's latest words \([^)]*\): ([\s\S]*)$/.exec(conversation);
   return (m?.[1] ?? conversation).trim();
 }
 
@@ -411,6 +415,12 @@ const AUDIO = new RegExp(
  * "clear all the cards", "clear it/that" (when they mean the board). The old pattern required a
  * determiner *or* no space before the noun, so "clear workspace" never matched.
  */
+/**
+ * Bring back what was just cleared or removed: "undo", "put it back", "restore the cards",
+ * "bring them back", "go back", "oops, undo that".
+ */
+const UNDO =
+  /\b(undo|undelete|restore|put (it|them|that|those|everything) back|bring (it|them|that|those|everything) back|go back|oops)\b(?:[^.?!]{0,40}\b(card|cards|board|workspace|screen|window|clear|remove|that|it|them)\b)?|\b(bring|put|get)\s+(back\s+)?(the\s+)?(cards?|board|workspace|screen)\b|\brestore\s+(the\s+)?(cards?|board|workspace|screen|last)\b/i;
 const CLEAR =
   /\b(clear|close|reset|wipe|blank|empty|hide|erase|get rid of|take down|remove)(?:\s+(?:out|up|down|off))?(?:\s+(?:the|that|this|my|your))?(?:\s+everything(?:\s+(?:on|from)(?:\s+the)?)?)?(?:\s+the)?\s+(?:workspace|screen|board|window|display|canvas)\b|\b(?:clear|wipe|empty|reset|erase|delete|remove|dismiss)\s+(?:all\s+)?(?:(?:of\s+)?(?:the\s+)?)?(?:cards|notes|(?:card|note)(?!\s*(?:number\s*)?\d))\b|\b(?:clear|wipe|reset|blank|empty)\s+(?:it|that|this|everything)\b|\bstart (?:over|fresh|clean) (?:on|with) the (?:workspace|screen)\b/;
 /**
@@ -427,7 +437,7 @@ const REMOVE_CARD =
 const MOVE_CARD =
   /\b((move|put|place|shift|slide|drag|bring|send) (card|note)s?\s*(number\s*)?\d+|(move|put|place|bring|send) (the\s+)?\w+.*(top|bottom|left|right|center|middle|front|back|corner|under|below|above|beside|next to)|(move|put|place) (card|note)s?\b)/i;
 /**
- * The caller's Chrome (only while the extension is connected — the tools are hidden otherwise). Each pattern
+ * The user's Chrome (only while the extension is connected — the tools are hidden otherwise). Each pattern
  * names what makes it a browser request: a site, a tab, the page, something to click or type, a look change.
  */
 const BROWSER_OPEN =
@@ -453,7 +463,7 @@ const TEXT_CARD =
 /**
  * Information to lay out as a card: a recipe, the news, who someone is, what something is, how to do
  * something, a comparison, a plan, a ranking… ("give me a blueberry muffin recipe", "what's in the news",
- * "who was Marie Curie", "compare the iPhone and the Pixel") — not a question about the assistant or the caller.
+ * "who was Marie Curie", "compare the iPhone and the Pixel") — not a question about the assistant or the user.
  */
 const CARD_INFO =
   /\b(recipes?|ingredients|the news|today'?s news|headlines?|what('s| is) (happening|going on)|who (is|was|were) (?!you\b|i\b|we\b|this\b|that\b|it\b|my\b|your\b)|tell me (about|more about) (?!it\b|that\b|yourself|you\b|my\b|your\b)|facts about|information (on|about)|what('s| is| are) (a|an|the) (?!workspace|screen|board|window|time|date)|what('s| is| are) (?!the\b|a\b|an\b|it\b|that\b|this\b|your\b|my\b|our\b|up\b|on\b|in\b|for\b|wrong\b|new\b|going\b|happening\b|next\b|left\b|\d)[a-z][a-z'-]+(?: [a-z'-]+){0,3}\s*\??$|what does \w+ mean|explain (?!that again|yourself)|how (do|to|can|should) (i|you|we|one) (make|cook|bake|build|fix|install|set up|get|grow|clean|write|change)|compare|versus|\bvs\.?|difference between|which is better|top (\d+|ten|five|three)|best \d+|itinerary|workout (plan|routine)|meal plan|the weather|weather (in|for|today|tomorrow|this week)|forecast|what('s| is) the score|standings|who won|flights? (to|from|for|between)|fly(ing)? (to|from|out of)|airfares?|plane tickets?|hotels? (in|near|for|around|at)|places? to stay|where (can|should) (i|we) stay|(cheapest|best|lowest) (price|prices|deal|deals|place to buy)|compare prices|price check|where can (i|we) (buy|get|find|order)|shop(ping)? for|deals? on|how much (does|do|would) \w+( \w+){0,6} cost|plan (a|my|our) (trip|vacation|holiday)|trip to (?=[a-z])|(\d+|two|three|four|five) days? in (?=[a-z])|what to do in)\b/;
@@ -477,7 +487,7 @@ const WHEN =
 /** A page or a part of one: "create a reminder app" or "make a note taking app" is a build, "add a reminder button" an edit. */
 const PAGE_PART = String.raw`(app|page|tool|widget|list|board|section|system|dashboard|screen|feature|button|option|field|tracker|timer|ui|view|card|panel|manager|calendar|form|pad|book|keeper)s?\b`;
 
-/** "Remember to …" said to the assistant, not "I remember to …" or "I'll remember to …" (what the caller does). */
+/** "Remember to …" said to the assistant, not "I remember to …" or "I'll remember to …" (what the user does). */
 const REMEMBER_TO = String.raw`(?<!\b(i|we)('ll| will)? )(remember|don'?t forget) to`;
 
 /**
@@ -533,7 +543,7 @@ function heuristic(input: RouteInput, tools: Tool[], started: number): Decision 
     ms: Date.now() - started,
   });
   const has = (name: string) => tools.some((x) => x.name === name);
-  // While a game runs (its tools are offered), the caller's words are about the story: a question about a
+  // While a game runs (its tools are offered), the user's words are about the story: a question about a
   // hero's sheet is game_answer and what "I" or "we" do is game_narrate.
   const inGame = has("game_narrate") || has("game_answer");
   // Any Game Master table tool in the offer set — board move/remove heuristics must not steal story verbs.
@@ -554,7 +564,7 @@ function heuristic(input: RouteInput, tools: Tool[], started: number): Decision 
   if (has("game_narrate") && !ONLINE.test(t) && /^((ok(ay)?|so|and|then|now|alright)\b[\s,]*)*(i|we)('(ll|m|re|ve|d))?\s+\w/.test(t))
     return pick("game_narrate", 0.85);
   // Memory, reminders, search and builds share verbs ("remind me to look it up", "build a tracker
-  // for every day"): route by the intent the caller leads with — the pattern that matches earliest
+  // for every day"): route by the intent the user leads with — the pattern that matches earliest
   // wins, so a reminder that mentions a chart is still a reminder, and a build that mentions "every
   // day" is still a build. A memory or reminder phrase where a build verb starts ("make a note…",
   // "create a reminder…") is the memory, and an opener that only sets the scene ("Every day I…",
@@ -585,7 +595,7 @@ function heuristic(input: RouteInput, tools: Tool[], started: number): Decision 
   // A picture, clip or audio asked for by name beats the generic build verbs ("make me a picture of…"), and
   // clearing the screen is its own request. At the game table, skip card move/remove/edit heuristics so
   // story verbs never become board ops (those tools are also hidden while a game is active).
-  // The caller's Chrome, while the extension is connected (the tools are hidden otherwise, so these never fire
+  // The user's Chrome, while the extension is connected (the tools are hidden otherwise, so these never fire
   // without it). A look change on the live site ("hide the ads") beats remove_card; a page share beats make_text.
   if (at("browser_share", BROWSER_SHARE) < Infinity) return pick("browser_share", 0.85);
   if (at("browser_modify", BROWSER_MODIFY) < Infinity && !IMAGE.test(t) && !VIDEO.test(t)) return pick("browser_modify", 0.82);
@@ -594,6 +604,8 @@ function heuristic(input: RouteInput, tools: Tool[], started: number): Decision 
   if (at("browser_read", BROWSER_READ) < Infinity) return pick("browser_read", 0.82);
   if (at("browser_open", BROWSER_OPEN) < Infinity && !IMAGE.test(t) && !VIDEO.test(t)) return pick("browser_open", 0.85);
   if (at("browser_act", BROWSER_ACT) < Infinity) return pick("browser_act", 0.8);
+  // Undo before clear: "put the cards back" must not wipe the board again.
+  if (at("undo_workspace", UNDO) < Infinity) return pick("undo_workspace", 0.9);
   if (at("clear_workspace", CLEAR) < Infinity) return pick("clear_workspace", 0.8);
   if (at("describe_workspace", DESCRIBE) < Infinity) return pick("describe_workspace", 0.8);
   if (at("set_speech_rate", SPEECH_RATE) < Infinity) return pick("set_speech_rate", 0.88);
@@ -632,7 +644,7 @@ function heuristic(input: RouteInput, tools: Tool[], started: number): Decision 
   const words = new Set(t.split(/[^a-z0-9]+/).filter((w) => w.length > 2));
   for (const tool of tools) {
     if (inGame && tool.name === "web_search") continue; // "search the chest": no web words, no web search
-    if (/^(make_image|make_video|make_audio|make_text|show_card|clear_workspace|describe_workspace|remove_card|move_card|edit_html|set_speech_rate)$/.test(tool.name))
+    if (/^(make_image|make_video|make_audio|make_text|show_card|clear_workspace|undo_workspace|describe_workspace|remove_card|move_card|edit_html|set_speech_rate)$/.test(tool.name))
       continue; // a video or picture mentioned isn't one asked for
     if (tool.name.split(/[_\s]+/).some((tok) => tok.length > 3 && words.has(tok))) return pick(tool.name, 0.7);
   }

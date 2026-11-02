@@ -21,8 +21,8 @@ function historyFor(transcript: TranscriptTurn[], n: number, latest?: string): C
  * ask_brain: answer a question that needs real knowledge, math, or careful reasoning — the
  * voice model is a small speech model, so the brain works it out and the answer is spoken
  * verbatim. At most three short, speakable sentences, grounded in the situation and in what
- * Trinity remembers about the caller. Returns null when the brain can't answer in time (the
- * caller hears that instead of a guess).
+ * Trinity remembers about the user. Returns null when the brain can't answer in time (the
+ * user hears that instead of a guess).
  */
 export async function answer(input: {
   persona: Persona;
@@ -48,9 +48,9 @@ export async function answer(input: {
       `Traits: ${JSON.stringify(input.persona.traits)}\n` +
       (input.situation ? `Current situation: ${input.situation}\n` : "") +
       (input.memories.length
-        ? `What you know about the caller (use it only where it matters to the question):\n- ${input.memories.join("\n- ")}\n`
+        ? `What you know about the user (use it only where it matters to the question):\n- ${input.memories.join("\n- ")}\n`
         : "") +
-      "\nYou are on a live voice call, and your words are read aloud exactly as you write them. Answer the caller's " +
+      "\nYou are on a live voice call, and your words are read aloud exactly as you write them. Answer the user's " +
       "question correctly and directly in one to three short sentences: the answer first, then at most a line of why. " +
       "Work it out carefully (exactly, for math) but don't show your working. Write numbers, units, money and dates the " +
       "way they are spoken. No lists, markdown, symbols or emojis. If you aren't sure, say so briefly instead of guessing.",

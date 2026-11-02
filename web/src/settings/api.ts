@@ -52,7 +52,7 @@ export interface PublicEndpoints {
   replyModel: string;
   fastModel: string;
   imageModel: string;
-  /** Text-to-speech for audio clips the caller asks for, and the voice name that model takes (older engines leave them out). */
+  /** Text-to-speech for audio clips the user asks for, and the voice name that model takes (older engines leave them out). */
   ttsModel?: string;
   ttsVoice?: string;
   /** "auto": skills Trinity creates are usable at once; "manual": they wait for approval. */
@@ -215,7 +215,7 @@ export interface Skill {
   /** Jev can pick it. Engines without the switch report every tool as enabled. */
   enabled: boolean;
   createdAt?: number;
-  /** For forged skills: what it was made for, in the caller's words. */
+  /** For forged skills: what it was made for, in the user's words. */
   need?: string;
   /** For forged skills: the coder that wrote it. */
   model?: string;
@@ -301,7 +301,7 @@ export interface MemoryQuery {
   type?: string;
 }
 
-/** What Trinity knows about the caller directly. `available` is false on engines without /profile. */
+/** What Trinity knows about the user directly. `available` is false on engines without /profile. */
 export interface Profile {
   name: string;
   available: boolean;
@@ -354,7 +354,7 @@ function isQuiet(err: ApiError, opts: RequestOptions): boolean {
   return typeof opts.quiet === "function" ? opts.quiet(err) : Boolean(opts.quiet);
 }
 
-/** Combine a caller's quiet option with an extra "stay quiet for these errors" rule. */
+/** Combine a user's quiet option with an extra "stay quiet for these errors" rule. */
 function quietAlso(opts: RequestOptions, rule: (err: ApiError) => boolean): (err: ApiError) => boolean {
   return (err) => rule(err) || isQuiet(err, opts);
 }

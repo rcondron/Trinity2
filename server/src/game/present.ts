@@ -205,7 +205,7 @@ export function presentGame(game: Game | string, opts: { force?: boolean } = {})
 
 /**
  * presentGame for work that finishes after an await: shows the game only while it is still its
- * persona's active game, so a slow tool never takes the screen back from the game the caller
+ * persona's active game, so a slow tool never takes the screen back from the game the user
  * switched to meanwhile.
  */
 export function presentIfCurrent(game: Game | string): void {

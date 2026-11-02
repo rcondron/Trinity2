@@ -225,7 +225,7 @@ async function answer(args: Record<string, unknown>, ctx: ToolContext): Promise<
 const gameNarrate: Tool = {
   name: "game_narrate",
   description:
-    "The caller says what their character does, tries, or says in the story — or asks what happens next — and the Game Master narrates the outcome.",
+    "The user says what their character does, tries, or says in the story — or asks what happens next — and the Game Master narrates the outcome.",
   input: {},
   argMode: "raw",
   toolset: "game",
@@ -236,7 +236,7 @@ const gameNarrate: Tool = {
 
 const gameAnswer: Tool = {
   name: "game_answer",
-  description: "The caller asks a question about the game itself: a hero's stats, HP or gear, the scene, an NPC, or the rules.",
+  description: "The user asks a question about the game itself: a hero's stats, HP or gear, the scene, an NPC, or the rules.",
   input: {},
   argMode: "raw",
   toolset: "game",

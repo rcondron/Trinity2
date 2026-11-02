@@ -88,7 +88,7 @@ export interface StreamOptions {
   extra?: Record<string, unknown>;
   /**
    * A thinking model's reasoning, as it streams (`delta.reasoning_content`): called with the
-   * reasoning size so far, in characters — so a caller can show "Thinking…" instead of a stuck screen.
+   * reasoning size so far, in characters — so a user can show "Thinking…" instead of a stuck screen.
    */
   onReasoning?: (chars: number) => void;
   /** Cancels the call; it rejects with the signal's reason. */
@@ -97,7 +97,7 @@ export interface StreamOptions {
 
 /**
  * Streamed chat completion: `onText` receives the accumulated text as it grows (so a
- * caller can show work in progress); resolves with the full text. Aborts when the whole
+ * user can show work in progress); resolves with the full text. Aborts when the whole
  * call exceeds `timeoutMs` or the stream goes quiet for `idleMs` — reasoning deltas count
  * as activity, so a thinking model working through its plan isn't taken for a stall.
  * Rejects when the reply didn't finish: an error sent inside the stream, a stop at the token

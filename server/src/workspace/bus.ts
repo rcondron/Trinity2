@@ -83,6 +83,41 @@ export function isBuildPreview(s: { template?: WorkspaceTemplate | null }): bool
   return s.template?.id === BUILD_PREVIEW_TEMPLATE.id;
 }
 
+/** A restorable workspace screen (what was on the board before a clear / remove). */
+export interface WorkspaceUndoEntry {
+  at: number;
+  reason: string;
+  /** Short human label, e.g. "board with 3 cards". */
+  label: string;
+  mode: WorkspaceMode;
+  title: string;
+  html: string | null;
+  template: WorkspaceTemplate | null;
+  state: unknown | null;
+  owner: string | null;
+}
+
+const MAX_UNDO = 12;
+
+function cloneJson<T>(value: T): T {
+  if (value == null || typeof value !== "object") return value;
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function undoLabelOf(mode: WorkspaceMode, title: string, owner: string | null, state: unknown): string {
+  if (mode === "empty") return "empty workspace";
+  if (owner === "board") {
+    const cards = state && typeof state === "object" && Array.isArray((state as { cards?: unknown }).cards)
+      ? ((state as { cards: unknown[] }).cards.length)
+      : 0;
+    return cards ? `board with ${cards} card${cards === 1 ? "" : "s"}` : "empty board";
+  }
+  if (owner?.startsWith("game:")) return `game “${title || "Untitled"}”`;
+  if (mode === "app") return `app “${title || "Workspace"}”`;
+  if (mode === "html") return `page “${title || "Workspace"}”`;
+  return title || "workspace";
+}
+
 export class WorkspaceBus {
   private snap: WorkspaceSnapshot = {
     epoch: EPOCH,
@@ -106,6 +141,8 @@ export class WorkspaceBus {
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   /** The latest screen not yet on disk (never a build preview). */
   private unsaved: WorkspaceSnapshot | null = null;
+  /** Recent screens that clear / remove can bring back. */
+  private undoStack: WorkspaceUndoEntry[] = [];
 
   constructor(private persistPath: string | null = STORE) {
     this.restore();
@@ -113,6 +150,61 @@ export class WorkspaceBus {
 
   snapshot(): WorkspaceSnapshot {
     return { ...this.snap, activities: [...this.activities].map(([id, text]) => ({ id, text })) };
+  }
+
+  /** True when there's a prior screen to restore (after a clear or card remove). */
+  canUndo(): boolean {
+    return this.undoStack.length > 0;
+  }
+
+  /** Label of the most recent undo entry, or null. */
+  undoLabel(): string | null {
+    return this.undoStack[this.undoStack.length - 1]?.label ?? null;
+  }
+
+  /**
+   * Remember the current screen so clear / remove / accidental wipes can be undone.
+   * No-ops when empty or when a transient build preview is showing.
+   */
+  pushUndo(reason: string): boolean {
+    if (this.snap.mode === "empty") return false;
+    if (isBuildPreview(this.snap)) return false;
+    this.flushState();
+    const entry: WorkspaceUndoEntry = {
+      at: Date.now(),
+      reason: reason.slice(0, 64),
+      label: undoLabelOf(this.snap.mode, this.snap.title, this.snap.owner, this.snap.state),
+      mode: this.snap.mode,
+      title: this.snap.title,
+      html: this.snap.html,
+      template: cloneJson(this.snap.template),
+      state: cloneJson(this.snap.state),
+      owner: this.snap.owner,
+    };
+    this.undoStack.push(entry);
+    if (this.undoStack.length > MAX_UNDO) this.undoStack.shift();
+    return true;
+  }
+
+  /**
+   * Restore the most recent remembered screen. Returns a short say-line for the tool.
+   */
+  undo(): { ok: boolean; say: string; label?: string } {
+    const entry = this.undoStack.pop();
+    if (!entry) return { ok: false, say: "There's nothing to bring back — the undo stack is empty." };
+    this.cancelPendingState();
+    this.snap = {
+      ...this.snap,
+      mode: entry.mode,
+      title: entry.title,
+      html: entry.html,
+      template: entry.template,
+      state: entry.state,
+      owner: entry.owner,
+    };
+    this.bump();
+    this.broadcast({ type: "snapshot", snapshot: this.snapshot() });
+    return { ok: true, say: `Restored ${entry.label}.`, label: entry.label };
   }
 
   /** Subscribe a window; it receives the full snapshot immediately. */
@@ -205,6 +297,7 @@ export class WorkspaceBus {
   }
 
   clear(): void {
+    this.pushUndo("clear");
     this.cancelPendingState();
     this.snap = { ...this.snap, mode: "empty", html: null, template: null, state: null, owner: null, title: "Workspace" };
     this.bump();

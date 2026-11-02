@@ -34,7 +34,7 @@ export interface TranscriptTurn {
   voiced?: boolean;
   /** Said unprompted: a due reminder, a scheduled task's result, a finished background job. */
   proactive?: boolean;
-  /** The caller cut it off while the live call was saying it (talked over it, or ended the turn): shown, never read out again. */
+  /** The user cut it off while the live call was saying it (talked over it, or ended the turn): shown, never read out again. */
   cut?: boolean;
   ts: number;
 }
@@ -84,7 +84,7 @@ export interface ToolContext {
   persona: Persona;
   recentTranscript: TranscriptTurn[];
   emit: (event: ServerEvent) => void;
-  /** The caller's words that triggered the tool (the whole sentence when it fired at sentence end). */
+  /** The user's words that triggered the tool (the whole sentence when it fired at sentence end). */
   utterance: string;
   /** The memory store (remember / recall and any tool that personalizes). */
   memory: MemoryStore;

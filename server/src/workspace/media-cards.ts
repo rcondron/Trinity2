@@ -1,7 +1,7 @@
 import type { WorkspaceTemplate } from "./bus.js";
 
 /**
- * The workspace cards for a picture, audio clip or video the caller asked for
+ * The workspace cards for a picture, audio clip or video the user asked for
  * (make_image, make_audio, make_video). All are app templates (contract v1,
  * window.render(state, prev)) rather than html, because a sandboxed frame can't
  * load the engine's http://localhost files itself: the host fetches an

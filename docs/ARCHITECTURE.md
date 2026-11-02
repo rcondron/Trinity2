@@ -61,7 +61,7 @@ keys are editable at runtime on the Settings page.
 - **Warm standby.** The page opens `/call?standby=1` at load, so the ~5 s handshake happens
   before you tap the mic. Deepgram connects in parallel and is kept alive through the
   handshake. The persona's short voice prompt keeps the handshake short (handshake time
-  grows with prompt length; an empty prompt hangs the server); the caller's name, when
+  grows with prompt length; an empty prompt hangs the server); the user's name, when
   known, is added to it.
 - **Routing while you talk.** Deepgram interim text is sent to Jev every ~400 ms with a
   final pass at the end of the sentence. Confident actions with no free-text arguments fire
@@ -93,7 +93,7 @@ keys are editable at runtime on the Settings page.
   background work speak up unprompted (a due reminder, a new skill that's ready): it waits up
   to 15 s for a call that's still connecting (words sent before the pod's hello are lost),
   its turn behind any reply, and a pause in your speech, and it resolves `"said"` once the
-  whole line was said, `"cut"` when the caller cut it off (talked over it, or tapped to end
+  whole line was said, `"cut"` when the user cut it off (talked over it, or tapped to end
   the turn) and `"unsaid"` when no call said it (none, it closed or moved to another window,
   or no hello in time). Every line is also shown as text; a cut one is never read out again,
   and an unsaid one is read aloud with the browser's voice, in one tab only, never while any
@@ -106,9 +106,9 @@ keys are editable at runtime on the Settings page.
   reminder, or a recurring task that runs at most hourly, is due within those 15 minutes).
   `/ws` and `/ws/workspace` peers are pinged every 30 s and one that misses a pong is dropped,
   so a phone or laptop that vanished stops counting as someone to tell within about a minute.
-- **Caller's name.** Stored as Settings → Memory “Your name” / a `name` memory for the brain
+- **User's name.** Stored as Settings → Memory “Your name” / a `name` memory for the brain
   and reply writer. It is **not** put in PersonaPlex's `text_prompt` (that model treats the
-  prompt as identity and used to greet as “Hello, this is [caller]”). `/api/status` and the
+  prompt as identity and used to greet as “Hello, this is [user]”). `/api/status` and the
   `/ws` ready event still carry `profileName`; a name change may re-warm standby for other
   session state, never mid-call.
 
@@ -119,7 +119,7 @@ keys are editable at runtime on the Settings page.
   per argument domain (e.g. which coder), `instructions {goal, rules}`, and
   `state {page {url, title, text}, elements, recent_actions}`. Tools are filtered per persona
   (`toolsets`), by availability, and by context providers. With no TypeSafe key a keyword
-  fallback routes by the intent the caller leads with: the earliest of the search, memory /
+  fallback routes by the intent the user leads with: the earliest of the search, memory /
   reminder and build / skill phrases wins, so "remind me to look up flights" is a reminder and
   "build me a habit tracker for every day" is a build. An opener that only sets the scene
   ("Every day I struggle to focus…", "What's my spending this month?", "I remember…") gives way
@@ -153,7 +153,7 @@ keys are editable at runtime on the Settings page.
 | `ask_brain` | Answers a quick question that needs real knowledge, math, or careful reasoning (spoken verbatim, nothing on screen). |
 | `web_search` | A quick fact or link from the web, spoken; its results go up as a card on the board. |
 | `create_skill` | Writes a brand-new skill on the fly, tests it in a sandbox, and makes it usable at once. |
-| `remember` / `recall` | Saves a fact the caller asks Trinity to keep; answers from what they told her before. |
+| `remember` / `recall` | Saves a fact the user asks Trinity to keep; answers from what they told her before. |
 | `schedule` | Reminders ("in ten minutes…") and recurring tasks ("every morning at eight…"). |
 | `get_time` | The date and time. |
 | `make_image` / `make_audio` / `make_video` / `make_text` | Adds numbered floating card(s) (loader first). Several subjects (“a panda and a tiger”) → one card each, tagged by content. |
@@ -176,7 +176,7 @@ keys are editable at runtime on the Settings page.
 - **Untrusted text.** What tools found on the web, the agent's own lines and the situation are
   given to the coder quoted and marked as data (URLs removed from tool results) — so is a tool's
   card on screen (the search results) when "chart these" edits it; it uses their facts but never
-  follows instructions in them, and its pages never navigate or send data anywhere. The caller's
+  follows instructions in them, and its pages never navigate or send data anywhere. The user's
   own lines are followed where they describe the page. `<meta>` and `<link>` tags are stripped
   from finished builds and from the streaming preview (a refresh would navigate; a preconnect
   hint reaches its host whatever the CSP says).
@@ -189,7 +189,7 @@ keys are editable at runtime on the Settings page.
   person, place, explainer, how-to, comparison, product, event, weather, sports, media, plan, health,
   list, other); keyless routing guesses the kind from the words. A quick fact stays `ask_brain`
   (spoken only); "search for X" stays `web_search`; a picture alone is `make_image`; a note in the
-  caller's own words is `make_text`.
+  user's own words is `make_text`.
 - **What happens.** The card goes up at once (a masthead and shimmer lines; a tall widget card). The
   web is searched first when the kind or the words are fresh — news, sports and events take real
   headlines from Google News's RSS (`services/news.ts`; a web search for "the news" only finds front
@@ -272,7 +272,7 @@ keys are editable at runtime on the Settings page.
 - **Kept safe whatever a page says.** Page text is data to every model prompt, never instructions.
   Password fields are never listed in a snapshot nor typed into. A control whose name spends, sends
   or destroys (buy, order, pay, checkout, confirm, submit, send, delete, sign out…) is clicked only
-  when the caller's own words contain that word; otherwise Trinity names it and asks. Chrome's own
+  when the user's own words contain that word; otherwise Trinity names it and asks. Chrome's own
   pages are left alone; only web and `data:` URLs are opened or downloaded; injected HTML is stripped
   of scripts and handlers. The extension's host permissions are broad (it must read and change any
   site), so the pairing token is the gate: it lives in Chrome's storage and the engine's SQLite.
@@ -283,7 +283,7 @@ keys are editable at runtime on the Settings page.
   **make_audio** / **make_video** / **make_text** / **build_ui** / **show_card** call adds a
   **numbered floating card** at an absolute position (a tool's rendered page — search results — too).
   Cards show a loader while Mordiem works, then fill in when ready (`data/images|audio|videos/`).
-  Numbers stay stable so the caller can say **remove_card** / **move_card** (“remove card 2”,
+  Numbers stay stable so the user can say **remove_card** / **move_card** (“remove card 2”,
   “move card 1 to the top-left”). **clear_workspace** wipes the whole board.
 - **edit_html** adjusts existing cards without regenerating them: size-only asks (“make the
   picture smaller”) set the img/video width % immediately; deeper asks stream a surgical HTML
@@ -312,7 +312,7 @@ keys are editable at runtime on the Settings page.
   back, and is saved to `data/skills/<name>.skill.mjs` (+ `data/skills/index.json`).
   `create_skill` answers at once and works in the background; when the skill is ready Trinity
   says so in the live call (and runs it once if the request already contained a task for it).
-  News the call didn't say in full — the call that asked is gone, or the caller cut it off — is
+  News the call didn't say in full — the call that asked is gone, or the user cut it off — is
   Trinity's line in every open app tab instead, read aloud once if it went unsaid.
 - **Approval.** `skillApproval` "auto" (default): the skill is usable on the very next turn.
   "manual": it waits in Settings → Skills for approval.
@@ -325,26 +325,26 @@ keys are editable at runtime on the Settings page.
 
 ### Memory (`tools/memory.ts`, `db/memory.ts`, `services/curator.ts`)
 
-- **remember** turns what the caller said into one sentence, replaces a changed fact, skips
-  repeats, and stores the caller's name as their profile name (it personalizes the voice
+- **remember** turns what the user said into one sentence, replaces a changed fact, skips
+  repeats, and stores the user's name as their profile name (it personalizes the voice
   prompt, answers and reminders). Two facts from one request never overwrite each other. With
-  no model the caller's own words are kept in the third person ("The caller doesn't eat pork.",
-  "The caller really likes jazz.", "The caller went to Peru."), after lead-ins like "Trinity,",
+  no model the user's own words are kept in the third person ("The user doesn't eat pork.",
+  "The user really likes jazz.", "The user went to Peru."), after lead-ins like "Trinity,",
   "could you please" or "make a note of this:".
-- **The caller's name** is one memory, tagged `name`, that states it ("The caller's name is
-  Rob.", "The caller goes by Rob."). A new name — through remember, curation or Settings —
+- **The user's name** is one memory, tagged `name`, that states it ("The user's name is
+  Rob.", "The user goes by Rob."). A new name — through remember, curation or Settings —
   replaces the name in it and keeps whatever else it says ("…is Rob, and he works nights");
-  memories about other people ("The caller's son is named Ryan Jr.") are never taken for it.
+  memories about other people ("The user's son is named Ryan Jr.") are never taken for it.
   Clearing the name in Settings removes a name-only memory or takes the name out of one that
   says more; editing the name memory to another name changes the profile name.
 - **recall** answers only from saved memories, spoken verbatim; it says so when nothing is saved.
 - **Curation.** Durable facts are also extracted from conversations automatically (not from
   in-character game talk). An exchange that remember already handled isn't curated again; after
   schedule or recall the request itself — the reminder, the question — isn't saved, but anything
-  else said in the same breath ("I'm Ryan, remind me at five…") still is. Only the caller's words
+  else said in the same breath ("I'm Ryan, remind me at five…") still is. Only the user's words
   are memories: what the agent said helps read them (an answer to its question), but a reminder it
   set or a plan it confirmed is never saved. Each exchange keeps up to three new facts, plus the
-  caller's name whenever they say it, which is asked for even when a memory already holds it and
+  user's name whenever they say it, which is asked for even when a memory already holds it and
   never takes one of the three places. Settings → Memory lists,
   searches, edits and deletes them. Memory ids are letters and digits (PouchDB reserves ids
   starting with `_`).
@@ -355,9 +355,9 @@ keys are editable at runtime on the Settings page.
   a one-time reminder or a recurring task, in the engine's local time zone. The model gets the
   full date with the year and returns calendar dates as `YYYY-MM-DD`; "November 12th", "nov 12"
   and "the 12th of November" also read, a date already past means next year's, and "next
-  Friday" is the coming one (a week away when said on a Friday). Only what the caller said
+  Friday" is the coming one (a week away when said on a Friday). Only what the user said
   counts: a clock time, am/pm, part of the day or repeat the model adds on its own is dropped,
-  and the earlier lines reach the model only when the caller is answering its question about
+  and the earlier lines reach the model only when the user is answering its question about
   when, or points back at them ("again", "do that every day", "ten more minutes" or "snooze"
   after a reminder) — so a new request never takes on an earlier one's "every Friday". A part of
   the day counts only when said as when ("tonight", "tomorrow morning", "friday night at 9"),
@@ -371,7 +371,7 @@ keys are editable at runtime on the Settings page.
   asked about (every day, or one day a week?); "monthly" is every thirty days, said as "not on a
   set date". "In two days at 9am" keeps the 9 AM. A day it can't read ("next week", "this
   weekend", "the 12th") is asked about ("Which day should I …?"). "Remember to…", "don't forget
-  to…" and "set a reminder…" said as the request are reminders, and so are the caller's own "I need
+  to…" and "set a reminder…" said as the request are reminders, and so are the user's own "I need
   you to / I've got to remember to…" and one after an acknowledgement ("thanks, and remember to…");
   never one inside a job ("brief me on the news and (also) remember to include the weather") or for
   someone else ("tell Sam to remember to…"). An answer to the when-question reads the request it

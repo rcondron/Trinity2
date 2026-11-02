@@ -1,6 +1,6 @@
 // One shared audio player for the settings page, so only one preview plays at a
 // time. Each play() gets a state callback (playing → true/false) that drives the
-// caller's ▶/■ button; starting another preview stops the previous one.
+// user's ▶/■ button; starting another preview stops the previous one.
 
 import { toast } from "./ui.js";
 

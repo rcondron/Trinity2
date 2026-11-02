@@ -25,16 +25,19 @@ let backoff = RECONNECT_MIN_MS;
 let tabsTimer = null;
 /** tabId → Map<id, { css }> — what Trinity injected, so it can be undone. */
 const injected = new Map();
+/** Disconnect was pressed in the popup: no socket and no reconnecting until Connect (kept in storage, so it survives a worker restart). */
+let pausedByUser = false;
+const PAUSED_DETAIL = "Disconnected — press Connect to let Trinity use this browser again.";
 
 // ─── Settings & status ───────────────────────────────────────────────────────
 
 async function settings() {
-  const { engine, token } = await chrome.storage.local.get(["engine", "token"]);
+  const { engine, token, paused } = await chrome.storage.local.get(["engine", "token", "paused"]);
   const base = String(engine || DEFAULT_ENGINE)
     .trim()
     .replace(/\/+$/, "")
     .replace(/^http(s?):\/\//, "ws$1://");
-  return { engine: /^wss?:\/\//.test(base) ? base : `ws://${base}`, token: String(token || "").trim() };
+  return { engine: /^wss?:\/\//.test(base) ? base : `ws://${base}`, token: String(token || "").trim(), paused: Boolean(paused) };
 }
 
 function setStatus(state, detail) {
@@ -73,7 +76,12 @@ function scheduleReconnect() {
 
 async function connect() {
   if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
-  const { engine, token } = await settings();
+  const { engine, token, paused } = await settings();
+  pausedByUser = paused;
+  if (paused) {
+    setStatus("paused", PAUSED_DETAIL);
+    return;
+  }
   if (!token) {
     setStatus("off", "No token yet — paste the one from Trinity's Settings → Browser extension.");
     return;
@@ -100,6 +108,7 @@ async function connect() {
   sock.onmessage = (ev) => void onMessage(ev.data);
   sock.onclose = (ev) => {
     if (ws === sock) ws = null;
+    if (pausedByUser) return; // closed by Disconnect: the status already says so, and nothing reconnects
     if (ev.code === 4401) setStatus("error", "The engine refused the token — paste the current one from Settings → Browser extension.");
     else if (ev.code === 4409) setStatus("off", "Another copy of the extension connected; this one stepped back.");
     else {
@@ -709,11 +718,31 @@ chrome.tabs.onRemoved.addListener((tabId) => injected.delete(tabId));
 chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
   if (!msg || typeof msg !== "object") return false;
   if (msg.type === "status") {
-    settings().then((s) => reply({ status, engine: s.engine, tokenSet: Boolean(s.token), userScripts: hasUserScripts(), version: VERSION }));
+    settings().then((s) => reply({ status, engine: s.engine, tokenSet: Boolean(s.token), paused: s.paused, userScripts: hasUserScripts(), version: VERSION }));
+    return true;
+  }
+  if (msg.type === "disconnect") {
+    (async () => {
+      pausedByUser = true;
+      await chrome.storage.local.set({ paused: true });
+      clearTimeout(reconnectTimer);
+      if (ws) {
+        try {
+          ws.close(1000, "disconnect");
+        } catch {
+          /* ignore */
+        }
+        ws = null;
+      }
+      setStatus("paused", PAUSED_DETAIL);
+      reply({ status });
+    })();
     return true;
   }
   if (msg.type === "connect") {
     (async () => {
+      pausedByUser = false;
+      await chrome.storage.local.set({ paused: false });
       if (ws) {
         try {
           ws.close(1000, "reconnect");

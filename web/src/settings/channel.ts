@@ -4,7 +4,7 @@
 import type { TrinityBroadcast } from "../workspace/protocol.js";
 
 /**
- * What changed. "memory" (memories and the caller's profile) only matters to other settings
+ * What changed. "memory" (memories and the user's profile) only matters to other settings
  * tabs — the main app treats every settings-changed message the same way.
  */
 export type SettingsTopic = Extract<TrinityBroadcast, { type: "settings-changed" }>["what"];

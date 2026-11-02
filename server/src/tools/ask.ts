@@ -7,7 +7,7 @@ import { registerTool } from "./registry.js";
 /**
  * ask_brain: questions that need real knowledge or careful reasoning go to a Mordiem text
  * model (PersonaPlex is a small speech model) and the answer is spoken verbatim — grounded in
- * the situation and in what Trinity remembers about the caller. Jev / the router pick the fast
+ * the situation and in what Trinity remembers about the user. Jev / the router pick the fast
  * JSON model for snappy asks and the brain model when the prompt needs careful reasoning.
  */
 const ANSWER_MS = 12_000;
@@ -54,7 +54,7 @@ const askBrain: Tool = {
       options: QUALITY_OPTIONS,
     },
   },
-  // The question is the caller's whole sentence (ctx.utterance): fires when it ends.
+  // The question is the user's whole sentence (ctx.utterance): fires when it ends.
   argMode: "raw",
   source: "builtin",
   async run(args, ctx) {

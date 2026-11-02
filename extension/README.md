@@ -18,7 +18,9 @@ extension talks only to the Trinity engine at `ws://127.0.0.1:8799`.
    changes work everywhere regardless).
 
 If the engine restarts, the extension reconnects on its own (it retries every few seconds, and at
-least every thirty seconds). The popup says why when it can't connect.
+least every thirty seconds). The popup says why when it can't connect. **Disconnect** in the popup
+cuts the link and keeps it cut — no reconnecting, even after Chrome restarts — until you press
+**Connect** again.
 
 ## What Trinity can do with it
 
@@ -53,5 +55,5 @@ least every thirty seconds). The popup says why when it can't connect.
 - `manifest.json` — Manifest V3; permissions: tabs, scripting, activeTab, downloads, storage,
   contextMenus, pageCapture, alarms, userScripts; all sites.
 - `background.js` — the service worker: the socket to the engine, the calls, tab reports, shares.
-- `popup.html` / `popup.js` / `popup.css` — status, the token, "share this page".
+- `popup.html` / `popup.js` / `popup.css` — status, Disconnect / Connect, the token, "share this page".
 - `icons/` — the toolbar icon.

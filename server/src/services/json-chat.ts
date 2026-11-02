@@ -3,7 +3,7 @@ import { getEndpoints, live } from "../settings.js";
 /**
  * Venice-routed models on Mordiem (e.g. nemotron) accept these; disabling thinking
  * measured ~1.2s faster on streamed replies. Non-Venice models (glm, gpt-oss, llama)
- * reject them with HTTP 400 — callers retry without.
+ * reject them with HTTP 400 — users retry without.
  */
 export const VENICE_PARAMS = {
   include_venice_system_prompt: false,

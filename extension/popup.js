@@ -1,4 +1,4 @@
-// The toolbar popup: connection status, the pairing token, and "share this page".
+// The toolbar popup: connection status, Disconnect / Connect, the pairing token, and "share this page".
 
 const $ = (id) => document.getElementById(id);
 const dot = $("dot");
@@ -6,18 +6,39 @@ const statusText = $("statusText");
 const engineInput = $("engine");
 const tokenInput = $("token");
 const saveNote = $("saveNote");
+const connBtn = $("connBtn");
+let painted = false;
+let lastState = "";
 
 function paint(res) {
   const s = (res && res.status) || { state: "off", detail: "" };
   dot.className = `dot ${s.state}`;
   statusText.textContent =
-    s.state === "connected" ? "Connected to Trinity" : s.state === "connecting" ? "Connecting…" : s.state === "error" ? s.detail || "Something's wrong" : s.detail || "Not connected";
+    s.state === "connected"
+      ? "Connected to Trinity"
+      : s.state === "connecting"
+        ? "Connecting…"
+        : s.state === "paused"
+          ? "Disconnected"
+          : s.state === "error"
+            ? s.detail || "Something's wrong"
+            : s.detail || "Not connected";
   if (res) {
     if (!engineInput.value) engineInput.value = res.engine || "";
     tokenInput.placeholder = res.tokenSet ? "•••••••• saved — paste to replace" : "Paste the token";
     $("scriptsHint").hidden = Boolean(res.userScripts);
     $("version").textContent = `v${res.version || ""}`;
-    $("setup").open = !res.tokenSet || s.state === "error";
+    // Disconnect while a link is up or coming up; Connect once it's paused, dropped or refused.
+    const live = s.state === "connected" || s.state === "connecting";
+    connBtn.hidden = !res.tokenSet;
+    connBtn.textContent = live ? "Disconnect" : "Connect";
+    connBtn.title = live ? "Close the link to Trinity until you press Connect" : "Connect to the Trinity engine now";
+    // The Connection panel opens itself only when it needs you — no token yet, or an error that just
+    // appeared. Opening or closing it yourself sticks: the status repaints every two seconds.
+    if (!painted) $("setup").open = !res.tokenSet || s.state === "error";
+    else if (s.state === "error" && lastState !== "error") $("setup").open = true;
+    painted = true;
+    lastState = s.state;
   }
 }
 
@@ -50,6 +71,14 @@ $("saveBtn").addEventListener("click", async () => {
   setTimeout(() => (saveNote.textContent = ""), 2500);
 });
 
+connBtn.addEventListener("click", async () => {
+  const disconnect = connBtn.textContent === "Disconnect";
+  connBtn.disabled = true;
+  connBtn.textContent = disconnect ? "Disconnecting…" : "Connecting…";
+  paint(await ask({ type: disconnect ? "disconnect" : "connect" }));
+  connBtn.disabled = false;
+});
+
 $("showToken").addEventListener("click", () => {
   const hidden = tokenInput.type === "password";
   tokenInput.type = hidden ? "text" : "password";
@@ -60,7 +89,7 @@ $("shareBtn").addEventListener("click", async () => {
   const btn = $("shareBtn");
   btn.disabled = true;
   const res = await ask({ type: "share" });
-  btn.textContent = res && res.ok ? "Shared — it's on Trinity's board" : "Not connected — check the token below";
+  btn.textContent = res && res.ok ? "Shared — it's on Trinity's board" : "Not connected — press Connect, or check the token below";
   setTimeout(() => {
     btn.textContent = "Share this page with Trinity";
     btn.disabled = false;

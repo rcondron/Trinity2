@@ -42,7 +42,7 @@ export function clampRate(n: number): number {
   return Math.round(Math.max(SPEECH_RATE_MIN, Math.min(SPEECH_RATE_MAX, n)) * 100) / 100;
 }
 
-/** Parse "slower", "a bit faster", "slow down", "1.2x", "half speed" from the caller's words. */
+/** Parse "slower", "a bit faster", "slow down", "1.2x", "half speed" from the user's words. */
 export function parseSpeechRateIntent(utterance: string, current = getSpeechRate()): number | null {
   const u = utterance.toLowerCase().replace(/\s+/g, " ").trim();
   if (!/\b(slow|fast|quicker|slower|faster|speed|pace|tempo)\b/.test(u)) return null;

@@ -29,9 +29,9 @@ const MAX_QUEUED_SPEECH_MS = 1_500; // keep at most this much forced speech queu
 const OUTCOME_WAIT_MS = 35_000; // past an action's own limits (argument extraction ≤ 16s, then the tool's 15s)
 const FIRST_WORDS_MS = 12_000; // the reply writer falls back on its own after 10s
 const FINALIZE_WAIT_MS = 1_200; // mic off: how long Deepgram's Finalize result may take
-const ECHO_COVER = 0.7; // share of the caller's words that must be one in-order piece of the agent's words
+const ECHO_COVER = 0.7; // share of the user's words that must be one in-order piece of the agent's words
 const READY_WAIT_MS = 15_000; // an announcement waits this long for a call that's still connecting
-const RECENT_USE_MS = 10_000; // a standby that heard, was typed or said something this recently isn't lent out: the caller may go on
+const RECENT_USE_MS = 10_000; // a standby that heard, was typed or said something this recently isn't lent out: the user may go on
 const LOAN_GRACE_MS = 2_500; // a returned loan is kept this long for a batch's next sample before the voice is freed
 
 /** Words as spoken, apostrophes dropped so "let's" matches a transcribed "lets": "Let's begin!" → ["lets", "begin"]. */
@@ -39,7 +39,7 @@ const spokenWords = (s: string) => s.toLowerCase().replace(/['’]/g, "").match(
 
 /**
  * The longest run of `text`'s words found contiguously, in order, in `tail`. An echo is a PIECE
- * of what the agent just said; a caller reusing a word or two of it ("no, let's begin" after
+ * of what the agent just said; a user reusing a word or two of it ("no, let's begin" after
  * "…or say let's begin") or naming the same people ("Thorin attacks the goblin" over "…lunges
  * toward Thorin") only matches a short run.
  */
@@ -70,9 +70,9 @@ export function voicePromptFile(voice: string): string {
  * (measured 42 chars → 4.5s, 520 chars → 9.4s), and an EMPTY prompt hangs the server,
  * so: the persona's short voice prompt, else its first sentence — never empty.
  *
- * Do NOT put the caller's name (Settings → Memory "Your name") in this prompt.
+ * Do NOT put the user's name (Settings → Memory "Your name") in this prompt.
  * PersonaPlex treats text_prompt as its own identity; any other proper name made it
- * open with "Hello, this is <caller>". The brain/memory still know the caller's name
+ * open with "Hello, this is <user>". The brain/memory still know the user's name
  * for conversation — only the voice handshake stays name-free.
  */
 export function voicePromptText(p: Persona, override?: string): string {
@@ -238,14 +238,14 @@ export function returnVoice(borrowed: VoiceLoan): void {
   }, LOAN_GRACE_MS);
 }
 
-/** How an unprompted line went in the call: said in full; cut off by the caller; or not said (no call, or it went away). */
+/** How an unprompted line went in the call: said in full; cut off by the user; or not said (no call, or it went away). */
 export type Spoken = "said" | "cut" | "unsaid";
 
 /**
  * Say something unprompted in the live call — a due reminder, a finished background job
  * ("your new skill is ready"). It waits for a call that's still connecting, its turn behind
- * any reply, and until the caller stops talking. Resolves "said" once the whole line was said;
- * "cut" when the caller cut it off (talked over it, or ended the turn) — show it, but don't say
+ * any reply, and until the user stops talking. Resolves "said" once the whole line was said;
+ * "cut" when the user cut it off (talked over it, or ended the turn) — show it, but don't say
  * it again; "unsaid" when there's no call, or it closes or doesn't connect in time (deliver it
  * some other way).
  */
@@ -260,10 +260,10 @@ export function hasVoiceCall(): boolean {
 
 /**
  * One real-time call (ported from the personaplex-toolcall reference): a persistent
- * PersonaPlex socket does the talking; Deepgram transcribes the caller live beside it;
+ * PersonaPlex socket does the talking; Deepgram transcribes the user live beside it;
  * the agent core (Jev router → act → reply writer) is polled on the in-progress
  * sentence. After an action the reply is streamed and PersonaPlex is MADE to say it
- * (0x03), held quiet (0x04) while the caller is still talking.
+ * (0x03), held quiet (0x04) while the user is still talking.
  */
 export class VoiceCall {
   private pp?: WebSocket;
@@ -272,7 +272,7 @@ export class VoiceCall {
   private ep = getEndpoints();
 
   private lines: string[] = []; // finished turns, oldest first
-  private agentPending = ""; // what PersonaPlex has said since the caller last spoke
+  private agentPending = ""; // what PersonaPlex has said since the user last spoke
   private agentWords: string[] = []; // rolling tail of everything PersonaPlex said (echo gate)
   private finals = "";
   private interim = "";
@@ -342,14 +342,14 @@ export class VoiceCall {
     let recent = this.lines.slice(-8).join("\n");
     if (this.agentPending.trim()) recent += `\nAgent: ${this.agentPending.trim()}`;
     const state = final ? "finished speaking" : "may still be speaking";
-    return `Conversation so far, oldest first:\n${recent || "(nothing yet)"}\n\nCaller's latest words (${state}): ${text}`;
+    return `Conversation so far, oldest first:\n${recent || "(nothing yet)"}\n\nUser's latest words (${state}): ${text}`;
   }
 
   private transcript(): TranscriptTurn[] {
     return this.lines.slice(-6).map((l, i) => ({
       id: `l${i}`,
-      speaker: l.startsWith("Caller:") ? "user" : "trinity",
-      text: l.replace(/^(Caller|Agent): /, ""),
+      speaker: l.startsWith("User:") ? "user" : "trinity",
+      text: l.replace(/^(User|Agent): /, ""),
       ts: Date.now(),
     }));
   }
@@ -778,7 +778,7 @@ export class VoiceCall {
     this.send({ type: "mic", on });
   }
 
-  /** The mic went off: end the caller's last words, once — whatever Deepgram sends after is dropped. */
+  /** The mic went off: end the user's last words, once — whatever Deepgram sends after is dropped. */
   private endMicOffUtterance() {
     if (this.micOff !== "waiting" || this.closed) return;
     this.micOff = "ended";
@@ -805,7 +805,7 @@ export class VoiceCall {
   }
 
   /**
-   * Speaker bleed: the agent's own voice transcribed as if the caller said it — most of the text
+   * Speaker bleed: the agent's own voice transcribed as if the user said it — most of the text
    * is one in-order run (≥ minRun words) of what the agent said in the last moments. Two words
    * are enough to hold off barge-in and mid-sentence routing; dropping a finished sentence takes
    * three, so a short real answer that repeats the agent ("let's begin") still gets through.
@@ -847,7 +847,7 @@ export class VoiceCall {
         this.interim = said;
       }
       const text = this.current;
-      // Barge-in: the caller talks over a reply we're injecting → drop the rest of it.
+      // Barge-in: the user talks over a reply we're injecting → drop the rest of it.
       if (Date.now() < this.sayingUntil && (text.match(WORD)?.length ?? 0) >= 2 && !this.isEcho(text)) {
         this.bargedIn = true;
         this.flushSpeech();
@@ -892,7 +892,7 @@ export class VoiceCall {
     }
     if (agentReply) this.lines.push(`Agent: ${agentReply}`);
     this.agentPending = "";
-    this.lines.push(`Caller: ${text}`);
+    this.lines.push(`User: ${text}`);
     const utterance = this.utterance++;
     // One last look at the whole sentence — the words that matter often come last.
     const routed = this.route(utterance, text, true);
@@ -968,7 +968,7 @@ export class VoiceCall {
     return true;
   }
 
-  // ── telling the caller ─────────────────────────────────────────────────────────
+  // ── telling the user ─────────────────────────────────────────────────────────
 
   /** See the module-level announce(). Digits become words ("9:22 PM" → "nine twenty-two PM"): the voice reads words. */
   async announce(text: string): Promise<Spoken> {
@@ -984,13 +984,13 @@ export class VoiceCall {
     return spoken;
   }
 
-  /** How far the line got: "cut" when the caller cut it off (a barge-in, or the tap that ended the turn), "unsaid" when the call went away first. */
+  /** How far the line got: "cut" when the user cut it off (a barge-in, or the tap that ended the turn), "unsaid" when the call went away first. */
   private async speakUnprompted(line: string): Promise<Spoken> {
     this.replyActive++;
     this.lastActivityAt = Date.now();
     const holdId = `announce:${nanoid(6)}`;
     try {
-      // Never cut the caller off: wait (up to 20 s) for a pause in their speech.
+      // Never cut the user off: wait (up to 20 s) for a pause in their speech.
       const until = Date.now() + 20_000;
       while (!this.closed && Date.now() < until && (this.current || Date.now() - this.lastCallerWordAt < 1200)) await sleep(150);
       if (this.closed) return "unsaid";
@@ -1046,7 +1046,7 @@ export class VoiceCall {
         await this.say(fill.mid);
         filler = true;
       }
-      // Don't talk over the caller — but only while words keep coming (≤ 3s).
+      // Don't talk over the user — but only while words keep coming (≤ 3s).
       const waitUntil = Date.now() + 3000;
       while (this.current && Date.now() - this.lastCallerWordAt < 1200 && Date.now() < waitUntil) await sleep(50);
 
@@ -1150,7 +1150,7 @@ export class VoiceCall {
   }
 
   /**
-   * Auto-curation of the caller's last words (deduped; picks up their name too) — once the sentence's
+   * Auto-curation of the user's last words (deduped; picks up their name too) — once the sentence's
    * last routing pass is in and what it fired has finished, in the light of what that did (see
    * curationAfter: skipped after a remember that worked).
    */

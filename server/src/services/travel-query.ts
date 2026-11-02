@@ -3,7 +3,7 @@ import { jsonChat } from "./json-chat.js";
 import type { Cabin, FlightQuery, HotelQuery, ShoppingQuery } from "./serpapi.js";
 
 /*
- * From the caller's words to a search: "find me flights from Austin to Denver next Friday, back Sunday"
+ * From the user's words to a search: "find me flights from Austin to Denver next Friday, back Sunday"
  * → airports, dates, passengers; "hotels in Lisbon for three nights from the 20th" → place and dates;
  * "the cheapest noise-cancelling headphones under $200" → a product query with a price cap. Flights
  * and hotels use the card designer model (fast JSON) with a word-level parser as the fallback and the
@@ -39,7 +39,7 @@ export interface ShoppingAsk {
   query: string;
   minPrice?: number;
   maxPrice?: number;
-  /** The caller wants the cheapest / a price comparison: sort by price, lead with the lowest. */
+  /** The user wants the cheapest / a price comparison: sort by price, lead with the lowest. */
   compare: boolean;
 }
 

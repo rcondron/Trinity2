@@ -82,19 +82,19 @@ export function registerGameContext(): void {
       const g = getActiveGame(persona.id);
       if (!g) {
         return [
-          "When the caller wants to play, start, or set up a game or adventure, choose game_new; to continue an earlier game, choose game_load.",
+          "When the user wants to play, start, or set up a game or adventure, choose game_new; to continue an earlier game, choose game_load.",
         ];
       }
       if (g.phase === "setup") {
         return [
-          "Game setup is in progress, and the caller is usually answering the Game Master's last question — an answer counts as asking for the matching action.",
+          "Game setup is in progress, and the user is usually answering the Game Master's last question — an answer counts as asking for the matching action.",
           "Describing the kind of adventure (genre, setting, tone, title) means game_configure; describing a character (a name, race, or class) means game_add_player; changing details of a hero who already joined means game_update_player; 'that's everyone' or 'let's start' means game_begin.",
-          "Never start a new game while one is being set up unless the caller clearly asks for a different, brand-new game.",
+          "Never start a new game while one is being set up unless the user clearly asks for a different, brand-new game.",
         ];
       }
       return [
         "A game is being played: prefer the game tools for anything that happens in the story.",
-        "When the caller says what their character does or tries, choose game_narrate; when they ask about stats, HP, gear, the scene, or the rules, choose game_answer.",
+        "When the user says what their character does or tries, choose game_narrate; when they ask about stats, HP, gear, the scene, or the rules, choose game_answer.",
       ];
     },
 

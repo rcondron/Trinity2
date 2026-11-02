@@ -104,7 +104,7 @@ export async function act(d: Decision, utterance: string, io: ActIO): Promise<Ou
   const preset = confidentOptions(d, io.minConfidence);
   const args = argModeOf(tool) === "llm" ? await extractArgs(tool, utterance, io.situation, preset) : { ...preset };
   io.emit({ type: "tool", tool: tool.name, args });
-  // Every Jev action is mirrored into the workspace window (decisions arrive from the caller).
+  // Every Jev action is mirrored into the workspace window (decisions arrive from the user).
   workspace.agent("tool", { tool: tool.name, text: utterance, args });
 
   let result: ToolResult;

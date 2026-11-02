@@ -20,7 +20,7 @@ export interface TranscriptTurn {
   voiced?: boolean;
   /** Said unprompted: a due reminder, a scheduled task's result, a finished background job. */
   proactive?: boolean;
-  /** The caller cut it off while the live call was saying it (talked over it, or ended the turn): shown, never read out again. */
+  /** The user cut it off while the live call was saying it (talked over it, or ended the turn): shown, never read out again. */
   cut?: boolean;
   ts: number;
 }

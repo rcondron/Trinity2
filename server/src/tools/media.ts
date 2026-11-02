@@ -9,7 +9,7 @@ import { workspace } from "../workspace/bus.js";
 import { registerTool } from "./registry.js";
 
 /**
- * Pictures, audio, video and text notes the caller asks for — each becomes a numbered floating
+ * Pictures, audio, video and text notes the user asks for — each becomes a numbered floating
  * card on the workspace board (loader first, content when ready). Jev / the Mordiem router pick
  * the fast vs quality model for media. Cards stay side by side so "remove card 2" / "move card 1"
  * (or "the tiger") can refer to them by number or content tags.
@@ -75,13 +75,13 @@ function busy(n: number, text: string | null): void {
 const makeImage: Tool = {
   name: "make_image",
   description:
-    "Add one or more pictures to the workspace as numbered floating cards. When the caller asks for several subjects (a panda and a tiger), make a separate card for each.",
+    "Add one or more pictures to the workspace as numbered floating cards. When the user asks for several subjects (a panda and a tiger), make a separate card for each.",
   input: {
     prompt: {
       type: "string",
       required: true,
       description:
-        "What the picture(s) show, in the caller's own words — one subject or several joined by 'and' / commas — without the request words ('draw me a picture of')",
+        "What the picture(s) show, in the user's own words — one subject or several joined by 'and' / commas — without the request words ('draw me a picture of')",
     },
     ...qualityInput,
   },
@@ -153,7 +153,7 @@ const makeAudio: Tool = {
       type: "string",
       required: true,
       description:
-        "The exact words to speak, verbatim — without the caller's request around them ('read this aloud', 'make an audio that says')",
+        "The exact words to speak, verbatim — without the user's request around them ('read this aloud', 'make an audio that says')",
     },
     ...qualityInput,
   },

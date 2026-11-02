@@ -826,7 +826,7 @@ function podKey(base: string, token: string): string {
 let listCache: { key: string; listing: PodListing } | null = null;
 const listInflight = new Map<string, Promise<PodListing>>();
 
-/** The pod's voice files (cached 30 s; failures 5 s; concurrent callers share one request). Never throws. */
+/** The pod's voice files (cached 30 s; failures 5 s; concurrent users share one request). Never throws. */
 async function podListing(opts: { fresh?: boolean; timeoutMs?: number } = {}): Promise<PodListing> {
   const base = podHttpBase();
   if (!base) return { ok: false, at: Date.now(), status: null, network: false, error: NO_POD };
@@ -975,7 +975,7 @@ function podHasSample(listing: PodListing & { ok: true }, rec: VoiceRecord): { p
 
 /**
  * The pod holds sample `hash` of this voice. Only recorded while that is still the voice's sample: the
- * caller may have read the record before an await, and the voice may have been deleted and re-created
+ * user may have read the record before an await, and the voice may have been deleted and re-created
  * under the same slug since.
  */
 function noteSynced(slug: string, base: string, hash: string): void {

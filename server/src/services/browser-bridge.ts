@@ -7,9 +7,9 @@ import { getSetting, setSetting } from "../db/sqlite.js";
 import { safeInterval } from "../util/bg.js";
 
 /*
- * The caller's Chrome, through the Trinity Browser Bridge extension (extension/): it keeps one WebSocket
+ * The user's Chrome, through the Trinity Browser Bridge extension (extension/): it keeps one WebSocket
  * to the engine (/ext, paired with a token the Settings page shows), reports its tabs, carries what the
- * caller shares from a page, and runs the engine's calls — open / close / switch tabs, read a page,
+ * user shares from a page, and runs the engine's calls — open / close / switch tabs, read a page,
  * click and type, inject CSS / HTML / JavaScript, save files. tools/browser.ts turns those calls into
  * Trinity's tools. One extension at a time: a second connection replaces the first.
  */
@@ -177,10 +177,10 @@ export function describeBrowser(): string | null {
   const count = `${tabs.length} tab${tabs.length === 1 ? "" : "s"}`;
   const act = active ? ` The active tab is ${name(active)}${hostOf(active.url) ? ` (${hostOf(active.url)})` : ""}.` : "";
   const rest = others.length ? ` Other tabs: ${others.join(", ")}${tabs.length - 1 > others.length ? ", …" : ""}.` : "";
-  return `The caller's Chrome browser is connected to Trinity (${count}).${act}${rest}`;
+  return `The user's Chrome browser is connected to Trinity (${count}).${act}${rest}`;
 }
 
-/** Something the caller shared from the browser (a page, a selection, a link, an image). */
+/** Something the user shared from the browser (a page, a selection, a link, an image). */
 export function onBrowserShare(fn: (s: BrowserShare) => void): () => void {
   shareHandlers.add(fn);
   return () => shareHandlers.delete(fn);

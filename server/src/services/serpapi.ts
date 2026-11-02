@@ -5,7 +5,7 @@ import { getEndpoints } from "../settings.js";
  * cards (tools/content.ts via services/live-results.ts). One key covers all three — SERPAPI_KEY in .env
  * or Settings → API keys; the free tier is 250 searches a month. Every reply is coerced into the
  * engine's own shapes here, so nothing downstream ever reads the provider's JSON, and nothing is cached
- * across requests (prices move). Without a key the callers fall back to web search and say so.
+ * across requests (prices move). Without a key the users fall back to web search and say so.
  */
 
 const BASE = "https://serpapi.com/search.json";
@@ -120,7 +120,7 @@ export interface Product {
   store: string;
   rating?: number;
   reviews?: number;
-  /** The remote thumbnail (the caller caches it into the engine before it reaches a card). */
+  /** The remote thumbnail (the user caches it into the engine before it reaches a card). */
   image?: string;
   /** The merchant page when Google gives one, else the Google product page. */
   url?: string;
@@ -198,7 +198,7 @@ export async function searchProducts(q: ShoppingQuery, timeoutMs?: number): Prom
     const key = `${p.title.toLowerCase()}|${p.store.toLowerCase()}|${p.price}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    // Google's own filter is loose; the caller's bounds are firm.
+    // Google's own filter is loose; the user's bounds are firm.
     if (q.maxPrice !== undefined && p.priceValue !== null && p.priceValue > q.maxPrice) continue;
     if (q.minPrice !== undefined && p.priceValue !== null && p.priceValue < q.minPrice) continue;
     products.push(p);
@@ -427,7 +427,7 @@ export interface Hotel {
   type: string;
   description?: string;
   url?: string;
-  /** The remote thumbnail (cached by the caller). */
+  /** The remote thumbnail (cached by the user). */
   image?: string;
   /** Per night, as shown: "$154". */
   pricePerNight?: string;

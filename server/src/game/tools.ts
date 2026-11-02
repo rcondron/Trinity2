@@ -1145,7 +1145,7 @@ const TOOL_DEFS: Tool[] = [
   },
   {
     name: "game_add_player",
-    description: "Add a player character to the party — the caller describes a hero (name, race, class) or says who is playing.",
+    description: "Add a player character to the party — the user describes a hero (name, race, class) or says who is playing.",
     input: {},
     argMode: "raw",
     available: hasActiveGame,

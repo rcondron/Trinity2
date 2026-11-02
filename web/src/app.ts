@@ -34,9 +34,9 @@ let speech: Speech;
 const audio = new AudioIO();
 const liveCall = new LiveCall();
 let callKey = ""; // what the voice session was warmed with (see personaKey)
-let callName: string | null = null; // the caller's name it was warmed with (the voice hears it when it connects)
-let profileName: string | null = null; // the caller's name as the engine has it now
-let callActiveAt = 0; // the call's last sign of work: a tap, a typed turn, the caller's words, the voice, an action
+let callName: string | null = null; // the user's name it was warmed with (the voice hears it when it connects)
+let profileName: string | null = null; // the user's name as the engine has it now
+let callActiveAt = 0; // the call's last sign of work: a tap, a typed turn, the user's words, the voice, an action
 let nameTimer: ReturnType<typeof setTimeout> | null = null; // a name re-warm waiting for the call to go quiet
 let wantMic = false; // tapped while the voice was still warming up
 let evicted = false;
@@ -159,7 +159,7 @@ function handle(ev: ServerEvent) {
  */
 const personaKey = (p: Persona | null) => (p ? `${p.id}|${p.voice}|${p.voicePrompt}|${p.updatedAt}` : "");
 
-/** New persona/services (and caller's name) from the engine: refresh the UI and (re)warm the voice session. */
+/** New persona/services (and user's name) from the engine: refresh the UI and (re)warm the voice session. */
 function applyStatus(p: Persona, s: ServiceStatus, name?: string | null) {
   const streamChanged = services?.stream !== s.stream;
   persona = p;
@@ -186,18 +186,18 @@ function applyStatus(p: Persona, s: ServiceStatus, name?: string | null) {
 
 /**
  * A standby call is re-warmed for a new name only after this long with no sign of work in it. Once
- * the mic goes off (or after a typed turn) the engine is still finishing the caller's last words,
+ * the mic goes off (or after a typed turn) the engine is still finishing the user's last words,
  * acting on them and saying the reply, and a step of that can take ~16 s without a sign (Jev,
  * working out a tool's arguments, the tool itself) — a fresh session takes the GPU and cuts it all off.
  */
 const CALL_QUIET_MS = 20_000;
-/** Call events that show the engine at work for the caller (see CALL_QUIET_MS). */
+/** Call events that show the engine at work for the user (see CALL_QUIET_MS). */
 const CALL_WORK = new Set(["caller", "agent", "decision", "pending", "tool", "tool_result", "reply", "memory", "announce"]);
 
 /**
- * The caller's name changed since the session was warmed: refresh standby — never in the
+ * The user's name changed since the session was warmed: refresh standby — never in the
  * middle of a live call, and in standby once the call has gone quiet. (The name is for the
- * brain/memory; PersonaPlex's text_prompt stays name-free so it doesn't greet as the caller.)
+ * brain/memory; PersonaPlex's text_prompt stays name-free so it doesn't greet as the user.)
  */
 function rewarmForName() {
   if (nameTimer) clearTimeout(nameTimer);
@@ -212,7 +212,7 @@ function rewarmForName() {
   }
 }
 
-/** A memory was saved — perhaps the caller's name (the remember tool, curation): a new one re-warms the voice. */
+/** A memory was saved — perhaps the user's name (the remember tool, curation): a new one re-warms the voice. */
 async function refreshProfileName() {
   try {
     const { name } = (await fetch("/api/profile").then((r) => r.json())) as { name?: string | null };
@@ -296,7 +296,7 @@ async function answerWake() {
 
 function onCallState(state: CallState) {
   if (state === "standby" || state === "live") rewarmFailures = 0;
-  // The caller has the floor: the browser's voice stops here, and won't start in another tab (see sayAloudOnce).
+  // The user has the floor: the browser's voice stops here, and won't start in another tab (see sayAloudOnce).
   holdLiveLock(state === "live");
   if (state === "live") speech?.cancelSpeech();
   if (state === "standby" && wantMic) {
@@ -517,7 +517,7 @@ function renderEvent(cls: string, tag: string, text: string) {
 
 // ─── The browser's voice, for unprompted lines the live voice didn't say ──────────
 const SAID_KEY = "trinity.said:"; // + turn id → when a tab claimed it
-const LIVE_LOCK = "trinity-call-live"; // held (shared) by the tab whose call is live: the caller may be talking
+const LIVE_LOCK = "trinity-call-live"; // held (shared) by the tab whose call is live: the user may be talking
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let endLiveLock: (() => void) | null = null;
 
@@ -560,8 +560,8 @@ function claimTurn(id: string): boolean {
  * A due reminder (or another unprompted line) the live voice didn't say — no session in this tab —
  * read out by the browser's voice instead, in one tab only: the first tab to get the turn's lock
  * claims it and holds the lock while it speaks, so a tab that gets the turn a moment late skips it.
- * Never a line the caller cut off in the call (talked over it, or ended the turn), and never over a
- * live call in another tab (that caller may be talking).
+ * Never a line the user cut off in the call (talked over it, or ended the turn), and never over a
+ * live call in another tab (that user may be talking).
  */
 async function sayAloudOnce(turn: TranscriptTurn) {
   if (!speech?.synthSupported || turn.cut) return;
@@ -602,7 +602,7 @@ function initSpeech() {
 micBtn.addEventListener("click", async () => {
   const mode = voiceMode();
   if (mode === "stream") {
-    callActiveAt = Date.now(); // the caller is using the call: a name re-warm waits (see CALL_QUIET_MS)
+    callActiveAt = Date.now(); // the user is using the call: a name re-warm waits (see CALL_QUIET_MS)
     if (liveCall.state === "live") {
       liveCall.stopAudio();
       renderVoiceState();
@@ -828,7 +828,7 @@ $("dockBtn").addEventListener("click", () => {
 
 // Coming back to the tab: warm a voice that's paused or never warmed (the tab opened in the
 // background), and re-warm one set up with an older persona (switched or edited meanwhile, e.g. in
-// Settings) or before the caller's name changed. Not one that's lent out: it comes back on its own.
+// Settings) or before the user's name changed. Not one that's lent out: it comes back on its own.
 document.addEventListener("visibilitychange", () => {
   if (document.hidden || voiceMode() !== "stream" || evicted || lent) return;
   if (liveCall.state === "closed" || liveCall.state === "idle" || callKey !== personaKey(persona)) warmUp();

@@ -10,7 +10,7 @@ import { getEndpoints, live } from "../settings.js";
 /**
  * Video generation via Mordiem's Venice pass-through
  * (POST /video/queue → poll POST /video/retrieve → MP4 bytes or download_url).
- * Same async job pattern as images.ts / speech.ts: callers get an id at once,
+ * Same async job pattern as images.ts / speech.ts: users get an id at once,
  * and `done` resolves when the MP4 is on disk under data/videos/.
  */
 
@@ -70,13 +70,24 @@ export function getVideoJob(id: string): VideoJob | undefined {
   return jobs.get(id);
 }
 
-/** Map a requested length to Venice's `"5s"` / `"10s"` style duration string. */
-function durationOf(seconds: number): string {
+/** Veo-family durations on Mordiem/Venice. Wan/Seedance often use 5s/10s instead. */
+const VEO_DURATIONS = [4, 6, 8] as const;
+const WAN_DURATIONS = [5, 10] as const;
+
+/** Pick the nearest allowed duration string for this model (e.g. `"4s"`, `"6s"`). */
+function durationOf(seconds: number, model: string): string {
   const n = Math.max(1, Math.min(30, Math.round(seconds)));
-  // Most text-to-video models on Venice accept 5s or 10s; prefer the nearer common tier.
-  if (n <= 6) return "5s";
-  if (n <= 12) return "10s";
-  return `${n}s`;
+  const allowed: readonly number[] = /wan-|seedance|happyhorse/i.test(model) ? WAN_DURATIONS : VEO_DURATIONS;
+  let best = allowed[0] ?? 4;
+  for (const a of allowed) if (Math.abs(a - n) < Math.abs(best - n)) best = a;
+  return `${best}s`;
+}
+
+/** Parse `Expected '4s' | '6s' | '8s'` (or similar) out of a 400 body. */
+function durationsFromError(text: string): string[] {
+  const m = /Expected\s+((?:'?\d+s'?\s*\|\s*)+'?\d+s'?)/i.exec(text);
+  if (!m) return [];
+  return [...m[1]!.matchAll(/(\d+)s/gi)].map((x) => `${x[1]}s`);
 }
 
 /**
@@ -90,8 +101,8 @@ export function requestVideo(
   const { videoModel } = getEndpoints();
   const model = opts.model?.trim() || videoModel;
   const spoken = prompt.replace(/\s+/g, " ").trim().slice(0, 800);
-  const seconds = opts.seconds && opts.seconds > 0 ? Math.min(30, Math.round(opts.seconds)) : 5;
-  const duration = durationOf(seconds);
+  const seconds = opts.seconds && opts.seconds > 0 ? Math.min(30, Math.round(opts.seconds)) : 4;
+  const duration = durationOf(seconds, model);
   const key = crypto.createHash("sha1").update(`${model}\n${duration}\n${spoken}`).digest("hex");
   const cached = byKey.get(key);
   if (cached) return cached;
@@ -178,11 +189,27 @@ async function postQueue(payload: Record<string, unknown>): Promise<{ ok: true; 
 }
 
 async function queueJob(prompt: string, model: string, duration: string): Promise<QueueResponse> {
-  // Venice: aspect_ratio is model-dependent — try with 16:9, then retry without if rejected.
-  const base = { model, prompt, duration, resolution: "720p" };
-  let hit = await postQueue({ ...base, aspect_ratio: "16:9" });
+  // Venice: aspect_ratio and duration enums are model-dependent — retry without / with allowed values.
+  let dur = duration;
+  const tryOnce = (d: string, withAspect: boolean) =>
+    postQueue(withAspect ? { model, prompt, duration: d, resolution: "720p", aspect_ratio: "16:9" } : { model, prompt, duration: d, resolution: "720p" });
+
+  let hit = await tryOnce(dur, true);
   if (!hit.ok && hit.status === 400 && /aspect[_\s-]?ratio/i.test(hit.text)) {
-    hit = await postQueue(base);
+    hit = await tryOnce(dur, false);
+  }
+  if (!hit.ok && hit.status === 400 && /duration/i.test(hit.text)) {
+    const allowed = durationsFromError(hit.text);
+    const pick =
+      allowed.find((d) => d === dur) ??
+      allowed.sort((a, b) => Math.abs(parseInt(a, 10) - parseInt(dur, 10)) - Math.abs(parseInt(b, 10) - parseInt(dur, 10)))[0];
+    if (pick && pick !== dur) {
+      dur = pick;
+      hit = await tryOnce(dur, true);
+      if (!hit.ok && hit.status === 400 && /aspect[_\s-]?ratio/i.test(hit.text)) {
+        hit = await tryOnce(dur, false);
+      }
+    }
   }
   if (!hit.ok) {
     const e = new Error(`Mordiem video ${hit.status}: ${hit.text.slice(0, 200)}`) as HttpError;

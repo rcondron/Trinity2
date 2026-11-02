@@ -35,7 +35,7 @@ function fields(b: Record<string, unknown>): Partial<Fields> | { error: string }
   return out;
 }
 
-/** Memory API (mounted under /api): what Trinity remembers about the caller, and who they are. */
+/** Memory API (mounted under /api): what Trinity remembers about the user, and who they are. */
 export function memoryRouter(memory: MemoryStore): Router {
   const r = express.Router();
 
@@ -86,7 +86,7 @@ export function memoryRouter(memory: MemoryStore): Router {
       if ("error" in f) return res.status(400).json(f);
       const { _rev: _r, ...rest } = existing;
       const edited = { ...rest, ...f };
-      // The memory that holds the caller's name, edited to state another name: that's their name now (the old
+      // The memory that holds the user's name, edited to state another name: that's their name now (the old
       // name's tag goes with it), so recall and the voice prompt don't hear two.
       const before = getProfileName();
       const stated = edited.tags.includes("name") ? ownNameIn(edited.text) : null;
@@ -109,7 +109,7 @@ export function memoryRouter(memory: MemoryStore): Router {
     }),
   );
 
-  // ── Profile: the caller's name (personalizes the voice prompt and answers) ──
+  // ── Profile: the user's name (personalizes the voice prompt and answers) ──
   r.get("/profile", (_req, res) => res.json({ name: getProfileName() }));
   r.put(
     "/profile",
@@ -129,7 +129,7 @@ export function memoryRouter(memory: MemoryStore): Router {
       let removed: string | null = null;
       if (doc && !(saved && statesOwnName(doc.text, saved))) {
         const { _rev: _r, ...rest } = doc;
-        const text = saved ? renamedText(doc.text, before, saved, `The caller's name is ${saved}.`) : unnamedText(doc.text);
+        const text = saved ? renamedText(doc.text, before, saved, `The user's name is ${saved}.`) : unnamedText(doc.text);
         if (text === null) {
           await memory.remove(doc._id);
           removed = doc._id;

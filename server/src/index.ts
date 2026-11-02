@@ -3,7 +3,7 @@ import express from "express";
 import { WebSocketServer, type WebSocket } from "ws";
 import { config } from "./config.js";
 import { live, serviceStatus } from "./settings.js";
-import { createMemoryStore } from "./db/memory.js";
+import { createMemoryStore, rewordCallerMemories } from "./db/memory.js";
 import { getActivePersona, setActivePersona, getPersona, getProfileName } from "./db/sqlite.js";
 import { getSpeechRate, onSpeechRateChange } from "./services/speech-rate.js";
 import { seed } from "./db/seed.js";
@@ -69,6 +69,8 @@ function dropSilentPeers(wss: WebSocketServer): void {
 
 async function main() {
   const memory = await createMemoryStore();
+  const reworded = await rewordCallerMemories(memory);
+  if (reworded) console.log(`[memory] reworded ${reworded} saved memor${reworded === 1 ? "y" : "ies"} from "the caller" to "the user"`);
   await seed(memory);
 
   // The tools Jev routes to: built-ins, the coding skill, memory, scheduling, skill forging,
@@ -174,7 +176,7 @@ async function main() {
   setTellFallback((text, spoken) => orchestrator.showUnprompted(text, broadcast, spoken));
   // The voice came back from a sample ("free": the tab that lent it re-warms) — or a call took it ("taken").
   setVoiceNotifier((status) => broadcast({ type: "voice", status }));
-  // The caller's name rides along: the voice hears it at connect, so the app re-warms a session set up before it changed.
+  // The user's name rides along: the voice hears it at connect, so the app re-warms a session set up before it changed.
   const readyEvent = (): ServerEvent => ({
     type: "ready",
     persona: getActivePersona(),

@@ -1,5 +1,5 @@
 /*
- * The caller's words → a browser action, with no model in the loop: Jev picks the tool in a few
+ * The user's words → a browser action, with no model in the loop: Jev picks the tool in a few
  * hundred milliseconds and these parsers fill in the rest at once — which site or search to open,
  * which tab, which button, how far to scroll, what to hide. A model is only asked when the words
  * don't settle it (an element that no name matches, a styling change with no preset).
@@ -128,18 +128,32 @@ const SEARCH: Record<string, (q: string) => string> = {
 const SITE_NAMES = [...new Set([...Object.keys(SITES), ...Object.keys(SEARCH)])].sort((a, b) => b.length - a.length);
 const SITE_ALT = SITE_NAMES.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
 
-/** "amazon dot com" → "amazon.com"; "the youtube website" → "youtube". */
+/**
+ * Chatter speech puts before the ask — "Alright.", "I think so,", "Trinity,", "go ahead and" — along with
+ * the punctuation Deepgram's smart formatting attaches to it. Stripped at the front only, and never a word
+ * a parser needs ("no dark mode", "next tab").
+ */
+const FILLER_LEAD =
+  /^(?:(?:alright|all right|okay so|ok so|okay|ok|yeah|yes|yep|yup|sure|cool|right|well|um|uh|hmm|so|and then|and|now|then|anyway|actually|gotcha|got it|i see|i think so|sounds good|great|perfect|good|fine|nice|awesome|hey|hi|hello|trinity|please|thanks|thank you|let's see|let me see|go ahead and|go ahead|can you|could you|would you|will you|i want you to|i need you to|i'd like you to|why don't you|how about you|how about|what about)(?:[\s,.!?;:]+|$))+/;
+/** Politeness after the ask: "…, please.", "… for me", "… instead". */
+const FILLER_TAIL = /(?:[\s,.!?;:]+(?:please|thanks|thank you|thank you very much|for me|for us|instead|if you can|if you could|if you would|if you don't mind|real quick|quickly))*[\s,.!?;:]*$/;
+
+/** "Alright. Open amazon dot com, please." → "open amazon.com"; "the youtube website" → "youtube". */
 function normalize(utterance: string): string {
   return utterance
     .toLowerCase()
     .replace(/\s+/g, " ")
+    .trim()
+    .replace(FILLER_LEAD, "")
+    .replace(FILLER_TAIL, "")
     .replace(/\b(?:dot|period)\s+(?=com|org|net|io|co|edu|gov|uk|de|fr|ai|app|dev|tv|me|us|ca|info|xyz)\b/g, ".")
     .replace(/\bslash\b/g, "/")
     .replace(/\bw w w\b/g, "www")
+    .replace(/\blocalhost\s+(?:port\s+)?(\d{2,5})\b/g, "localhost:$1")
     .replace(/\b(?:the|a)\s+(?=(?:[a-z ]+?)\s+(?:website|site|web page|page|homepage|home page)\b)/g, "")
     .replace(/\s+(?:website|site|web page|homepage|home page|dot com)\b/g, "")
     .replace(/\b(?:please|for me|would you|could you|can you|will you|trinity)\b/g, " ")
-    .replace(/[?!.,;:]+$/g, "")
+    .replace(/[\s?!.,;:]+$/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -152,18 +166,67 @@ export interface OpenTarget {
 }
 
 const TITLE = (s: string) => s.replace(/\b\w/g, (c) => c.toUpperCase()).replace(/\bYoutube\b/g, "YouTube").replace(/\bGithub\b/g, "GitHub").replace(/\bEbay\b/g, "eBay").replace(/\bImdb\b/g, "IMDb").replace(/\bTiktok\b/g, "TikTok").replace(/\bChatgpt\b/g, "ChatGPT").replace(/\bLinkedin\b/g, "LinkedIn").replace(/\bPaypal\b/g, "PayPal").replace(/\bEspn\b/g, "ESPN").replace(/\bBbc\b/g, "BBC").replace(/\bCnn\b/g, "CNN");
-const DOMAIN = /^(?:https?:\/\/)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d{2,5})?(?:\/\S*)?$/i;
-const OPEN_LEAD =
-  /^(?:(?:hey |ok |okay |so |and |now |then |just )*)?(?:(?:open|go to|goto|navigate to|take me to|pull up|bring up|visit|load|launch|head to|jump to|show me|get me|i want|i'd like|let's see|let me see|browse to|surf to)\s+)?(?:up\s+)?(?:(?:the|a|an|my)\s+)?/;
+const DOMAIN = /^(?:https?:\/\/)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+([a-z]{2,24})(?::\d{2,5})?(?:\/\S*)?$/i;
+const LOCAL = /^(?:https?:\/\/)?(?:localhost|127\.0\.0\.1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})(?::\d{2,5})?(?:\/\S*)?$/i;
+/** Endings a spoken address can have — any two-letter country code, or one of these. "openebay" is not one. */
+const TLDS = new Set(
+  "com org net edu gov mil int info biz xyz app dev pro name mobi travel online site store shop blog news cloud live tech wiki design page link club social games game music video photo pics health coffee email team zone world today life space art studio media digital agency network systems solutions services codes run house homes land city town bank money finance capital legal law energy green farm food fun cool academy school college museum gallery center expert coach inc ltd local test internal lan home".split(
+    " ",
+  ),
+);
+/** One token that reads as an address — "github.com/trending", "localhost:5173" — so "alright. open ebay" can't become a host. */
+function looksLikeAddress(c: string): boolean {
+  if (!c || /\s/.test(c)) return false;
+  if (LOCAL.test(c)) return true;
+  const m = DOMAIN.exec(c);
+  return m !== null && (m[1]!.length === 2 || TLDS.has(m[1]!.toLowerCase()));
+}
+const addressUrl = (c: string) => (/^https?:\/\//i.test(c) ? c : `${LOCAL.test(c) ? "http" : "https"}://${c}`);
+const OPEN_VERBS = String.raw`open|go to|goto|navigate to|take me to|pull up|bring up|visit|load|launch|head to|jump to|browse to|surf to|show me|get me|i want|i'd like|let's see|let me see`;
+const OPEN_LEAD = new RegExp(String.raw`^(?:(?:hey |ok |okay |so |and |now |then |just )*)?(?:(?:${OPEN_VERBS})\s+)?(?:up\s+)?(?:(?:the|a|an|my)\s+)?`);
+/** Where the ask can start inside chatter the filler list missed ("that's right, open ebay"): each verb, in order. */
+const ASK_START = new RegExp(String.raw`\b(?:${OPEN_VERBS}|search|look up|look for|find|google|youtube|bing|duckduckgo|wikipedia|directions|new tab)\b`, "g");
+
+/** Sentence punctuation → spaces, so "alright. open ebay" can't run together into a host; a dot inside an address stays. */
+function loosen(t: string): string {
+  return t
+    .replace(/[,;:!?]+(?=\s|$)|\.(?=\s|$)/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** The whole text first, then from each verb in turn. */
+function* askStarts(t: string): Generator<number> {
+  yield 0;
+  for (const m of t.matchAll(ASK_START)) {
+    const at = m.index ?? 0;
+    if (at > 0) yield at;
+  }
+}
 
 /** The site, search or address the words ask for — null when they don't name one. */
 export function parseOpen(utterance: string): OpenTarget | null {
-  let t = normalize(utterance);
+  const t = loosen(normalize(utterance));
+  for (const at of askStarts(t)) {
+    const target = openTarget(t.slice(at));
+    if (target) return target;
+  }
+  return null;
+}
+
+function openTarget(words: string): OpenTarget | null {
+  let t = words;
   const inNew = /\bin a new tab\b|\bnew tab\b/.test(t);
   t = t.replace(/\s*\b(?:in|on)\s+(?:a\s+)?(?:new|this|the current|the same)\s+(?:tab|window)\b/g, "").trim();
   if (/^(?:open|make|create|give me|start)?\s*(?:a\s+)?(?:new|blank|empty)\s+(?:tab|page|window)$/.test(t) || (!t && inNew)) return { url: "chrome://newtab", label: "a new tab", kind: "newtab" };
+  // "open ebay and search for golf clubs".
+  let m = new RegExp(String.raw`^(?:(?:${OPEN_VERBS})\s+)?(?:up\s+)?(?:(?:the|a|an|my)\s+)?(${SITE_ALT})\s+and\s+(?:then\s+)?(?:search|look|shop)(?:\s+(?:for|up))?\s+(.+)$`).exec(t);
+  if (m) {
+    const search = SEARCH[m[1]!] ?? SEARCH[m[1]!.replace(/^google /, "")];
+    if (search) return { url: search(m[2]!), label: `${TITLE(m[1]!)} for ${m[2]}`, kind: "search" };
+  }
   // "search for X on youtube", "look up X on amazon", "find X on ebay", "youtube cute cats", "google the weather".
-  let m = new RegExp(String.raw`^(?:(?:please\s+)?(?:search|look|find|browse|check|shop|show me|show)(?:\s+(?:up|for|me))*\s+)(.+?)\s+(?:on|in|at|using|with|via|through)\s+(?:the\s+)?(${SITE_ALT})$`).exec(t);
+  m = new RegExp(String.raw`^(?:(?:please\s+)?(?:search|look|find|browse|check|shop|show me|show)(?:\s+(?:up|for|me))*\s+)(.+?)\s+(?:on|in|at|using|with|via|through)\s+(?:the\s+)?(${SITE_ALT})$`).exec(t);
   if (!m) m = new RegExp(String.raw`^(?:(?:please\s+)?(?:search|look|browse|check)(?:\s+(?:up|on|in))?\s+)(${SITE_ALT})\s+for\s+(.+)$`).exec(t);
   if (m && m.length === 3 && SEARCH[m[2]!] === undefined && SEARCH[m[1]!] !== undefined) m = [m[0], m[2]!, m[1]!] as unknown as RegExpExecArray;
   if (!m) m = new RegExp(String.raw`^(?:(?:please\s+)?(?:open|pull up|bring up|show me|find|get)\s+)(.+?)\s+on\s+(?:the\s+)?(${SITE_ALT})$`).exec(t);
@@ -182,23 +245,29 @@ export function parseOpen(utterance: string): OpenTarget | null {
   m = /^(?:search(?:\s+for)?|look up|look for|find)\s+(.+?)(?:\s+(?:online|on the web|in the browser|on google))?$/.exec(t);
   if (m && /\b(?:online|on the web|in the browser|on google)\b/.test(t)) return { url: SEARCH.google!(m[1]!), label: `Google for ${m[1]}`, kind: "search" };
   // A site or an address.
-  let rest = t.replace(OPEN_LEAD, "").replace(/^(?:website|site|page)\s+(?:for|of)\s+/, "").trim();
+  const rest = t.replace(OPEN_LEAD, "").replace(/^(?:website|site|page)\s+(?:for|of)\s+/, "").trim();
   if (!rest) return null;
   if (SITES[rest] !== undefined) return SITES[rest] ? { url: SITES[rest]!, label: TITLE(rest), kind: "site" } : null;
   if (SEARCH[rest]) return { url: SEARCH[rest]!("").replace(/[?&][^=]+=$/, "").replace(/\/search\/$/, "/"), label: TITLE(rest), kind: "site" };
-  rest = rest.replace(/\s+/g, "");
-  if (DOMAIN.test(rest)) return { url: /^https?:\/\//.test(rest) ? rest : `https://${rest}`, label: rest.replace(/^https?:\/\//, ""), kind: "url" };
+  // Spaces only around the dots and slashes of a spoken address ("github dot com slash trending").
+  const compact = rest.replace(/\s*([./:])\s*/g, "$1");
+  if (looksLikeAddress(compact)) return { url: addressUrl(compact), label: compact.replace(/^https?:\/\//i, "").replace(/\/$/, ""), kind: "url" };
   return null;
 }
 
 /** When the words name no site: a Google search for them ("open the article about the eclipse"). */
 export function openFallback(utterance: string): OpenTarget | null {
-  const rest = normalize(utterance)
+  const t = loosen(normalize(utterance));
+  const from = Math.max(0, t.search(ASK_START));
+  const rest = t
+    .slice(from)
     .replace(OPEN_LEAD, "")
+    .replace(/^(?:search|look up|look for|find|google)\s+(?:for\s+|up\s+)?/, "")
     .replace(/^(?:website|site|page|article|story|video|thing)\s+(?:for|of|about|on)\s+/, "")
     .replace(/^(?:the\s+)?(?:article|story|video|page|post)\s+(?:about|on)\s+/, "")
+    .replace(/\s+(?:online|on the web|in the browser|on google)$/, "")
     .trim();
-  if (rest.length < 2 || /^(?:it|that|this|something|anything)$/.test(rest)) return null;
+  if (rest.length < 2 || /^(?:it|that|this|something|anything|up|there|here|this one|that one)$/.test(rest)) return null;
   return { url: SEARCH.google!(rest), label: `Google for ${rest}`, kind: "search" };
 }
 
@@ -354,7 +423,7 @@ export function searchBox(items: Interactive[]): Interactive | null {
 }
 
 /**
- * Buttons that spend money, send things or destroy things: clicked only when the caller's own words
+ * Buttons that spend money, send things or destroy things: clicked only when the user's own words
  * name the action ("yes, place the order" — not "click the big yellow button").
  */
 const DANGEROUS =
@@ -364,7 +433,7 @@ export function clickNeedsSayingSo(elementName: string): boolean {
   return DANGEROUS.test(elementName);
 }
 
-/** The caller said the dangerous word (or its stem) themselves. */
+/** The user said the dangerous word (or its stem) themselves. */
 export function clickSaidSo(elementName: string, utterance: string): boolean {
   const u = utterance.toLowerCase();
   const words = elementName.toLowerCase().match(/[a-z]+/g) ?? [];

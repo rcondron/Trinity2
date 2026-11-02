@@ -48,7 +48,7 @@ function heroSummary(p: Game["players"][number]): string {
  * title, genre, phase, round, party ("Thorin (dwarf fighter, 12/12 HP)"), scene, NPCs, setup next.
  */
 export function describeGameForAgent(game: Game | null): string {
-  if (!game) return "No game is running yet — the caller can ask to start a new one.";
+  if (!game) return "No game is running yet — the user can ask to start a new one.";
   const parts: string[] = [];
   const framed = isFramed(game);
   parts.push(

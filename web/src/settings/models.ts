@@ -256,7 +256,7 @@ const GROUPS: GroupDef[] = [
             label: "Images (quality)",
             kind: "model",
             list: "dl-image-models",
-            hint: "When the caller asks for detail / photorealism. flux-2-pro ≈ 15.6 s. Falls back to Images (fast) if blank.",
+            hint: "When the user asks for detail / photorealism. flux-2-pro ≈ 15.6 s. Falls back to Images (fast) if blank.",
           },
           {
             key: "ttsModel",

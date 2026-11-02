@@ -4,7 +4,7 @@ import { workspace, type WorkspaceTemplate } from "./bus.js";
 /**
  * The floating card board: one workspace app that holds many numbered cards
  * (image / audio / video / text / widget). Cards are absolutely positioned so the
- * caller can ask to move or remove "card 2". Media and build_ui add cards — they
+ * user can ask to move or remove "card 2". Media and build_ui add cards — they
  * never replace the whole screen (unless a game owns it).
  */
 
@@ -12,7 +12,7 @@ export type CardKind = "image" | "audio" | "video" | "text" | "widget";
 export type CardStatus = "pending" | "ready" | "error";
 
 export interface BoardCard {
-  /** Stable number spoken by the caller ("remove card 3"). Never renumbered. */
+  /** Stable number spoken by the user ("remove card 3"). Never renumbered. */
   n: number;
   kind: CardKind;
   status: CardStatus;
@@ -29,7 +29,7 @@ export interface BoardCard {
   /** Caption / prompt / spoken text / build request. */
   text: string;
   /**
-   * Content tags so the caller can say "the tiger" / "the panda" instead of only "card 3".
+   * Content tags so the user can say "the tiger" / "the panda" instead of only "card 3".
    * Derived from the prompt/title when the card is created; kept on edits.
    */
   tags?: string[];
@@ -613,6 +613,7 @@ export function removeCard(n: number): BoardCard | null {
   const state = read();
   const i = state.cards.findIndex((c) => c.n === n);
   if (i < 0) return null;
+  workspace.pushUndo(`remove_card:${n}`);
   const [removed] = state.cards.splice(i, 1);
   write(state);
   return removed ?? null;
@@ -673,7 +674,7 @@ export function parseRelativePlace(raw: string): RelativePlace | null {
 }
 
 /**
- * Resolve which card the caller means: "card 3", "the tiger", "panda picture", etc.
+ * Resolve which card the user means: "card 3", "the tiger", "panda picture", etc.
  * Scores tags, title, and text — so "move the tiger under the panda" can find both.
  */
 export function resolveCard(hint: string, utterance = ""): BoardCard | null {

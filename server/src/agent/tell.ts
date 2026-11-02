@@ -5,7 +5,7 @@ import { bg } from "../util/bg.js";
 
 /**
  * News from work that finished after its tool had already answered (a skill forged, a content card
- * written): said in the live call if there is one; when there is none, or the caller cut it off, it's
+ * written): said in the live call if there is one; when there is none, or the user cut it off, it's
  * Trinity's line in every open app (index.ts hands that in — the channel that asked may be gone by
  * now: a reload, a persona switch) or, with no fallback set, in the asking channel.
  */

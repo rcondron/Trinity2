@@ -77,7 +77,7 @@ export function deleteSetting(key: string): void {
   db.prepare("DELETE FROM settings WHERE key = ?").run(key);
 }
 
-// ─── Profile (who the caller is) ─────────────────────────────────────────────
+// ─── Profile (who the user is) ─────────────────────────────────────────────
 const MAX_NAME = 40;
 
 /** A usable name: trimmed, one line, no wrapping quotes or trailing punctuation; null if nothing is left. */
@@ -92,11 +92,11 @@ export function cleanProfileName(raw: unknown): string | null {
   return name;
 }
 
-/** The caller's name (setting `user_name`), when they've told Trinity or set it in Settings. */
+/** The user's name (setting `user_name`), when they've told Trinity or set it in Settings. */
 export function getProfileName(): string | null {
   return cleanProfileName(getSetting("user_name"));
 }
-/** Set (or with null/blank, forget) the caller's name. Returns what was stored. */
+/** Set (or with null/blank, forget) the user's name. Returns what was stored. */
 export function setProfileName(name: string | null): string | null {
   const clean = cleanProfileName(name);
   if (clean) setSetting("user_name", clean);

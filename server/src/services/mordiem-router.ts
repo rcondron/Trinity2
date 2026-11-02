@@ -1,7 +1,7 @@
 import { getEndpoints, modelName } from "../settings.js";
 
 /**
- * Pick the best Mordiem model for a modality given what the caller needs.
+ * Pick the best Mordiem model for a modality given what the user needs.
  * Jev can pass an explicit quality tier (tool option); otherwise the utterance
  * is read for cues ("quick sketch", "photorealistic", "carefully explain").
  * Slot defaults come from Settings / .env; "quality" slots fall back to the

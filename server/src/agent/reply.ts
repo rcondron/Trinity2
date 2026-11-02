@@ -12,7 +12,7 @@ import type { ReplyStyle } from "./context.js";
  */
 export interface ReplyRequest {
   persona: Persona;
-  /** The caller's words. */
+  /** The user's words. */
   asked: string;
   /** What was done, in words (tool outcome). */
   outcome: string;
@@ -44,14 +44,14 @@ function systemPrompt(req: ReplyRequest): string {
       : `ONE short, natural spoken sentence, under ${maxWords} words`;
   const task =
     req.inProgress === "queued"
-      ? `A helper has lined up what the caller asked: it starts as soon as the work ahead of it finishes. Reply in character with ${shape}: say you're on it and it's next. Never say it's done or ready.`
+      ? `A helper has lined up what the user asked: it starts as soon as the work ahead of it finishes. Reply in character with ${shape}: say you're on it and it's next. Never say it's done or ready.`
       : req.inProgress
-        ? `A helper has just STARTED on what the caller asked and it is still in progress. Reply in character with ${shape}: say you're on it and where it will show up (or that you'll say when it's ready). Never say it's done or ready.`
-        : `A helper has just done what the caller asked. Reply in character with ${shape}: confirm it in your own words with the concrete details of what was done (names, numbers), or give the one fact they asked for. Never answer with a bare "Done".`;
+        ? `A helper has just STARTED on what the user asked and it is still in progress. Reply in character with ${shape}: say you're on it and where it will show up (or that you'll say when it's ready). Never say it's done or ready.`
+        : `A helper has just done what the user asked. Reply in character with ${shape}: confirm it in your own words with the concrete details of what was done (names, numbers), or give the one fact they asked for. Never answer with a bare "Done".`;
   return [
     voiceOf(req.persona),
     `You are on a live voice call. ${task}`,
-    "The workspace is the screen beside the caller where helpers show what they make: their 'screen', 'board' or 'window'.",
+    "The workspace is the screen beside the user where helpers show what they make: their 'screen', 'board' or 'window'.",
     guidance,
     "Don't read out everything on screen. Write numbers, money and dates as spoken words. No emojis, symbols, lists, quotes or markdown.",
   ]
@@ -120,7 +120,7 @@ async function writeStreamed(req: ReplyRequest, emit: (chunk: string) => void, s
       { role: "system", content: systemPrompt(req) },
       {
         role: "user",
-        content: `Caller said: "${req.asked.replace(/"/g, "'")}"\nWhat was done: ${outcome}\nSituation: ${req.situation}`,
+        content: `User said: "${req.asked.replace(/"/g, "'")}"\nWhat was done: ${outcome}\nSituation: ${req.situation}`,
       },
     ],
   };

@@ -34,11 +34,11 @@ export interface Endpoints {
   replyModel: string;
   fastModel: string;
   imageModel: string;
-  /** Stronger image model when the caller asks for detail / photorealism (falls back to imageModel if blank). */
+  /** Stronger image model when the user asks for detail / photorealism (falls back to imageModel if blank). */
   imageProModel: string;
-  /** Text-to-speech for audio clips the caller asks for (make_audio), and the voice name that model takes. */
+  /** Text-to-speech for audio clips the user asks for (make_audio), and the voice name that model takes. */
   ttsModel: string;
-  /** Richer TTS when the caller asks for natural / expressive audio (falls back to ttsModel if blank). */
+  /** Richer TTS when the user asks for natural / expressive audio (falls back to ttsModel if blank). */
   ttsProModel: string;
   ttsVoice: string;
   /** Default text-to-video model (make_video). */
@@ -216,7 +216,7 @@ export const live = {
   get travel(): boolean {
     return Boolean(getEndpoints().serpapiKey);
   },
-  /** The Chrome extension is connected: Trinity can drive the caller's browser. */
+  /** The Chrome extension is connected: Trinity can drive the user's browser. */
   get browser(): boolean {
     return browserConnected();
   },

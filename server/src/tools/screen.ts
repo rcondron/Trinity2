@@ -79,7 +79,7 @@ const PLACE_OPTIONS: Record<string, string> = {
 const clearWorkspace: Tool = {
   name: "clear_workspace",
   description:
-    "Clear, wipe, blank, reset, or empty the workspace / screen / board / window — including every floating card and any page or app on it. Use this whenever the caller wants the screen cleared, not remove_card (that's one numbered card).",
+    "Clear, wipe, blank, reset, or empty the workspace / screen / board / window — including every floating card and any page or app on it. Use this whenever the user wants the screen cleared, not remove_card (that's one numbered card). Prefer this only when they clearly want everything gone — they can undo_workspace if it was a mistake.",
   input: {},
   source: "builtin",
   async run() {
@@ -89,14 +89,29 @@ const clearWorkspace: Tool = {
     workspace.clear();
     return {
       ok: true,
-      say: cards ? `Cleared the workspace and removed ${cards} card${cards === 1 ? "" : "s"}.` : `Cleared the workspace; it was showing ${s.title}.`,
+      say: cards
+        ? `Cleared the workspace and removed ${cards} card${cards === 1 ? "" : "s"}. Say undo if you want them back.`
+        : `Cleared the workspace; it was showing ${s.title}. Say undo if you want it back.`,
     };
+  },
+};
+
+const undoWorkspace: Tool = {
+  name: "undo_workspace",
+  description:
+    "Undo the last workspace clear or card remove — restore cards / the previous screen that was closed by accident. Use when the user says undo, put it back, bring it back, restore, go back, or oops that was a mistake.",
+  input: {},
+  source: "builtin",
+  available: () => workspace.canUndo(),
+  async run() {
+    const result = workspace.undo();
+    return { ok: result.ok, say: result.say, speak: result.ok ? result.say : undefined };
   },
 };
 
 const describeWorkspace: Tool = {
   name: "describe_workspace",
-  description: "Tell the caller what the workspace window is showing right now (including numbered cards and what each is about), or that it's empty.",
+  description: "Tell the user what the workspace window is showing right now (including numbered cards and what each is about), or that it's empty.",
   input: {},
   source: "builtin",
   async run() {
@@ -215,13 +230,19 @@ const moveCardTool: Tool = {
 };
 
 export function registerScreenTools(): void {
-  [clearWorkspace, describeWorkspace, removeCardTool, moveCardTool].forEach(registerTool);
+  [clearWorkspace, undoWorkspace, describeWorkspace, removeCardTool, moveCardTool].forEach(registerTool);
   registerContextProvider({
-    describe: (persona) => describeScreen(persona),
+    describe: (persona) => {
+      const base = describeScreen(persona);
+      if (!workspace.canUndo()) return base;
+      const hint = `Undo available: restore ${workspace.undoLabel()}.`;
+      return base ? `${base} ${hint}` : hint;
+    },
     // While the Game Master runs a game on the screen, the game tools are in charge of it ("clear the board" is a move
     // in the story) and the game describes itself. Another persona may clear a game screen left behind.
     // Game integration already hides board tools whenever a game is active; also hide them while a
     // game screen owns the workspace (covers a game left up after the active id was cleared).
+    // undo_workspace stays available so an accidental clear can be reversed.
     hiddenActions: (persona) =>
       isGameMaster(persona) && gameOwned()
         ? ["clear_workspace", "describe_workspace", "remove_card", "move_card", "make_text", "show_card", "edit_html", "set_speech_rate", "browser_open", "browser_tabs", "browser_read", "browser_act", "browser_modify", "browser_save", "browser_share"]

@@ -42,16 +42,16 @@ function toRouteDecision(d: Decision): RouteDecision {
 
 /**
  * Tools a scheduled run never picks: scheduling from a schedule would loop, and saving
- * memories or creating skills needs the caller there. (Game tools are left out too — a
+ * memories or creating skills needs the user there. (Game tools are left out too — a
  * scheduled task must never move a story on.)
  */
 const NOT_PROACTIVE = new Set(["schedule", "remember", "create_skill"]);
 
-/** What Jev reads for a scheduled task: the caller's own request, due now. */
+/** What Jev reads for a scheduled task: the user's own request, due now. */
 function scheduledConversation(task: HeartbeatTask): string {
   return (
-    `Conversation so far, oldest first:\n(The caller set up a scheduled task earlier: "${task.title}". It is due now.)\n\n` +
-    `Caller's latest words (finished speaking): ${task.instruction}`
+    `Conversation so far, oldest first:\n(The user set up a scheduled task earlier: "${task.title}". It is due now.)\n\n` +
+    `User's latest words (finished speaking): ${task.instruction}`
   );
 }
 
@@ -111,9 +111,9 @@ export class Orchestrator {
   private conversation(latest: string): string {
     const recent = this.transcript
       .slice(-8)
-      .map((t) => `${t.speaker === "user" ? "Caller" : "Agent"}: ${t.text}`)
+      .map((t) => `${t.speaker === "user" ? "User" : "Agent"}: ${t.text}`)
       .join("\n");
-    return `Conversation so far, oldest first:\n${recent || "(nothing yet)"}\n\nCaller's latest words (finished speaking): ${latest}`;
+    return `Conversation so far, oldest first:\n${recent || "(nothing yet)"}\n\nUser's latest words (finished speaking): ${latest}`;
   }
 
   /** Memories Jev picks as relevant to the turn (started beside the routing decision). */
@@ -233,7 +233,7 @@ export class Orchestrator {
   /**
    * An unprompted line as Trinity's turn, after the call had its go at it (also a finished
    * skill's news — see forge.ts): marked voiced only if it was said in full, and cut if the
-   * caller cut it off there (it's shown, never read out again). A line no call said is read
+   * user cut it off there (it's shown, never read out again). A line no call said is read
    * aloud by one app tab that has no voice up.
    */
   showUnprompted(text: string, emit: Emit, spoken: Spoken): void {
@@ -244,7 +244,7 @@ export class Orchestrator {
   /**
    * Run a due heartbeat task as a proactive, self-initiated turn. A plain reminder ("Remind me
    * to stretch.") is said as it is, with no model calls. Anything else goes through the agent
-   * core like a request the caller just made: Jev decides, the tool runs and the reply writer
+   * core like a request the user just made: Jev decides, the tool runs and the reply writer
    * phrases the result; with no tool to run, the brain answers it (with memories) — and if the
    * brain fails, this throws rather than saying a stand-in line. Once `signal` aborts (the run's
    * time limit) it throws too, and says nothing. Returns what was said (null: a recurring task
@@ -307,7 +307,7 @@ export class Orchestrator {
         memories: withName(recalled.map((m) => m.text)),
         userText:
           `[Scheduled ${task.once ? "item" : "task"} "${task.title}", due now — it's ${now}] ${task.instruction}\n` +
-          `(The caller set this up earlier and may not be talking right now: say it unprompted, in one to three short spoken sentences.` +
+          `(The user set this up earlier and may not be talking right now: say it unprompted, in one to three short spoken sentences.` +
           `${task.once ? "" : " If there's genuinely nothing worth saying, reply with just SKIP."})`,
         situation: ctx.summary,
         strict: true,
@@ -329,8 +329,8 @@ export class Orchestrator {
   }
 }
 
-/** The caller's name as one more memory line, so the brain can use it ("The caller's son is named Ryan Jr." doesn't say it). */
+/** The user's name as one more memory line, so the brain can use it ("The user's son is named Ryan Jr." doesn't say it). */
 function withName(memories: string[]): string[] {
   const name = getProfileName();
-  return name && !memories.some((m) => statesOwnName(m, name)) ? [`The caller's name is ${name}.`, ...memories] : memories;
+  return name && !memories.some((m) => statesOwnName(m, name)) ? [`The user's name is ${name}.`, ...memories] : memories;
 }

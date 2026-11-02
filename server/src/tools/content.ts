@@ -370,7 +370,7 @@ async function compose(job: CardJob, ctx: ToolContext, quality: unknown, ask: Li
   return spec;
 }
 
-/** What Trinity says when the card will take longer than the caller should wait. */
+/** What Trinity says when the card will take longer than the user should wait. */
 function laterLine(job: CardJob, ask: LiveAsk | null, info: { label: string }): string {
   if (ask) return `Card ${job.n} is on the board — I'm searching ${LIVE_LABEL[ask.kind]} for ${job.topic} now and I'll tell you what I find.`;
   return `Card ${job.n} is on the board — ${job.designer} is writing ${article(info.label)} on ${job.topic} now.`;
@@ -384,7 +384,7 @@ const showCard: Tool = {
     type: { type: "string", description: "what kind of information card this is", options: CONTENT_TYPE_OPTIONS },
     quality: { type: "string", description: "which Mordiem text model should write the card", options: QUALITY_OPTIONS },
   },
-  // The request is the caller's whole sentence: fires when it ends; Jev's options arrive as args.
+  // The request is the user's whole sentence: fires when it ends; Jev's options arrive as args.
   argMode: "raw",
   source: "builtin",
   async run(args, ctx): Promise<ToolResult> {
@@ -461,7 +461,7 @@ const showCard: Tool = {
         },
       };
     }
-    // Slower than the caller should wait: acknowledge now; the summary is told when the card is written.
+    // Slower than the user should wait: acknowledge now; the summary is told when the card is written.
     void writing.then((spec) => {
       if (spec && alive(job)) tell(ctx, spokenLine(spec, job.n), "show_card");
     });

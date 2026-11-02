@@ -31,7 +31,7 @@ export interface ForgedSkill {
   /** Waiting for approval (skill approval "manual"); the module is in data/skills/pending/. */
   pending: boolean;
   createdAt: number;
-  /** What was asked for, in the caller's words. */
+  /** What was asked for, in the user's words. */
   need: string;
   /** The coder model that wrote it. */
   model: string;
@@ -93,8 +93,8 @@ const SKILL_SYSTEM = [
   "The module must `export default` an object with:",
   '- name: a snake_case verb phrase of at most 40 characters, e.g. "convert_currency".',
   "- description: ONE sentence saying when to use the skill, starting with a verb, e.g. \"Convert an amount of money between currencies at today's exchange rate.\" Trinity picks skills by this sentence, so make it specific.",
-  '- input: an object mapping each argument name to { type: "string" | "number" | "boolean", description, required?: true } — only the few things a caller would say out loud.',
-  "- examples: an array of 1 or 2 argument objects written the way a caller would SAY them (\"British pounds\", \"Christmas\", \"next Friday\", \"new york\"), not in machine format. They are run as the skill's self-test before it is saved, so they must succeed.",
+  '- input: an object mapping each argument name to { type: "string" | "number" | "boolean", description, required?: true } — only the few things a user would say out loud.',
+  "- examples: an array of 1 or 2 argument objects written the way a user would SAY them (\"British pounds\", \"Christmas\", \"next Friday\", \"new york\"), not in machine format. They are run as the skill's self-test before it is saved, so they must succeed.",
   "- run: async (args) => ({ ok, say, render?, data? }).",
   "",
   "How run behaves:",
@@ -459,8 +459,8 @@ function requestText(need: string, context?: string): string {
   const names = [...new Set([...getTools().map((t) => t.name), ...entries().map((s) => s.name)])];
   return [
     `Write a skill for this request: "${clip(need.replace(/"/g, "'"), 1000)}"`,
-    context ? `\nThe conversation so far (the request is the caller's latest words):\n${clip(context, 2000)}\n` : "",
-    `The caller's locale is ${locale}, time zone ${timeZone}: default to the units and formats they'd expect.`,
+    context ? `\nThe conversation so far (the request is the user's latest words):\n${clip(context, 2000)}\n` : "",
+    `The user's locale is ${locale}, time zone ${timeZone}: default to the units and formats they'd expect.`,
     `Names already taken (pick another): ${names.join(", ") || "none"}.`,
   ].join("\n");
 }

@@ -104,7 +104,7 @@ export function createApi(memory: MemoryStore, hooks: ApiHooks = {}): Router {
     res.json({ ok: true, version: workspace.snapshot().version });
   });
 
-  // The caller's name too: the voice hears it when a call connects, so the app re-warms when it changes.
+  // The user's name too: the voice hears it when a call connects, so the app re-warms when it changes.
   api.get("/status", (_req, res) => {
     res.json({ services: serviceStatus(), persona: getActivePersona(), profileName: getProfileName() });
   });

@@ -36,7 +36,7 @@ export interface SearchOptions {
 
 export const MEMORY_TYPES: readonly MemoryDoc["type"][] = ["fact", "event", "preference", "summary", "note"];
 
-/** Words that say nothing about a topic ("what's my …", "the caller's …") — never a match on their own. */
+/** Words that say nothing about a topic ("what's my …", "the user's …") — never a match on their own. */
 const STOPWORDS = new Set(
   (
     "a an and any are as at be been but by can could did do does doing for from had has have he her hers him his how " +
@@ -46,7 +46,7 @@ const STOPWORDS = new Set(
   ).split(" "),
 );
 
-/** Topic words: lowercase, possessives dropped ("caller's" → "caller"), split on anything not a letter or digit. */
+/** Topic words: lowercase, possessives dropped ("user's" → "user"), split on anything not a letter or digit. */
 export function topicWords(s: string): string[] {
   return s
     .toLowerCase()
@@ -150,6 +150,23 @@ class PouchStore implements MemoryStore {
     const doc = await this.get(id);
     if (doc?._rev) await this.pdb.remove(id, doc._rev);
   }
+}
+
+/**
+ * Memories used to be written about "the caller"; the app now says "the user" everywhere, so the saved
+ * ones follow. Runs at every start; it only touches a memory that still has the old word. Returns how
+ * many changed.
+ */
+export async function rewordCallerMemories(store: MemoryStore): Promise<number> {
+  let changed = 0;
+  for (const doc of await store.all()) {
+    const text = doc.text.replace(/\b(the|The|THE) caller(s?)\b/g, (_m, the: string, s: string) => `${the} ${the === "THE" ? "USER" : "user"}${s}`);
+    if (text === doc.text) continue;
+    const { _rev: _r, ...rest } = doc;
+    await store.put({ ...rest, text });
+    changed++;
+  }
+  return changed;
 }
 
 export async function createMemoryStore(): Promise<MemoryStore> {

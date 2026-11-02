@@ -48,7 +48,7 @@ export const config = {
     adminToken: process.env.PERSONAPLEX_ADMIN_TOKEN || "",
   },
 
-  // Deepgram — live transcription of the caller, running beside PersonaPlex.
+  // Deepgram — live transcription of the user, running beside PersonaPlex.
   deepgram: {
     key: process.env.DEEPGRAM_API_KEY || "",
     url: process.env.DEEPGRAM_URL || DEEPGRAM_DEFAULT,
@@ -85,10 +85,10 @@ export const config = {
     replyModel: process.env.REPLY_MODEL || "nvidia-nemotron-3-nano-30b-a3b",
     // Fast JSON model for argument extraction and game content (~2s measured).
     fastModel: process.env.FAST_MODEL || "nvidia-nemotron-3-nano-30b-a3b",
-    // Image models for game art and pictures the caller asks for. Jev / the router pick turbo vs pro.
+    // Image models for game art and pictures the user asks for. Jev / the router pick turbo vs pro.
     imageModel: process.env.IMAGE_MODEL || "krea-2-turbo",
     imageProModel: process.env.IMAGE_PRO_MODEL || "flux-2-pro",
-    // Text-to-speech for audio clips the caller asks for (tts-kokoro ~1s measured), and its voice.
+    // Text-to-speech for audio clips the user asks for (tts-kokoro ~1s measured), and its voice.
     ttsModel: process.env.TTS_MODEL || "tts-kokoro",
     ttsProModel: process.env.TTS_PRO_MODEL || "elevenlabs-tts-v4",
     ttsVoice: process.env.TTS_VOICE || "af_heart",

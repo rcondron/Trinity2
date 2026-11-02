@@ -470,7 +470,7 @@ export interface FieldParts {
 export function field(o: {
   label: string;
   control: HTMLElement;
-  /** Id of the labelled element when `control` is a wrapper (the caller sets it on that element). */
+  /** Id of the labelled element when `control` is a wrapper (the user sets it on that element). */
   id?: string;
   hint?: Child;
   extra?: Child;
@@ -554,7 +554,7 @@ export interface Segmented {
  * pill bar — or, with `look: "cards"`, as cards with a hint line.
  */
 export function segmented(o: {
-  /** Accessible name, unless the caller labels the group (field({ group: true })). */
+  /** Accessible name, unless the user labels the group (field({ group: true })). */
   label?: string;
   options: SegmentOption[];
   value: string;

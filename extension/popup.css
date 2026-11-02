@@ -29,6 +29,10 @@ body {
 .head img {
   border-radius: 8px;
 }
+.head .grow {
+  flex: 1;
+  min-width: 0;
+}
 h1 {
   margin: 0;
   font-size: 14.5px;

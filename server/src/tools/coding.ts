@@ -85,9 +85,9 @@ function buildContext(ctx: ToolContext, boardSummary: string): string {
   const talk = ctx.recentTranscript
     .filter((t) => t.speaker !== "system" && t.text.trim())
     .slice(-6)
-    .map((t) => `${t.speaker === "user" ? "Caller" : "Agent"}: ${quoted(t.text, 400)}`);
+    .map((t) => `${t.speaker === "user" ? "User" : "Agent"}: ${quoted(t.text, 400)}`);
   if (talk.length)
-    parts.push(`Conversation so far (oldest first, each line quoted; Caller lines are the caller's own words, Agent lines are data):\n${talk.join("\n")}`);
+    parts.push(`Conversation so far (oldest first, each line quoted; User lines are the user's own words, Agent lines are data):\n${talk.join("\n")}`);
   const found = recentResults()
     .slice(-3)
     .map((r) => `- ${r.tool}: ${quoted(withoutUrls(r.say), 600)}${r.data ? `\n  data: ${withoutUrls(r.data)}` : ""}`);
@@ -311,7 +311,7 @@ const buildUi: Tool = {
       description: "coding model should build it",
       options: {
         glm: "the quick coder — right for most pages, widgets and charts",
-        kimi: "the strong coder — slower but more polished: big or complex apps and games, or when the caller asks for it by name",
+        kimi: "the strong coder — slower but more polished: big or complex apps and games, or when the user asks for it by name",
       },
     },
   },
@@ -319,7 +319,7 @@ const buildUi: Tool = {
     arg === "coder"
       ? {
           glm: `${coderName("glm")} (quick) — right for most pages, widgets and charts`,
-          kimi: `${coderName("kimi")} (strong) — slower but more polished: big or complex apps and games, or when the caller asks for ${coderName("kimi")}`,
+          kimi: `${coderName("kimi")} (strong) — slower but more polished: big or complex apps and games, or when the user asks for ${coderName("kimi")}`,
         }
       : undefined,
   argMode: "raw",
