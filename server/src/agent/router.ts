@@ -222,15 +222,19 @@ function toolRules(tools: Tool[]): string[] {
     );
   if (has("edit_html") && has("build_ui"))
     rules.push(
-      "Tweaking something already on the board (make a picture smaller/larger, change img/svg/canvas/widget HTML or styles) is edit_html; creating a new interactive widget or rebuilding one from scratch is build_ui.",
+      "Tweaking what's inside a card already on the board (a picture's width percentage, img/svg/canvas/widget HTML or styles) is edit_html; creating a new interactive widget or rebuilding one from scratch is build_ui.",
     );
   if (has("edit_html") && has("make_image"))
     rules.push(
-      "Resizing or restyling an existing picture on the board is edit_html; generating a brand-new picture is make_image.",
+      "Restyling an existing picture's markup on the board is edit_html; generating a brand-new picture is make_image.",
+    );
+  if (has("resize_card"))
+    rules.push(
+      "A card's own size — bigger, smaller, maximize / full screen, minimize, wider, taller, restore / back to normal — is resize_card (by number or by what the card shows: 'make the tiger bigger'); 'restore card 2' while card 2 is still on the board is resize_card, and undo_workspace is only for bringing back what was removed or cleared; only a picture's width percentage or its markup is edit_html.",
     );
   if (has("remove_card") || has("move_card") || has("undo_workspace") || has("arrange_cards"))
     rules.push(
-      "Floating cards on the board are numbered and tagged by content: removing one is remove_card, moving one is move_card (by number or by what it shows — 'the tiger', 'under the panda'), organizing / tidying / sorting / lining up all the cards into a neat grid is arrange_cards, wiping every card / the whole screen is clear_workspace, and restoring a mistaken clear or remove is undo_workspace. A text sticky/note is make_text; asking for several pictures (a panda and a tiger) is still make_image (one card each).",
+      "Floating cards on the board are numbered and tagged by content: removing one is remove_card, moving one is move_card (by number or by what it shows — 'the tiger', 'under the panda'), organizing / tidying / sorting / lining up / stacking all the cards (a grid, a stack, a row or a column) is arrange_cards, layering one card in front of / behind / on top of another, or one layer forward or backward, is move_card ('put the cards back' / 'bring them back' after a clear or remove is undo_workspace, not a move), wiping every card / the whole screen is clear_workspace, and restoring a mistaken clear or remove is undo_workspace. A text sticky/note is make_text; asking for several pictures (a panda and a tiger) is still make_image (one card each).",
     );
   if (has("show_card")) {
     if (has("ask_brain"))
@@ -309,7 +313,7 @@ export function jevRequest(input: RouteInput) {
 }
 
 /** Screen ops the keyword heuristic may take when Jev abstains — clear/move/remove/undo are unambiguous. */
-const HEURISTIC_OVERRIDE = /^(clear_workspace|undo_workspace|remove_card|move_card|arrange_cards|describe_workspace|edit_html|set_speech_rate)$/;
+const HEURISTIC_OVERRIDE = /^(clear_workspace|undo_workspace|remove_card|move_card|arrange_cards|resize_card|describe_workspace|edit_html|set_speech_rate)$/;
 
 export async function decide(input: RouteInput): Promise<Decision> {
   const started = Date.now();
@@ -445,9 +449,9 @@ const AUDIO = new RegExp(
  * cards", "line them up". Checked before undo, whose "put the cards …" would otherwise take "put the cards in order".
  */
 const ARRANGE =
-  /\b(?:(?:organi[sz]e|tidy(?: up)?|arrange|re-?arrange|line up|straighten(?: up)?|clean up|neaten(?: up)?|sort|align|order)\s+(?:all\s+)?(?:of\s+)?(?:the\s+|my\s+|these\s+|those\s+)?(?:cards?|board|workspace|screen|notes?|pictures?|images?|everything|them)\b|\b(?:put|lay|set|get)\s+(?:all\s+)?(?:of\s+)?(?:the\s+|these\s+|those\s+|my\s+)?(?:cards|everything|them)\s+(?:in|into|on)\s+(?:a\s+|an\s+)?(?:neat\s+|tidy\s+|nice\s+)?(?:grid|order|rows?|line|place)\b|\b(?:grid|numerical order)\b[^.?!]{0,30}\bcards?\b|\bcards?\b[^.?!]{0,30}\b(?:in a grid|in numerical order|in order|lined up|tidied up|organi[sz]ed|arranged)\b|\btidy up\b|\bstraighten up\b)/;
+  /\b(?:(?:organi[sz]e|tidy(?: up)?|arrange|re-?arrange|line up|straighten(?: up)?|clean up|neaten(?: up)?|sort|align|order)\s+(?:all\s+)?(?:of\s+)?(?:the\s+|my\s+|these\s+|those\s+)?(?:cards?|board|workspace|screen|notes?|pictures?|images?|everything|them)\b|\b(?:stack|cascade|pile up|pile)\s+(?:up\s+)?(?:all\s+)?(?:of\s+)?(?:the\s+|these\s+|those\s+|my\s+)?(?:cards|everything|them)\b|\b(?:put|lay|set|get|line)\s+(?:all\s+)?(?:of\s+)?(?:the\s+|these\s+|those\s+|my\s+)?(?:cards|everything|them)\s+(?:up\s+)?(?:in|into|on)\s+(?:a\s+|an\s+|one\s+)?(?:neat\s+|tidy\s+|nice\s+|single\s+)?(?:grid|order|rows?|line|place|stack|cascade|column)\b|\b(?:grid|numerical order)\b[^.?!]{0,30}\bcards?\b|\bcards?\b[^.?!]{0,30}\b(?:in a grid|in numerical order|in order|lined up|tidied up|organi[sz]ed|arranged)\b|\btidy up\b|\bstraighten up\b)/;
 const UNDO =
-  /\b(undo|undelete|restore|put (it|them|that|those|everything) back|bring (it|them|that|those|everything) back|go back|oops)\b(?:[^.?!]{0,40}\b(card|cards|board|workspace|screen|window|clear|remove|that|it|them)\b)?|\b(bring|put|get)\s+(back\s+)?(the\s+)?(cards?|board|workspace|screen)\b|\brestore\s+(the\s+)?(cards?|board|workspace|screen|last)\b/i;
+  /\b(undo|undelete|restore|put (it|them|that|those|everything) back|bring (it|them|that|those|everything) back|go back|oops)\b(?:[^.?!]{0,40}\b(card|cards|board|workspace|screen|window|clear|remove|that|it|them)\b)?|\b(bring|put|get)\s+back\s+(the\s+)?(cards?|board|workspace|screen)\b|\b(bring|put|get)\s+(the\s+)?(cards?|board|workspace|screen)\s+back\b|\brestore\s+(the\s+)?(cards?|board|workspace|screen|last)\b/i;
 const CLEAR =
   /\b(clear|close|reset|wipe|blank|empty|hide|erase|get rid of|take down|remove)(?:\s+(?:out|up|down|off))?(?:\s+(?:the|that|this|my|your))?(?:\s+everything(?:\s+(?:on|from)(?:\s+the)?)?)?(?:\s+the)?\s+(?:workspace|screen|board|window|display|canvas)\b|\b(?:clear|wipe|empty|reset|erase|delete|remove|dismiss)\s+(?:all\s+)?(?:(?:of\s+)?(?:the\s+)?)?(?:cards|notes|(?:card|note)(?!\s*(?:number\s*)?\d))\b|\b(?:clear|wipe|reset|blank|empty)\s+(?:it|that|this|everything)\b|\bstart (?:over|fresh|clean) (?:on|with) the (?:workspace|screen)\b/;
 /**
@@ -462,7 +466,15 @@ const REMOVE_CARD =
  * Skipped entirely while Game Master tools are offered (story "put the torch on the left").
  */
 const MOVE_CARD =
-  /\b((move|put|place|shift|slide|drag|bring|send) (card|note)s?\s*(number\s*)?\d+|(move|put|place|bring|send) (the\s+)?\w+.*(top|bottom|left|right|center|middle|front|back|corner|under|below|above|beside|next to)|(move|put|place) (card|note)s?\b)/i;
+  /\b((move|put|place|shift|slide|drag|bring|send|layer) (card|note)s?\s*(number\s*)?\d+|(move|put|place|bring|send|layer) (the\s+)?\w+.*(top|bottom|left|right|center|middle|front|back|forward|backward|behind|corner|under|below|above|beside|next to)|(move|put|place) (card|note)s?\b)/i;
+/**
+ * A card's own size: "maximize card 2", "make the tiger bigger", "minimize the timer", "restore it", "a little
+ * smaller", "wider". Not a picture's width percentage or anything inside the card (edit_html keeps those).
+ */
+const RESIZE_CARD =
+  /\b(?:maximi[sz]e|minimi[sz]e|full ?screen|fullscreen|fill (?:up )?the (?:whole |entire )?(?:screen|board|workspace|window)|as big as (?:it (?:can|will) go|possible)|un-?maximi[sz]e|un-?minimi[sz]e|normal size|regular size|usual size|default size|back to (?:normal|its (?:old |usual |normal )?size|the way it was)|(?:restore|expand|collapse)\s+(?:the\s+)?(?:card\s*(?:number\s*)?\d+|it|that|this|that card|this card|\w+ card)\b|(?:make|resize|scale|shrink|enlarge|grow|blow up|zoom)\b[^.?!]{0,40}\b(?:bigger|larger|smaller|tinier|huge|tiny|double|half|twice|wider|narrower|taller|shorter|in on|into)\b|\b(?:bigger|larger|smaller|tinier|wider|narrower|taller|shorter)\b|\b(?:enlarge|shrink)\b)/i;
+/** What keeps a size request with edit_html: a percentage, or something inside the card. */
+const INSIDE_CARD = /\b(?:\d{1,3}\s*(?:%|percent)|inside|within|html|svg|css|style|markup|element|background|font|colou?r|border)\b/i;
 /**
  * The user's Chrome (only while the extension is connected — the tools are hidden otherwise). Each pattern
  * names what makes it a browser request: a site, a tab, the page, something to click or type, a look change.
@@ -501,7 +513,7 @@ const DESCRIBE = /\b(what('s| is|s)|what do(es)? (the|my) (workspace|screen|boar
  * "change the svg fill", "tweak the canvas", "make the timer font bigger".
  */
 const EDIT_HTML =
-  /\b(make|resize|scale|shrink|enlarge|tweak|adjust|edit|change|update)\b[^.?!]{0,50}\b(smaller|bigger|larger|tinier|wider|narrower|taller|shorter|half|percent|%|size)\b|\b(smaller|bigger|larger|tinier)\b[^.?!]{0,30}\b(picture|image|photo|card|timer|widget|video|svg|canvas)\b|\b(edit|tweak|adjust|change)\b[^.?!]{0,40}\b(html|svg|canvas|css|style|markup|element)s?\b|\b(make|set)\b[^.?!]{0,40}\b(img|image|picture|video|svg|canvas)\b[^.?!]{0,30}\b(width|height|size)\b/i;
+  /\b(make|resize|scale|shrink|enlarge|tweak|adjust|edit|change|update)\b[^.?!]{0,50}\b(smaller|bigger|larger|tinier|wider|narrower|taller|shorter|half|percent|%|size)\b|\b(smaller|bigger|larger|tinier)\b[^.?!]{0,30}\b(picture|image|photo|card|timer|widget|video|svg|canvas)\b|\b(edit|tweak|adjust|change)\b[^.?!]{0,40}\b(html|svg|canvas|css|style|markup|element|background|colou?r|font|border)s?\b|\b(make|set)\b[^.?!]{0,40}\b(img|image|picture|video|svg|canvas)\b[^.?!]{0,30}\b(width|height|size)\b/i;
 const EVERY = String.raw`every (day|morning|evening|night|week|hour)\b`;
 
 /** A time said after "remember to …": then it's a reminder to set ("remember to call mom at 5pm"), not a fact to keep. */
@@ -633,12 +645,16 @@ function heuristic(input: RouteInput, tools: Tool[], started: number): Decision 
   if (at("browser_act", BROWSER_ACT) < Infinity) return pick("browser_act", 0.8);
   // Arranging before undo: "put the cards in a grid" is a layout, not "put the cards back".
   if (at("arrange_cards", ARRANGE) < Infinity) return pick("arrange_cards", 0.9);
+  // A card's size before undo too: "restore card 2" / "put card 2 back to normal" is a resize, not an undo.
+  if (!atGameTable && at("resize_card", RESIZE_CARD) < Infinity && !INSIDE_CARD.test(t)) return pick("resize_card", 0.88);
   // Undo before clear: "put the cards back" must not wipe the board again.
   if (at("undo_workspace", UNDO) < Infinity) return pick("undo_workspace", 0.9);
   if (at("clear_workspace", CLEAR) < Infinity) return pick("clear_workspace", 0.8);
   if (at("describe_workspace", DESCRIBE) < Infinity) return pick("describe_workspace", 0.8);
   if (at("set_speech_rate", SPEECH_RATE) < Infinity) return pick("set_speech_rate", 0.88);
   if (!atGameTable) {
+    // A card's own size first: "make card 2 bigger" has no move / remove words, "restore card 2" isn't an undo.
+    if (at("resize_card", RESIZE_CARD) < Infinity && !INSIDE_CARD.test(t)) return pick("resize_card", 0.88);
     const removeAt = at("remove_card", REMOVE_CARD);
     const moveAt = at("move_card", MOVE_CARD);
     if (removeAt < Infinity && removeAt <= moveAt) return pick("remove_card", 0.85);
@@ -673,7 +689,7 @@ function heuristic(input: RouteInput, tools: Tool[], started: number): Decision 
   const words = new Set(t.split(/[^a-z0-9]+/).filter((w) => w.length > 2));
   for (const tool of tools) {
     if (inGame && tool.name === "web_search") continue; // "search the chest": no web words, no web search
-    if (/^(make_image|make_video|make_audio|make_text|show_card|clear_workspace|undo_workspace|describe_workspace|remove_card|move_card|arrange_cards|edit_html|set_speech_rate)$/.test(tool.name))
+    if (/^(make_image|make_video|make_audio|make_text|show_card|clear_workspace|undo_workspace|describe_workspace|remove_card|move_card|arrange_cards|resize_card|edit_html|set_speech_rate)$/.test(tool.name))
       continue; // a video or picture mentioned isn't one asked for
     if (tool.name.split(/[_\s]+/).some((tok) => tok.length > 3 && words.has(tok))) return pick(tool.name, 0.7);
   }

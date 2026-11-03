@@ -43,6 +43,8 @@ export interface BoardCard {
   mh?: number;
   model?: string;
   error?: string;
+  /** The layout before a maximize / minimize, so "restore" can put the card back. */
+  prev?: { x: number; y: number; w: number; h?: number; z: number };
 }
 
 export interface BoardState {
@@ -64,7 +66,7 @@ const SLOT: Array<{ x: number; y: number }> = [
 ];
 
 export const BOARD_TEMPLATE: WorkspaceTemplate = {
-  id: "board@5",
+  id: "board@6",
   kind: "default",
   name: "Card board",
   source:
@@ -165,10 +167,10 @@ export const BOARD_TEMPLATE: WorkspaceTemplate = {
     if(local[c.n].z>zTop) zTop=local[c.n].z;
   }
   function applyBox(el, L){
-    el.style.left=clamp(L.x,0,86)+"%";
-    el.style.top=clamp(L.y,0,86)+"%";
-    el.style.width=clamp(L.w,14,90)+"%";
-    if(L.h!=null&&isFinite(L.h)){ el.style.height=clamp(L.h,16,92)+"%"; el.classList.add("has-h"); }
+    el.style.left=clamp(L.x,0,90)+"%";
+    el.style.top=clamp(L.y,0,90)+"%";
+    el.style.width=clamp(L.w,12,98)+"%";
+    if(L.h!=null&&isFinite(L.h)){ el.style.height=clamp(L.h,14,98)+"%"; el.classList.add("has-h"); }
     else { el.style.height=""; el.classList.remove("has-h"); }
     el.style.zIndex=String(L.z||1);
   }
@@ -290,8 +292,8 @@ export const BOARD_TEMPLATE: WorkspaceTemplate = {
     var startX=e.clientX, startY=e.clientY, ox=L.x, oy=L.y, ow=L.w, oh=L.h!=null?L.h:Math.max(16,(el.getBoundingClientRect().height/br.height)*100);
     function move(ev){
       var dx=((ev.clientX-startX)/br.width)*100, dy=((ev.clientY-startY)/br.height)*100;
-      if(mode==="drag"){ L.x=clamp(ox+dx,0,86); L.y=clamp(oy+dy,0,86); }
-      else { L.w=clamp(ow+dx,14,90); L.h=clamp(oh+dy,16,92); }
+      if(mode==="drag"){ L.x=clamp(ox+dx,0,90); L.y=clamp(oy+dy,0,90); }
+      else { L.w=clamp(ow+dx,12,98); L.h=clamp(oh+dy,14,98); }
       applyBox(el, L);
     }
     function up(){
@@ -387,7 +389,7 @@ function emptyState(): BoardState {
   return { cards: [] };
 }
 
-const LEGACY_BOARD_IDS = new Set(["board@1", "board@2", "board@3", "board@4", BOARD_TEMPLATE.id]);
+const LEGACY_BOARD_IDS = new Set(["board@1", "board@2", "board@3", "board@4", "board@5", BOARD_TEMPLATE.id]);
 
 function isBoard(): boolean {
   const s = workspace.snapshot();
@@ -517,11 +519,11 @@ export function applyCardLayout(
   const i = state.cards.findIndex((c) => c.n === n);
   if (i < 0) return null;
   const card = { ...state.cards[i]! };
-  card.x = Math.max(0, Math.min(86, Number(layout.x) || 0));
-  card.y = Math.max(0, Math.min(86, Number(layout.y) || 0));
-  card.w = Math.max(14, Math.min(90, Number(layout.w) || card.w));
+  card.x = Math.max(0, Math.min(X_MAX, Number(layout.x) || 0));
+  card.y = Math.max(0, Math.min(X_MAX, Number(layout.y) || 0));
+  card.w = Math.max(W_MIN, Math.min(W_MAX, Number(layout.w) || card.w));
   if (layout.h === null || layout.h === undefined) delete card.h;
-  else card.h = Math.max(16, Math.min(92, Number(layout.h)));
+  else card.h = Math.max(H_MIN, Math.min(H_MAX, Number(layout.h)));
   if (typeof layout.z === "number" && Number.isFinite(layout.z)) card.z = layout.z;
   state.cards[i] = card;
   if (!write(state)) return null;
@@ -634,6 +636,15 @@ export type MovePlace =
   | "back";
 
 export type RelativePlace = "under" | "above" | "left-of" | "right-of" | "beside";
+/** Layering: one step up or down the stack, or right in front of / behind another card (overlapping it). */
+export type LayerPlace = "forward" | "backward" | "in-front-of" | "behind" | "on-top-of";
+
+/** The board's limits for a card's box, in % (the renderer clamps to the same). A card can fill the board. */
+const X_MAX = 90;
+const W_MIN = 12;
+const W_MAX = 98;
+const H_MIN = 14;
+const H_MAX = 98;
 
 const PLACES: Record<Exclude<MovePlace, "front" | "back">, { x: number; y: number }> = {
   "top-left": { x: 4, y: 4 },
@@ -777,7 +788,149 @@ export function moveCardRelative(n: number, relative: RelativePlace, anchorN: nu
   return card;
 }
 
+// ─── Layering ───────────────────────────────────────────────────────────────
+
+export function parseLayerPlace(raw: string): LayerPlace | null {
+  const s = raw.toLowerCase();
+  if (/\bon top of\b/.test(s)) return "on-top-of";
+  if (/\bin front of\b/.test(s)) return "in-front-of";
+  if (/\bbehind\b/.test(s)) return "behind";
+  if (/\b(?:forwards?|up (?:a|one) layer|up one)\b/.test(s)) return "forward";
+  if (/\b(?:backwards?|back (?:a|one) layer|down (?:a|one) layer|down one)\b/.test(s)) return "backward";
+  return null;
+}
+
+const topZ = (cards: BoardCard[]) => cards.reduce((m, c) => Math.max(m, c.z), 0);
+
+/**
+ * Re-layer card `n`: one step forward or back, or just in front of / behind another card — moved to overlap it a
+ * little, so the layering shows. The stack is renumbered 1…n in its new order.
+ */
+export function layerCard(n: number, place: LayerPlace, anchorN?: number): BoardCard | null {
+  const state = read();
+  if (!state.cards.some((c) => c.n === n)) return null;
+  const cards = state.cards.map((c) => ({ ...c }));
+  const card = cards.find((c) => c.n === n)!;
+  const order = cards.slice().sort((a, b) => a.z - b.z);
+  const at = order.indexOf(card);
+  if (place === "forward" || place === "backward") {
+    const j = place === "forward" ? at + 1 : at - 1;
+    if (j >= 0 && j < order.length) [order[at], order[j]] = [order[j]!, order[at]!];
+  } else {
+    const anchor = cards.find((c) => c.n === anchorN);
+    if (!anchor || anchor.n === n) return null;
+    order.splice(at, 1);
+    const ai = order.indexOf(anchor);
+    order.splice(place === "behind" ? ai : ai + 1, 0, card);
+    const d = place === "behind" ? -3 : 3;
+    card.x = Math.max(0, Math.min(X_MAX, anchor.x + d));
+    card.y = Math.max(0, Math.min(X_MAX, anchor.y + d));
+  }
+  order.forEach((c, k) => {
+    c.z = k + 1;
+  });
+  state.cards = cards;
+  if (!write(state)) return null;
+  return card;
+}
+
+// ─── Sizing ─────────────────────────────────────────────────────────────────
+
+export type ResizeHow = "maximize" | "minimize" | "restore" | "bigger" | "smaller" | "wider" | "narrower" | "taller" | "shorter";
+export type ResizeAmount = "bit" | "normal" | "lot";
+
+/** A minimized card: a small tile on the bottom row. */
+const MINI = { w: 16, h: 16, y: 82 };
+export const isMinimized = (c: BoardCard): boolean => c.w <= MINI.w && (c.h ?? 99) <= MINI.h;
+export const isMaximized = (c: BoardCard): boolean => c.w >= 90 && (c.h ?? 0) >= 90;
+
+/**
+ * Change a card's size: fill the board, shrink to a tile on the bottom row, go back to how it was (or its usual
+ * size), or scale by a step — a bit, the usual step, or a lot ("twice", "half"). Stays on the board.
+ */
+export function resizeCard(n: number, how: ResizeHow, amount: ResizeAmount = "normal"): BoardCard | null {
+  const state = read();
+  const i = state.cards.findIndex((c) => c.n === n);
+  if (i < 0) return null;
+  const card = { ...state.cards[i]! };
+  const keep = () => {
+    if (!card.prev && !isMaximized(card) && !isMinimized(card)) card.prev = { x: card.x, y: card.y, w: card.w, h: card.h, z: card.z };
+  };
+  const fit = () => {
+    card.w = Math.max(W_MIN, Math.min(W_MAX, Math.round(card.w * 10) / 10));
+    if (card.h != null) card.h = Math.max(H_MIN, Math.min(H_MAX, Math.round(card.h * 10) / 10));
+    card.x = Math.max(0, Math.min(X_MAX, Math.min(card.x, 100 - card.w)));
+    card.y = Math.max(0, Math.min(X_MAX, card.h != null ? Math.min(card.y, 100 - card.h) : card.y));
+  };
+  const grow = amount === "bit" ? 1.15 : amount === "lot" ? 1.7 : 1.35;
+  const shrink = amount === "bit" ? 0.87 : amount === "lot" ? 0.55 : 0.75;
+  switch (how) {
+    case "maximize":
+      keep();
+      card.x = 1;
+      card.y = 1;
+      card.w = W_MAX;
+      card.h = 97;
+      card.z = topZ(state.cards) + 1;
+      break;
+    case "minimize": {
+      keep();
+      const slot = state.cards.filter((c) => c.n !== n && isMinimized(c)).length % 5;
+      card.w = MINI.w;
+      card.h = MINI.h;
+      card.x = 2 + slot * 18;
+      card.y = MINI.y;
+      card.z = topZ(state.cards) + 1;
+      break;
+    }
+    case "restore":
+      if (card.prev) {
+        card.x = card.prev.x;
+        card.y = card.prev.y;
+        card.w = card.prev.w;
+        if (card.prev.h == null) delete card.h;
+        else card.h = card.prev.h;
+        card.z = topZ(state.cards) + 1;
+        delete card.prev;
+      } else {
+        card.w = CARD_W[card.kind];
+        delete card.h;
+      }
+      fit();
+      break;
+    case "bigger":
+    case "smaller": {
+      const f = how === "bigger" ? grow : shrink;
+      card.w *= f;
+      if (card.h != null) card.h *= f;
+      fit();
+      break;
+    }
+    case "wider":
+      card.w *= 1.3;
+      fit();
+      break;
+    case "narrower":
+      card.w *= 0.77;
+      fit();
+      break;
+    case "taller":
+      card.h = (card.h ?? 50) * 1.3;
+      fit();
+      break;
+    case "shorter":
+      card.h = (card.h ?? 50) * 0.77;
+      fit();
+      break;
+  }
+  state.cards[i] = card;
+  if (!write(state)) return null;
+  return card;
+}
+
 // ─── Arranging ──────────────────────────────────────────────────────────────
+
+export type ArrangeLayout = "grid" | "stack" | "row" | "column";
 
 export interface CardGrid {
   cols: number;
@@ -815,22 +968,37 @@ export function gridFor(count: number): CardGrid {
  * Lay every card out in numerical order, row by row, on the grid above — each card the same size, stacked in
  * number order. The layout before it goes on the undo stack. Null when the board has no cards.
  */
-export function arrangeCards(): { count: number; cols: number; rows: number } | null {
+export function arrangeCards(layout: ArrangeLayout = "grid"): { count: number; cols: number; rows: number; layout: ArrangeLayout } | null {
   const state = read();
   if (!state.cards.length) return null;
   workspace.pushUndo("arrange_cards");
   const cards = state.cards.slice().sort((a, b) => a.n - b.n);
-  const g = gridFor(cards.length);
+  const n = cards.length;
+  // A row or a column only while the cards stay a readable size; more than that is a grid.
+  const used: ArrangeLayout = (layout === "row" && n > 6) || (layout === "column" && n > 5) ? "grid" : layout;
+  if (used === "stack") {
+    // A cascade: each card a little down and right of the one before, number order front to back.
+    state.cards = cards.map((c, i) => ({ ...c, x: Math.min(X_MAX, 4 + i * 3), y: Math.min(X_MAX, 4 + i * 3), w: 48, h: 64, z: i + 1 }));
+    return write(state) ? { count: n, cols: 1, rows: 1, layout: used } : null;
+  }
+  let g: CardGrid;
+  if (used === "row") {
+    const w = round1(Math.min(44, (96 - (n - 1) * 2) / n));
+    g = { cols: n, rows: 1, w, h: 60, x0: round1((100 - (n * w + (n - 1) * 2)) / 2), y0: 20, gap: 2 };
+  } else if (used === "column") {
+    const h = round1(Math.min(60, (96 - (n - 1) * 2) / n));
+    g = { cols: 1, rows: n, w: 44, h, x0: 28, y0: round1((100 - (n * h + (n - 1) * 2)) / 2), gap: 2 };
+  } else g = gridFor(n);
   state.cards = cards.map((c, i) => ({
     ...c,
     x: round1(g.x0 + (i % g.cols) * (g.w + g.gap)),
-    y: round1(Math.min(86, g.y0 + Math.floor(i / g.cols) * (g.h + g.gap))),
+    y: round1(Math.min(X_MAX, g.y0 + Math.floor(i / g.cols) * (g.h + g.gap))),
     w: g.w,
     h: g.h,
     z: i + 1,
   }));
   if (!write(state)) return null;
-  return { count: cards.length, cols: g.cols, rows: g.rows };
+  return { count: n, cols: g.cols, rows: g.rows, layout: used };
 }
 
 /** True when a game owns the screen — media / widget cards must not steal it. */

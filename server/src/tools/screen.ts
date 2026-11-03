@@ -7,11 +7,19 @@ import {
   moveCard,
   moveCardRelative,
   arrangeCards,
+  isMaximized,
+  isMinimized,
+  layerCard,
+  parseLayerPlace,
   parsePlace,
   removeCard,
+  resizeCard,
   resolveCard,
   resolveMoveTargets,
+  type ArrangeLayout,
   type MovePlace,
+  type ResizeAmount,
+  type ResizeHow,
 } from "../workspace/board.js";
 import { isBuildPreview, workspace } from "../workspace/bus.js";
 import { registerTool } from "./registry.js";
@@ -72,10 +80,77 @@ const PLACE_OPTIONS: Record<string, string> = {
   "bottom-right": "lower right corner",
   front: "bring to the front (on top of other cards)",
   back: "send behind the other cards",
+  forward: "one layer up (toward the front)",
+  backward: "one layer down (toward the back) — not undo",
+  "in-front-of": "layered in front of another card, overlapping it (use with that card's name)",
+  behind: "layered behind another card",
+  "on-top-of": "on top of another card, overlapping it",
   under: "directly under another card (use with that card's name)",
   above: "directly above another card",
   beside: "beside another card",
 };
+
+/** The card the words mean when they don't name one: the only card, or the one in front (the last touched). */
+function impliedCard(): number | null {
+  const cards = listCards();
+  if (!cards.length) return null;
+  if (cards.length === 1) return cards[0]!.n;
+  return cards.reduce((top, c) => (c.z > top.z ? c : top), cards[0]!).n;
+}
+
+/** "maximize", "a little smaller", "twice as big", "wider", "back to normal" → how, and how much. */
+function parseResize(utterance: string): { how: ResizeHow; amount: ResizeAmount } | null {
+  const t = utterance.toLowerCase();
+  const amount: ResizeAmount = /\b(?:a (?:little|bit|tad|touch)|slightly|somewhat)\b/.test(t)
+    ? "bit"
+    : /\b(?:much|way|a lot|lots|twice|double|half|really|far|massively|significantly)\b/.test(t)
+      ? "lot"
+      : "normal";
+  if (/\b(?:maximi[sz]e|full ?screen|fullscreen|fill (?:up )?the (?:whole |entire )?(?:screen|board|workspace|window)|as big as (?:it (?:can|will) go|possible)|take up the (?:whole|entire) (?:screen|board))\b/.test(t))
+    return { how: "maximize", amount };
+  if (/\b(?:minimi[sz]e|collapse|tuck (?:it |that |this )?away|out of the way|shrink (?:it |that |this )?(?:all the way )?down)\b/.test(t)) return { how: "minimize", amount };
+  if (/\b(?:restore|un-?maximi[sz]e|un-?minimi[sz]e|normal size|regular size|usual size|default size|back to (?:normal|its (?:old |usual |normal )?size|the way it was))\b/.test(t)) return { how: "restore", amount };
+  if (/\bwider\b|\bmore wide\b/.test(t)) return { how: "wider", amount };
+  if (/\bnarrower\b|\bless wide\b|\bthinner\b/.test(t)) return { how: "narrower", amount };
+  if (/\btaller\b|\blonger\b/.test(t)) return { how: "taller", amount };
+  if (/\bshorter\b/.test(t)) return { how: "shorter", amount };
+  if (/\b(?:bigger|larger|enlarge|expand|grow|blow (?:it |that |this )?up|huge|zoom in|double|twice)\b/.test(t)) return { how: "bigger", amount };
+  if (/\b(?:smaller|tinier|shrink|reduce|tiny|half|zoom out)\b/.test(t)) return { how: "smaller", amount };
+  return null;
+}
+
+const RESIZE_OPTIONS: Record<ResizeHow, string> = {
+  maximize: "fill the whole board (full screen)",
+  minimize: "shrink to a small tile on the bottom row",
+  restore: "back to the size and place it had before (or its usual size)",
+  bigger: "larger",
+  smaller: "smaller",
+  wider: "wider only",
+  narrower: "narrower only",
+  taller: "taller only",
+  shorter: "shorter only",
+};
+
+/** What to say about a layout: a stack, a row, a column, or the grid. */
+function arrangeLine(r: { count: number; cols: number; rows: number; layout: ArrangeLayout }): string {
+  const n = r.count;
+  if (n === 1) return "There's just one card on the board — I centered it.";
+  if (r.layout === "stack") return `Stacked ${n} cards in numerical order, front to back.`;
+  if (r.layout === "row") return `Lined up ${n} cards in a row, in numerical order.`;
+  if (r.layout === "column") return `Lined up ${n} cards in a column, in numerical order.`;
+  return `Arranged ${n} cards in numerical order, ${r.cols} across${r.rows > 1 ? ` in ${r.rows} rows` : ""}.`;
+}
+
+/** "stack the cards", "in a row", "one under the other" → the layout asked for; the grid otherwise. */
+function parseLayout(raw: unknown, utterance: string): ArrangeLayout {
+  const given = String(raw ?? "").toLowerCase();
+  if (given === "stack" || given === "row" || given === "column" || given === "grid") return given;
+  const t = utterance.toLowerCase();
+  if (/\b(?:stack|cascade|pile)\b/.test(t)) return "stack";
+  if (/\b(?:in|into)\s+(?:a|one|a single)\s+row\b|\bside by side\b|\bin a line across\b/.test(t)) return "row";
+  if (/\b(?:in|into)\s+(?:a|one|a single)\s+column\b|\bone (?:under|below|on top of) (?:the )?(?:other|another)\b|\btop to bottom\b/.test(t)) return "column";
+  return "grid";
+}
 
 const clearWorkspace: Tool = {
   name: "clear_workspace",
@@ -100,11 +175,17 @@ const clearWorkspace: Tool = {
 const undoWorkspace: Tool = {
   name: "undo_workspace",
   description:
-    "Undo the last workspace clear or card remove — restore cards / the previous screen that was closed by accident. Use when the user says undo, put it back, bring it back, restore, go back, or oops that was a mistake.",
+    "Undo the last workspace clear or card remove — bring back cards / the previous screen that was closed by accident. Use when the user says undo, put it back, bring it back, go back, or oops that was a mistake. (Restoring a card that is still on the board — maximized, minimized, resized — is resize_card.)",
   input: {},
   source: "builtin",
   available: () => workspace.canUndo(),
-  async run() {
+  async run(_args, ctx) {
+    // "Restore card 2" while card 2 is on the board, shrunk or filling it: its size, not an undo — whichever tool Jev picked.
+    const named = /\b(?:restore|put back|bring back|un-?maximi[sz]e|un-?minimi[sz]e|normal size)\b/i.test(ctx.utterance) ? resolveCard("", ctx.utterance) : null;
+    if (named && (named.prev || isMinimized(named) || isMaximized(named))) {
+      const card = resizeCard(named.n, "restore");
+      if (card) return { ok: true, say: `Restored card ${named.n}.`, speak: `Restored card ${named.n}.`, data: { card: named.n, how: "restore" } };
+    }
     const result = workspace.undo();
     return { ok: result.ok, say: result.say, speak: result.ok ? result.say : undefined };
   },
@@ -188,6 +269,24 @@ const moveCardTool: Tool = {
   source: "builtin",
   async run(args, ctx) {
     if (!boardActive()) return { ok: false, say: "There aren't any floating cards on the board right now." };
+    // Layering: "put the tiger behind the panda", "bring card 2 forward", "layer the timer on top of the chart".
+    const layer = parseLayerPlace(ctx.utterance) ?? parseLayerPlace(String(args.place ?? ""));
+    if (layer) {
+      const m = /\b(?:move|put|place|bring|send|layer|stack|shift)\s+(?:the\s+)?(.+?)\s+(?:in front of|behind|on top of|forwards?|backwards?|up|down)\b/i.exec(ctx.utterance);
+      const n = (m?.[1] ? resolveCard(m[1], m[1])?.n : null) ?? whichCard(args.card, ctx.utterance) ?? impliedCard();
+      if (!n) return { ok: false, say: "Which card should I move — a number, or say what it shows?" };
+      let anchor: number | undefined;
+      if (layer !== "forward" && layer !== "backward") {
+        const hint = /\b(?:in front of|behind|on top of)\s+(?:the\s+)?(.+?)(?:\s*[.!?]|$)/i.exec(ctx.utterance)?.[1] ?? "";
+        const other = hint ? resolveCard(hint, hint) : null;
+        if (!other || other.n === n) return { ok: false, say: `Which card should card ${n} go ${layer.replace(/-/g, " ")}?` };
+        anchor = other.n;
+      }
+      const moved = layerCard(n, layer, anchor);
+      if (!moved) return { ok: false, say: `I couldn't re-layer card ${n}.` };
+      const rel = layer === "forward" ? "forward a layer" : layer === "backward" ? "back a layer" : `${layer.replace(/-/g, " ")} card ${anchor}`;
+      return { ok: true, say: `Moved card ${n} ${rel}.`, data: { card: n, layer, anchor } };
+    }
     const targets = resolveMoveTargets(ctx.utterance);
     const n = targets.moving?.n ?? whichCard(args.card, ctx.utterance);
     if (!n) return { ok: false, say: "Which card should I move — a number, or say what it shows?" };
@@ -233,26 +332,62 @@ const moveCardTool: Tool = {
 const arrangeCardsTool: Tool = {
   name: "arrange_cards",
   description:
-    "Organize the floating cards: lay every card out in numerical order on an aligned grid, all the same size (e.g. “organize the cards”, “tidy up the board”, “put the cards in a grid”, “line them up”). Undo brings the old layout back.",
-  input: {},
+    "Organize all the floating cards at once, in numerical order: an aligned grid of equal cards (“organize the cards”, “tidy up the board”, “put the cards in a grid”), a stack / cascade (“stack the cards”), one row, or one column. Undo brings the old layout back.",
+  input: {
+    layout: {
+      type: "string",
+      description: "how to lay the cards out",
+      options: { grid: "an even grid (the default)", stack: "a cascade, each card a little down and right of the one before", row: "one row across", column: "one column down" },
+    },
+  },
   available: () => boardActive() && listCards().length > 0,
   source: "builtin",
-  async run() {
+  async run(args, ctx) {
     if (!boardActive()) return { ok: false, say: "There aren't any floating cards on the board right now." };
-    const result = arrangeCards();
+    const result = arrangeCards(parseLayout(args.layout, ctx.utterance));
     if (!result) return { ok: false, say: "There aren't any floating cards on the board right now." };
-    const { count, cols, rows } = result;
-    if (count === 1) return { ok: true, say: "There's just one card on the board — I centered it.", data: result };
-    return {
-      ok: true,
-      say: `Arranged ${count} cards in numerical order, ${cols} across${rows > 1 ? ` in ${rows} rows` : ""}.`,
-      data: result,
-    };
+    return { ok: true, say: arrangeLine(result), data: result };
+  },
+};
+
+const resizeCardTool: Tool = {
+  name: "resize_card",
+  description:
+    "Change a floating card's size: maximize / full screen, minimize to a small tile, restore it, or make it bigger, smaller, wider, narrower, taller or shorter — by number or by what it shows (“maximize card 2”, “make the tiger bigger”, “minimize the timer”, “restore it”). A picture's own width percentage or its markup is edit_html.",
+  input: {
+    card: { type: "string", required: true, description: "which card — number or content word (tiger, panda, timer…)" },
+    how: { type: "string", required: true, description: "how to change its size", options: RESIZE_OPTIONS },
+  },
+  options: (arg) => (arg === "card" ? cardOptions() : undefined),
+  available: () => boardActive() && listCards().length > 0,
+  source: "builtin",
+  async run(args, ctx) {
+    if (!boardActive()) return { ok: false, say: "There aren't any floating cards on the board right now." };
+    const parsed = parseResize(ctx.utterance);
+    const given = String(args.how ?? "").toLowerCase() as ResizeHow;
+    const how: ResizeHow | null = given in RESIZE_OPTIONS ? given : (parsed?.how ?? null);
+    if (!how) return { ok: false, say: "Bigger, smaller, full screen, minimized, or back to normal — which?" };
+    const amount = parsed?.amount ?? "normal";
+    let n = whichCard(args.card, ctx.utterance);
+    if (!n && how === "restore") n = listCards().find((c) => c.prev)?.n ?? null;
+    if (!n) n = impliedCard();
+    if (!n) return { ok: false, say: "Which card — a number, or say what it shows?" };
+    const card = resizeCard(n, how, amount);
+    if (!card) return { ok: false, say: `I don't see card ${n} on the board.` };
+    const line =
+      how === "maximize"
+        ? `Maximized card ${n} — say restore to put it back.`
+        : how === "minimize"
+          ? `Minimized card ${n} to the bottom row — say restore card ${n} to bring it back.`
+          : how === "restore"
+            ? `Restored card ${n}.`
+            : `Made card ${n} ${how}${amount === "bit" ? ", a little" : amount === "lot" ? ", a lot" : ""}.`;
+    return { ok: true, say: line, data: { card: n, how, amount, w: card.w, h: card.h ?? null, x: card.x, y: card.y } };
   },
 };
 
 export function registerScreenTools(): void {
-  [clearWorkspace, undoWorkspace, describeWorkspace, removeCardTool, moveCardTool, arrangeCardsTool].forEach(registerTool);
+  [clearWorkspace, undoWorkspace, describeWorkspace, removeCardTool, moveCardTool, arrangeCardsTool, resizeCardTool].forEach(registerTool);
   registerContextProvider({
     describe: (persona) => {
       const base = describeScreen(persona);
@@ -267,7 +402,7 @@ export function registerScreenTools(): void {
     // undo_workspace stays available so an accidental clear can be reversed.
     hiddenActions: (persona) =>
       isGameMaster(persona) && gameOwned()
-        ? ["clear_workspace", "describe_workspace", "remove_card", "move_card", "arrange_cards", "make_text", "show_card", "edit_html", "set_speech_rate", "browser_open", "browser_tabs", "browser_read", "browser_act", "browser_modify", "browser_save", "browser_share"]
+        ? ["clear_workspace", "describe_workspace", "remove_card", "move_card", "arrange_cards", "resize_card", "make_text", "show_card", "edit_html", "set_speech_rate", "browser_open", "browser_tabs", "browser_read", "browser_act", "browser_modify", "browser_save", "browser_share"]
         : [],
   });
 }

@@ -194,7 +194,7 @@ async function runHtmlEdit(cardN: number, utterance: string, ctx: ToolContext): 
 const editHtml: Tool = {
   name: "edit_html",
   description:
-    "Adjust HTML or layout of something already on the workspace: make a picture/video smaller or larger (img width/height %), tweak SVG/canvas/widget markup, styles, or elements inside a numbered card. Use for changes to existing cards — not to create new ones or regenerate a photo.",
+    "Change what's inside a card already on the workspace: a picture's own width percentage (“make the picture 50 percent”), SVG/canvas/widget markup, styles, or elements. A card's own size — bigger, smaller, full screen, minimized — is resize_card. Use for changes to existing cards — not to create new ones or regenerate a photo.",
   input: {},
   argMode: "raw",
   available: () => boardActive() && listCards().some((c) => c.status === "ready" || Boolean(c.html)),

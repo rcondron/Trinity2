@@ -160,8 +160,9 @@ keys are editable at runtime on the Settings page.
 | `schedule` | Reminders ("in ten minutes…") and recurring tasks ("every morning at eight…"). |
 | `get_time` | The date and time. |
 | `make_image` / `make_audio` / `make_video` / `make_text` | Adds numbered floating card(s) (loader first). Several subjects (“a panda and a tiger”) → one card each, tagged by content. |
-| `remove_card` / `move_card` | Remove or reposition by number or content (“remove the tiger”, “move the tiger under the panda”). |
-| `arrange_cards` | Lays every card out in numerical order on an aligned grid, all the same size (“organize the cards”, “tidy up the board”); undo restores the old layout. |
+| `remove_card` / `move_card` | Remove or reposition by number or content (“remove the tiger”, “move the tiger under the panda”), including layering (“put the tiger behind the panda”, “bring card 2 forward”). |
+| `arrange_cards` | Lays every card out in numerical order: an aligned grid of equal cards (“organize the cards”, “tidy up the board”), a stack, a row or a column; undo restores the old layout. |
+| `resize_card` | A card's own size: maximize / full screen, minimize to a tile on the bottom row, restore, bigger, smaller, wider, narrower, taller, shorter — by number or content (“maximize card 2”, “make the tiger bigger”). |
 | `figure_out` | **The problem solver.** For a request no tool covers: the Settings → Problem solver model plans, runs the tools in turn, tries another way when a step fails, forges a skill when none fits, and says what happened (in the background past eight seconds). |
 | `set_speech_rate` | Talk slower / faster / normal speed (browser playback rate). |
 | `clear_workspace` / `describe_workspace` | Clears the whole board / window; lists what's showing (including card numbers). |
