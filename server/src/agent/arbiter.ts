@@ -11,20 +11,27 @@ import type { Tool } from "../types.js";
 import type { Decision, RouteInput } from "./router.js";
 
 const FILLERS = String.raw`(?:(?:hey|hi|ok|okay|alright|all right|so|and|now|then|please|trinity|um|uh|yeah|well|actually)[,.!]?\s+)*`;
-const LEAD_IN = String.raw`(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|please\s+|i\s+(?:need|want)\s+you\s+to\s+|i'?d\s+like\s+you\s+to\s+|let'?s\s+|go\s+ahead\s+and\s+|try\s+to\s+|help\s+me\s+(?:to\s+)?)?`;
+/** An explicit request lead-in — required, so an ordinary imperative in conversation ("tell me more") costs nothing. */
+const LEAD_IN = String.raw`(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|please\s+|i\s+(?:need|want)\s+you\s+to\s+|i'?d\s+like\s+you\s+to\s+|go\s+ahead\s+and\s+|try\s+to\s+|help\s+me\s+(?:to\s+)?)`;
 const VERBS =
   "open|close|go|navigate|click|press|tap|type|enter|log|sign|choose|select|pick|find|search|look|check|get|grab|fetch|download|save|send|email|text|message|call|book|order|buy|purchase|schedule|set|turn|switch|play|pause|stop|start|run|build|make|create|write|draft|generate|draw|design|show|put|add|remove|delete|clear|move|arrange|organi[sz]e|sort|tidy|read|summari[sz]e|translate|convert|calculate|compute|figure|work|fix|change|update|edit|rename|copy|paste|upload|share|post|publish|install|deploy|test|try|do|handle|take|bring|pull|load|launch|visit|fill|submit|login|logout|register|subscribe|unsubscribe|cancel|renew|track|monitor|watch|remind|plan|compare|analy[sz]e|research|explain|teach|tell|give|use|zoom|scroll|refresh|reload|print|export|import|sync|connect|disconnect|pair|configure|setup|enable|disable|mute|unmute|increase|decrease|raise|lower|dim|brighten|lock|unlock|accept|decline|reply|respond|answer|forward|archive|mark|flag|star|pin|unpin|undo|redo|resize|rotate|crop|trim|merge|split|join|list|count|measure|wake|shut|restart|reboot|invite|leave|skip|repeat|shuffle|queue|dictate|transcribe|record|snap|capture|screenshot";
 const ASK = new RegExp(String.raw`^${FILLERS}${LEAD_IN}(?:${VERBS})\b`, "i");
 /** A detail handed over for a form or a flow ("login is ryan", "the code is 4471", "my email is …"). */
 const DETAIL = /^(?:(?:the|my|our)\s+)?(?:login|log-in|username|user name|email|e-mail|address|name|account|password|passcode|code|pin|number|phone|zip|card)\s+(?:is|=|:)\s*\S/i;
+/** Asked to work something out, in so many words. */
+const SOLVE = /\b(?:figure out|find a way|work out how|see if you can)\b/i;
 const QUESTION = /^(?:what|who|where|when|why|how|which|is|are|was|were|do|does|did|am|should)\b/i;
 
-/** A finished sentence that asks Trinity to do something: a verb up front, or a detail handed over for a flow. */
+/**
+ * A finished sentence that explicitly asks Trinity to do something: a request lead-in and a verb ("can you turn on
+ * the lights", "please book a table"), a detail handed over for a flow, or "figure out…". Bare imperatives are left
+ * to Jev, which routes them well — a second look there would only cost the voice a second of silence.
+ */
 export function looksLikeAsk(text: string): boolean {
   const t = text.trim();
   if ((t.match(/[A-Za-z']+/g)?.length ?? 0) < 2) return false;
   if (QUESTION.test(t)) return false;
-  return ASK.test(t) || DETAIL.test(t);
+  return ASK.test(t) || DETAIL.test(t) || SOLVE.test(t);
 }
 
 interface Verdict {
@@ -57,7 +64,7 @@ export async function secondOpinion(input: RouteInput, tools: Tool[], first: Dec
   ].join(" ");
   const guess = first.action === "NONE" ? "none" : first.action;
   const user = `Tools:\n${toolLines(tools)}\n\nFirst router's guess: ${guess} (${Math.round(first.confidence * 100)}% sure).\n\n${input.conversation}`;
-  const v = await jsonChat<Verdict>(system, user, { maxTokens: 120, temperature: 0, timeoutMs: 4_000 });
+  const v = await jsonChat<Verdict>(system, user, { maxTokens: 120, temperature: 0, timeoutMs: 2_500 });
   const name = String(v?.tool ?? "none").trim();
   const confidence = Math.max(0, Math.min(1, Number(v?.confidence) || 0));
   console.log(`[arbiter] ${guess}@${Math.round(first.confidence * 100)} → ${name}@${Math.round(confidence * 100)}${v?.why ? ` (${String(v.why).slice(0, 60)})` : ""} ${Date.now() - started}ms`);

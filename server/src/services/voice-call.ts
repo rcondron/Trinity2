@@ -25,9 +25,9 @@ const DG_KEEPALIVE_MS = 4_000; // Deepgram closes after ~10s without audio
 const STANDBY_IDLE_MS = 15 * 60_000; // release the GPU session if nobody talks for 15 min
 const MAX_VOICE_PROMPT = 200;
 const PEND_HOLD_MAX_MS = 8_000; // a sentence-end action that never resolves can't mute the agent
-/** After a reply or an announcement the agent stays quiet until the user speaks again — no made-up follow-ups. */
+/** After a reply or an announcement the agent stays quiet until the user speaks again — no made-up follow-ups… */
 const QUIET_HOLD = "quiet:after-reply";
-const QUIET_MAX_MS = 60_000; // …unless transcription misses them for a minute
+const QUIET_AFTER_MS = 5_000; // …or until a few seconds past the end of her words, whichever comes first
 const MAX_QUEUED_SPEECH_MS = 1_500; // keep at most this much forced speech queued at the pod
 const OUTCOME_WAIT_MS = 35_000; // past an action's own limits (argument extraction ≤ 16s, then the tool's 15s)
 const FIRST_WORDS_MS = 12_000; // the reply writer falls back on its own after 10s
@@ -293,6 +293,7 @@ export class VoiceCall {
   /** Why the agent is being held quiet: "pend:<utterance>" or "reply:<id>" → since. */
   private holds = new Map<string, number>();
   private holdSent = false;
+  private quietUntil = 0; // when QUIET_HOLD lapses on its own (see goQuiet)
   private replyChain: Promise<void> = Promise.resolve();
   private replyActive = 0;
   private bargedIn = false;
@@ -695,6 +696,17 @@ export class VoiceCall {
     for (const r of [...this.holds.keys()]) if (r.startsWith("pend:")) this.setHold(r, false);
   }
 
+  /**
+   * After a reply or an announcement: quiet until the user speaks, or until a few seconds past the end of her words,
+   * whichever comes first — so she doesn't tack on an answer of her own. Not when the user has already cut in or is
+   * mid-sentence: they're owed a reply to that.
+   */
+  private goQuiet() {
+    if (this.bargedIn || this.current) return;
+    this.quietUntil = Math.max(Date.now(), this.sayingUntil) + QUIET_AFTER_MS;
+    this.setHold(QUIET_HOLD, true);
+  }
+
   /** Drop the agent's queued forced words (pods with the 0x05 patch; ignored by others). */
   private flushSpeech() {
     if (this.pp?.readyState === WebSocket.OPEN) this.pp.send(new Uint8Array([5]));
@@ -710,7 +722,8 @@ export class VoiceCall {
     if (this.pp?.readyState !== WebSocket.OPEN) return;
     const browserStreaming = this.micOn && Date.now() - this.lastAudioAt < 250;
     if (browserStreaming) return;
-    const busy = this.replyActive > 0 || this.holds.size > 0 || Date.now() < this.sayingUntil + 600;
+    // (The quiet-after-reply hold has nothing to say, so it doesn't keep the pump running.)
+    const busy = this.replyActive > 0 || [...this.holds.keys()].some((k) => k !== QUIET_HOLD) || Date.now() < this.sayingUntil + 600;
     if (busy) this.pp.send(SILENCE_FRAME);
   }
 
@@ -718,7 +731,7 @@ export class VoiceCall {
     const now = Date.now();
     for (const [r, since] of this.holds) {
       if (r.startsWith("pend:") && now - since > PEND_HOLD_MAX_MS) this.setHold(r, false);
-      if (r === QUIET_HOLD && now - since > QUIET_MAX_MS) this.setHold(r, false);
+      if (r === QUIET_HOLD && now > this.quietUntil) this.setHold(r, false);
     }
     // (Deepgram's KeepAlive runs per socket — see connectDeepgram.) Typed turns and replies count
     // as use too, and a reply in progress is never cut off.
@@ -1016,7 +1029,7 @@ export class VoiceCall {
       return sent && !this.closed ? "said" : "unsaid";
     } finally {
       this.setHold(holdId, false);
-      this.setHold(QUIET_HOLD, true); // said its piece: nothing more until the user speaks
+      this.goQuiet();
       this.replyActive--;
       this.lastActivityAt = Date.now();
     }
@@ -1159,7 +1172,7 @@ export class VoiceCall {
       this.replyActive--;
       this.lastActivityAt = Date.now();
       this.setHold(`reply:${replyId}`, false);
-      this.setHold(QUIET_HOLD, true); // said its piece: nothing more until the user speaks
+      this.goQuiet();
     }
   }
 
