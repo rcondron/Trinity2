@@ -25,6 +25,9 @@ export interface WorkspaceActivity {
   text: string;
 }
 
+/** What windows draw over the board: everything, alerts only (background chips and toasts), or nothing but the board. */
+export type WorkspaceOverlays = "all" | "alerts" | "none";
+
 export interface WorkspaceSnapshot {
   /** Changes on every engine boot — windows reset their version tracking when it does. */
   epoch: string;
@@ -37,6 +40,8 @@ export interface WorkspaceSnapshot {
   /** Who owns the current app (e.g. "game:<id>"); late updates from other owners are dropped. */
   owner: string | null;
   activities: WorkspaceActivity[];
+  /** Settings → Workspace window → Overlays. */
+  overlays: WorkspaceOverlays;
   updatedAt: number;
 }
 
@@ -63,6 +68,7 @@ export type WorkspaceEvent =
   | { type: "state"; version: number; state: unknown; title: string }
   | { type: "template"; version: number; template: WorkspaceTemplate; state: unknown; title: string }
   | { type: "html"; version: number; title: string; html: string }
+  | { type: "overlays"; overlays: WorkspaceOverlays }
   | { type: "toast"; text: string; tone: ToastTone }
   | { type: "activity"; id: string; text: string; busy: boolean }
   | AgentEvent;
@@ -129,6 +135,7 @@ export class WorkspaceBus {
     state: null,
     owner: null,
     activities: [],
+    overlays: "all",
     updatedAt: Date.now(),
   };
   private subs = new Set<Send>();
@@ -212,6 +219,13 @@ export class WorkspaceBus {
     this.subs.add(send);
     this.safeSend(send, { type: "snapshot", snapshot: this.snapshot() });
     return () => this.subs.delete(send);
+  }
+
+  /** Settings → Workspace window → Overlays: every open window follows at once. */
+  setOverlays(overlays: WorkspaceOverlays): void {
+    if (this.snap.overlays === overlays) return;
+    this.snap = { ...this.snap, overlays };
+    this.broadcast({ type: "overlays", overlays });
   }
 
   /** How many windows are watching (the standalone workspace window, the main app's pane). */
@@ -449,6 +463,7 @@ export class WorkspaceBus {
           state: saved.state ?? null,
           owner: typeof saved.owner === "string" ? saved.owner : null,
           activities: [],
+          overlays: "all", // the setting is applied at boot (index.ts), not kept with the screen
           updatedAt: Number(saved.updatedAt) || Date.now(),
         };
       }

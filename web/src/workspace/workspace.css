@@ -265,6 +265,13 @@
   z-index: 4;
   pointer-events: none;
 }
+/* Settings → Workspace window → Overlays: "alerts" hides the agent trail; "none" hides the chips and toasts too. */
+.tw-overlay[data-overlays="alerts"] .tw-agent,
+.tw-overlay[data-overlays="none"] .tw-agent,
+.tw-overlay[data-overlays="none"] .tw-activity,
+.tw-overlay[data-overlays="none"] .tw-toasts {
+  display: none;
+}
 
 /* Floating controls, top-right: connection dot (+ exit focus in the window). */
 .tw-float {

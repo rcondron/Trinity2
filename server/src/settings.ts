@@ -59,6 +59,8 @@ export interface Endpoints {
   routeEveryMs: number;
   minConfidence: number;
   fillerAfterMs: number;
+  /** What the workspace window draws over the board besides the cards (every open window follows at once). */
+  workspaceOverlays: "all" | "alerts" | "none";
 }
 
 const STORE = path.join(DATA_DIR, "endpoints.json");
@@ -99,6 +101,7 @@ function envDefaults(): Endpoints {
     routeEveryMs: config.timing.routeEveryMs,
     minConfidence: config.timing.minConfidence,
     fillerAfterMs: config.timing.fillerAfterMs,
+    workspaceOverlays: config.workspace.overlays,
   };
 }
 
@@ -126,6 +129,7 @@ export function getEndpoints(): Endpoints {
 const CHOICES: Partial<Record<keyof Endpoints, readonly string[]>> = {
   coderDefault: ["glm", "kimi"],
   skillApproval: ["auto", "manual"],
+  workspaceOverlays: ["all", "alerts", "none"],
 };
 
 /** Apply a partial update. Blank string clears an override back to the env default. */

@@ -114,6 +114,11 @@ export const config = {
   },
 
   // Live-loop timing defaults (overridable in Settings).
+  workspace: {
+    // What the workspace window draws over the board: "all" (Jev's trail, background chips, toasts), "alerts" (chips and
+    // toasts only) or "none". Settings → Workspace window.
+    overlays: (process.env.WORKSPACE_OVERLAYS || "all") as "all" | "alerts" | "none",
+  },
   timing: {
     routeEveryMs: Number(process.env.ROUTE_EVERY_MS) || 400,
     minConfidence: Number(process.env.MIN_CONFIDENCE) || 0.7,

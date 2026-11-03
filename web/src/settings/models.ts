@@ -372,6 +372,26 @@ const GROUPS: GroupDef[] = [
       },
     ],
   },
+  {
+    id: "workspace",
+    title: "Workspace window",
+    icon: "monitor",
+    sub: "What the workspace draws over the board besides the cards. Every open window follows at once.",
+    fields: [
+      {
+        key: "workspaceOverlays",
+        label: "Overlays",
+        kind: "choice",
+        wide: true,
+        options: [
+          { value: "all", label: "Everything", icon: "eye", hint: "Jev's decisions, tools and spoken lines, background-work chips, and toasts" },
+          { value: "alerts", label: "Alerts only", icon: "bell", hint: "Background-work chips and toasts — no decision / tool / spoken-line trail" },
+          { value: "none", label: "Nothing", icon: "x", hint: "A clean board — errors still show in the notice bar" },
+        ],
+        hint: "The trail in the top-left corner is what Jev picked, which tool ran, and what Trinity said.",
+      },
+    ],
+  },
 ];
 
 const groupFields = (g: GroupDef): FieldDef[] => [...(g.fields ?? []), ...(g.subgroups ?? []).flatMap((s) => s.fields)];

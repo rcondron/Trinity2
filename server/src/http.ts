@@ -2,7 +2,7 @@ import path from "node:path";
 import express, { type Router } from "express";
 import { nanoid } from "nanoid";
 import { ROOT } from "./config.js";
-import { serviceStatus, publicEndpoints, setEndpoints, type Endpoints } from "./settings.js";
+import { serviceStatus, getEndpoints, publicEndpoints, setEndpoints, type Endpoints } from "./settings.js";
 import { deletePersona, getActivePersona, getPersona, getProfileName, listPersonas, savePersona, setActivePersona } from "./db/sqlite.js";
 import type { MemoryStore } from "./db/memory.js";
 import { browserState, browserToken, rotateBrowserToken } from "./services/browser-bridge.js";
@@ -113,6 +113,7 @@ export function createApi(memory: MemoryStore, hooks: ApiHooks = {}): Router {
   api.get("/settings/endpoints", (_req, res) => res.json(publicEndpoints()));
   api.put("/settings/endpoints", (req, res) => {
     setEndpoints((req.body ?? {}) as Partial<Endpoints>);
+    workspace.setOverlays(getEndpoints().workspaceOverlays); // every open workspace window follows at once
     res.json(publicEndpoints());
   });
   // Model ids the gateway offers, for the Settings model pickers ({text: [...], image: [...]}).

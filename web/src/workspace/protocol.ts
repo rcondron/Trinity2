@@ -15,6 +15,9 @@ export interface WorkspaceActivity {
   text: string;
 }
 
+/** What windows draw over the board: everything, alerts only (background chips and toasts), or nothing but the board. */
+export type WorkspaceOverlays = "all" | "alerts" | "none";
+
 export interface WorkspaceSnapshot {
   /** Changes on every engine boot — reset version tracking when it does. */
   epoch: string;
@@ -27,6 +30,8 @@ export interface WorkspaceSnapshot {
   /** Who owns the current app (e.g. "game:<id>"). */
   owner: string | null;
   activities: WorkspaceActivity[];
+  /** Settings → Workspace window → Overlays (older engines leave it out: everything). */
+  overlays?: WorkspaceOverlays;
   updatedAt: number;
 }
 
@@ -42,6 +47,7 @@ export type WorkspaceEvent =
   | { type: "html"; version: number; title: string; html: string }
   | { type: "toast"; text: string; tone: ToastTone }
   | { type: "activity"; id: string; text: string; busy: boolean }
+  | { type: "overlays"; overlays: WorkspaceOverlays }
   | {
       type: "agent";
       kind: AgentKind;

@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import express from "express";
 import { WebSocketServer, type WebSocket } from "ws";
 import { config } from "./config.js";
-import { live, serviceStatus } from "./settings.js";
+import { getEndpoints, live, serviceStatus } from "./settings.js";
 import { createMemoryStore, rewordCallerMemories } from "./db/memory.js";
 import { getActivePersona, setActivePersona, getPersona, getProfileName } from "./db/sqlite.js";
 import { getSpeechRate, onSpeechRateChange } from "./services/speech-rate.js";
@@ -84,6 +84,7 @@ async function main() {
   registerGameTools();
   registerStoryTools();
   registerGameContext();
+  workspace.setOverlays(getEndpoints().workspaceOverlays); // Settings → Workspace window: what windows draw over the board
   registerBrowserTools();
   // Custom voices are uploaded to the pod (if missing) before a call connects with them.
   setVoiceResolver(ensureVoiceOnPod);

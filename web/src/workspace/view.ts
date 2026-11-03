@@ -786,6 +786,9 @@ class WorkspaceView {
       case "activity":
         this.setActivity(evt.id, evt.busy && evt.text ? evt.text : null);
         return;
+      case "overlays":
+        this.setOverlays(evt.overlays);
+        return;
       case "agent":
         this.pushAgent(evt);
         return;
@@ -810,6 +813,7 @@ class WorkspaceView {
     }
     this.lastVersion = version;
     this.syncActivities(Array.isArray(snap.activities) ? snap.activities : []);
+    this.setOverlays(snap.overlays);
     this.setTitle(snap.title, version);
 
     const latest = this.pending ?? this.current;
@@ -1249,6 +1253,12 @@ class WorkspaceView {
   }
 
   // ── Toasts ───────────────────────────────────────────────────────────────
+
+  /** Settings → Workspace window → Overlays: "alerts" hides the agent trail; "none" hides the chips and toasts too (the notice and the connection dot stay). */
+  private setOverlays(raw: unknown): void {
+    const overlays = raw === "alerts" || raw === "none" ? raw : "all";
+    if (this.overlay.dataset.overlays !== overlays) this.overlay.dataset.overlays = overlays;
+  }
 
   private toast(rawText: unknown, rawTone: unknown): void {
     const text = (typeof rawText === "string" ? rawText : String(rawText ?? "")).trim();

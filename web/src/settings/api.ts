@@ -62,6 +62,8 @@ export interface PublicEndpoints {
   routeEveryMs: number;
   minConfidence: number;
   fillerAfterMs: number;
+  /** What the workspace window draws over the board besides the cards (Settings → Workspace window). */
+  workspaceOverlays?: "all" | "alerts" | "none";
   deepgramKeySet: boolean;
   typesafeKeySet: boolean;
   mordiemKeySet: boolean;
