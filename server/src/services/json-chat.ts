@@ -11,11 +11,18 @@ export const VENICE_PARAMS = {
   strip_thinking_response: true,
 };
 
+export interface ChatTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
 export interface JsonChatOptions {
   model?: string;
   maxTokens?: number;
   temperature?: number;
   timeoutMs?: number;
+  /** Earlier turns, between the system prompt and this user message (the solver's loop). */
+  history?: ChatTurn[];
 }
 
 /**
@@ -34,10 +41,7 @@ export async function jsonChat<T = Record<string, unknown>>(
     model: opts.model ?? fastModel,
     temperature: opts.temperature ?? 0.2,
     max_tokens: opts.maxTokens ?? 400,
-    messages: [
-      { role: "system", content: system },
-      { role: "user", content: user },
-    ],
+    messages: [{ role: "system", content: system }, ...(opts.history ?? []), { role: "user", content: user }],
   };
   const call = async (extra: Record<string, unknown>) =>
     fetch(`${mordiemUrl}/chat/completions`, {

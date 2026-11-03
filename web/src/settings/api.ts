@@ -48,6 +48,8 @@ export interface PublicEndpoints {
   /** The coding skill's coders: GLM (fast) and Kimi (stronger), and which one is the default. */
   glmModel?: string;
   kimiModel?: string;
+  /** The problem solver behind figure_out. */
+  plannerModel?: string;
   coderDefault?: "glm" | "kimi";
   replyModel: string;
   fastModel: string;

@@ -118,7 +118,10 @@ keys are editable at runtime on the Settings page.
   whose labels are the tools' descriptions (plus NONE — "just talking"), one option question
   per argument domain (e.g. which coder), `instructions {goal, rules}`, and
   `state {page {url, title, text}, elements, recent_actions}`. Tools are filtered per persona
-  (`toolsets`), by availability, and by context providers. With no TypeSafe key a keyword
+  (`toolsets`), by availability, and by context providers. A finished sentence Jev is unsure
+  about (a real tool under the confidence gate) or waves off although it plainly asks for
+  something gets a **second opinion** from the fast model over the same tools
+  (`agent/arbiter.ts`), which can also hand it to `figure_out`. With no TypeSafe key a keyword
   fallback routes by the intent the user leads with: the earliest of the search, memory /
   reminder and build / skill phrases wins, so "remind me to look up flights" is a reminder and
   "build me a habit tracker for every day" is a build. An opener that only sets the scene
@@ -158,6 +161,8 @@ keys are editable at runtime on the Settings page.
 | `get_time` | The date and time. |
 | `make_image` / `make_audio` / `make_video` / `make_text` | Adds numbered floating card(s) (loader first). Several subjects (“a panda and a tiger”) → one card each, tagged by content. |
 | `remove_card` / `move_card` | Remove or reposition by number or content (“remove the tiger”, “move the tiger under the panda”). |
+| `arrange_cards` | Lays every card out in numerical order on an aligned grid, all the same size (“organize the cards”, “tidy up the board”); undo restores the old layout. |
+| `figure_out` | **The problem solver.** For a request no tool covers: the Settings → Problem solver model plans, runs the tools in turn, tries another way when a step fails, forges a skill when none fits, and says what happened (in the background past eight seconds). |
 | `set_speech_rate` | Talk slower / faster / normal speed (browser playback rate). |
 | `clear_workspace` / `describe_workspace` | Clears the whole board / window; lists what's showing (including card numbers). |
 | skills Trinity created | Each runs sandboxed; listed (and switchable) in Settings → Skills. |
@@ -279,7 +284,7 @@ keys are editable at runtime on the Settings page.
 
 ### Floating card board (`workspace/board.ts`, `tools/media.ts`, `tools/screen.ts`, `tools/html.ts`)
 
-- Media, notes, builds and content cards share one board app (`board@4`): each **make_image** /
+- Media, notes, builds and content cards share one board app (`board@5`): each **make_image** /
   **make_audio** / **make_video** / **make_text** / **build_ui** / **show_card** call adds a
   **numbered floating card** at an absolute position (a tool's rendered page — search results — too).
   Cards show a loader while Mordiem works, then fill in when ready (`data/images|audio|videos/`).

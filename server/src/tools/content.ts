@@ -4,7 +4,7 @@ import {
   CONTENT_TYPE_OPTIONS,
   CONTENT_TYPES,
   LIVE_BLOCK_KINDS,
-  composeContent,
+  composeContent, fallbackSpec,
   earlyImagePrompt,
   guessType,
   pickCardModel,
@@ -344,13 +344,30 @@ async function compose(job: CardJob, ctx: ToolContext, quality: unknown, ask: Li
     timeoutMs: COMPOSE_MS,
   });
   if (!alive(job)) return null;
-  if (!composed) {
-    busy(job.n, null);
-    updateCard(job.n, { status: "error", error: "the card designer didn't answer in time", model: undefined });
-    workspace.toast(`Card ${job.n}: couldn't write that card`, "error");
-    return null;
+  let spec: ContentSpec;
+  if (composed) spec = composed.spec;
+  else {
+    // No designer answered in time (two models): a plain card from what's in hand — never a placeholder left up.
+    const plain = fallbackSpec({
+      persona: ctx.persona,
+      utterance: job.utterance,
+      topic: job.topic,
+      type: job.type,
+      sources,
+      answer,
+      live: bundle ? { kind: bundle.kind, text: bundle.text, sources: bundle.sources, urls: bundle.urls } : null,
+      quality,
+    });
+    if (!plain) {
+      busy(job.n, null);
+      updateCard(job.n, { status: "error", error: "the card designer didn't answer in time", model: undefined });
+      workspace.toast(`Card ${job.n}: couldn't write that card`, "error");
+      return null;
+    }
+    console.warn(`[show_card] card ${job.n} on ${job.topic}: no designer answered; showing a plain card`);
+    workspace.toast(`Card ${job.n}: the designer didn't answer — showing a plain card`, "warn");
+    spec = plain;
   }
-  let spec = composed.spec;
   if (ask) {
     spec = mergeLive(spec, bundle, outcome.note, ask.assumed);
     // Without live results the way in is the same search on Google; keep that link whatever the designer cited.
@@ -365,7 +382,7 @@ async function compose(job: CardJob, ctx: ToolContext, quality: unknown, ask: Li
   paint(job);
   busy(job.n, job.imagePending ? `Painting the picture for card ${job.n}…` : null);
   console.log(
-    `[show_card] card ${job.n} (${spec.type}) written by ${composed.label} in ${composed.ms} ms${bundle ? `, ${bundle.count} live ${bundle.kind}` : ""}${job.imagePending ? ", picture pending" : ""}`,
+    `[show_card] card ${job.n} (${spec.type}) written by ${composed ? `${composed.label} in ${composed.ms} ms` : "no designer, plain card"}${bundle ? `, ${bundle.count} live ${bundle.kind}` : ""}${job.imagePending ? ", picture pending" : ""}`,
   );
   return spec;
 }
@@ -442,7 +459,16 @@ const showCard: Tool = {
       repaintPending(job, travelLive() ? `Searching ${LIVE_LABEL[ask!.kind]}…` : `${designer.label} is writing the card…`);
     }
 
-    const writing = compose(job, ctx, args.quality, ask);
+    const writing = compose(job, ctx, args.quality, ask).catch((err: unknown) => {
+      // Whatever broke, the placeholder never stays up as if still writing.
+      const why = (err as Error).message;
+      console.warn(`[show_card] card ${job.n} failed: ${why}`);
+      if (alive(job) && !job.spec) {
+        busy(job.n, null);
+        updateCard(job.n, { status: "error", error: `couldn't write the card: ${why}`.slice(0, 160), model: undefined });
+      }
+      return null;
+    });
     const first = await Promise.race([writing, sleep(SPEAK_WAIT_MS).then(() => "later" as const)]);
     if (first !== "later") {
       if (!first) return { ok: false, say: `I couldn't put together ${article(info.label)} on ${job.topic} just now.`, data: { card: job.n, type } };
@@ -464,6 +490,7 @@ const showCard: Tool = {
     // Slower than the user should wait: acknowledge now; the summary is told when the card is written.
     void writing.then((spec) => {
       if (spec && alive(job)) tell(ctx, spokenLine(spec, job.n), "show_card");
+      else if (!spec && alive(job)) tell(ctx, `I couldn't finish the card on ${job.topic}.`, "show_card");
     });
     return {
       ok: true,

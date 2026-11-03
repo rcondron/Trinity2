@@ -30,6 +30,8 @@ export interface Endpoints {
   /** The coding skill's coders: a quick one (the default; the "glm" slot) and a strong one for big apps (the "kimi" slot). */
   glmModel: string;
   kimiModel: string;
+  /** The problem solver behind figure_out (blank = brainModel). */
+  plannerModel: string;
   coderDefault: "glm" | "kimi";
   replyModel: string;
   fastModel: string;
@@ -79,6 +81,7 @@ function envDefaults(): Endpoints {
     cardModel: config.mordiem.cardModel,
     glmModel: config.mordiem.glmModel,
     kimiModel: config.mordiem.kimiModel,
+    plannerModel: config.mordiem.plannerModel,
     coderDefault: config.mordiem.coderDefault,
     replyModel: config.mordiem.replyModel,
     fastModel: config.mordiem.fastModel,

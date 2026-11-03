@@ -22,6 +22,8 @@ export interface ActIO {
   /** Situation summary (agent context) — helps argument extraction. */
   situation: string;
   minConfidence: number;
+  /** The user's own words when a planner runs the tool for them (see ToolContext.userWords). */
+  userWords?: string;
 }
 
 export interface Outcome {
@@ -117,6 +119,7 @@ export async function act(d: Decision, utterance: string, io: ActIO): Promise<Ou
         utterance,
         memory: io.memory,
         situation: io.situation,
+        ...(io.userWords ? { userWords: io.userWords } : {}),
       }),
       TOOL_TIMEOUT_MS,
     );

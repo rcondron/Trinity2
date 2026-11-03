@@ -64,7 +64,7 @@ const SLOT: Array<{ x: number; y: number }> = [
 ];
 
 export const BOARD_TEMPLATE: WorkspaceTemplate = {
-  id: "board@4",
+  id: "board@5",
   kind: "default",
   name: "Card board",
   source:
@@ -77,11 +77,12 @@ export const BOARD_TEMPLATE: WorkspaceTemplate = {
 .empty{position:absolute;inset:0;display:grid;place-items:center;color:#7a7a9a;font-size:14px;pointer-events:none}
 .card{position:absolute;display:flex;flex-direction:column;gap:10px;padding:12px;border-radius:16px;
   background:rgba(20,20,34,.92);border:1px solid rgba(255,255,255,.1);box-shadow:0 18px 50px rgba(0,0,0,.45);
-  backdrop-filter:blur(10px);animation:rise .4s cubic-bezier(.2,.8,.2,1) both;overflow:hidden;touch-action:none}
+  backdrop-filter:blur(10px);animation:rise .4s cubic-bezier(.2,.8,.2,1) both;overflow:hidden;touch-action:none;
+  transition:left .5s cubic-bezier(.2,.8,.2,1),top .5s cubic-bezier(.2,.8,.2,1),width .5s cubic-bezier(.2,.8,.2,1),height .5s cubic-bezier(.2,.8,.2,1)}
 .card.widget,.card.has-h{min-height:220px}
 .card.has-h .body{min-height:0}
 .card.has-h .body iframe{height:100%;min-height:0;max-height:none;flex:1}
-.card.is-drag,.card.is-resize{z-index:10000!important;animation:none;user-select:none}
+.card.is-drag,.card.is-resize{z-index:10000!important;animation:none;transition:none;user-select:none}
 .card.is-drag{cursor:grabbing}
 .chrome{cursor:grab;user-select:none;-webkit-user-select:none}
 .chrome:active{cursor:grabbing}
@@ -386,7 +387,7 @@ function emptyState(): BoardState {
   return { cards: [] };
 }
 
-const LEGACY_BOARD_IDS = new Set(["board@1", "board@2", "board@3", BOARD_TEMPLATE.id]);
+const LEGACY_BOARD_IDS = new Set(["board@1", "board@2", "board@3", "board@4", BOARD_TEMPLATE.id]);
 
 function isBoard(): boolean {
   const s = workspace.snapshot();
@@ -425,7 +426,7 @@ function slotFor(index: number): { x: number; y: number } {
   return { x: Math.min(72, base.x + ring * 3), y: Math.min(70, base.y + ring * 3) };
 }
 
-/** Push board@3 (or current) over an older board template id without clearing cards. */
+/** Push the current board template over an older board template id without clearing cards. */
 function upgradeBoardTemplate(): void {
   const s = workspace.snapshot();
   if (s.mode !== "app" || s.owner !== BOARD_OWNER) return;
@@ -774,6 +775,62 @@ export function moveCardRelative(n: number, relative: RelativePlace, anchorN: nu
   state.cards[i] = card;
   if (!write(state)) return null;
   return card;
+}
+
+// ─── Arranging ──────────────────────────────────────────────────────────────
+
+export interface CardGrid {
+  cols: number;
+  rows: number;
+  /** Cell size in % of the board. */
+  w: number;
+  h: number;
+  /** Top-left of the grid in % of the board (the grid is centered). */
+  x0: number;
+  y0: number;
+  gap: number;
+}
+
+const round1 = (n: number) => Math.round(n * 10) / 10;
+
+/**
+ * The grid "organize the cards" lays out: as square as the count allows (1–2 across, then 2, 3, 4, 5, 6 columns),
+ * uniform cells no wider than 44% or taller than 60% of the board, a 2% gap, centered. Beyond about thirty cards
+ * the rows run off the bottom and the renderer clamps them.
+ */
+export function gridFor(count: number): CardGrid {
+  const n = Math.max(1, count);
+  const cols = n <= 2 ? n : n <= 4 ? 2 : n <= 9 ? 3 : n <= 16 ? 4 : n <= 25 ? 5 : 6;
+  const rows = Math.ceil(n / cols);
+  const margin = 2;
+  const gap = 2;
+  const w = Math.max(14, Math.min(44, (100 - 2 * margin - (cols - 1) * gap) / cols));
+  const h = Math.max(16, Math.min(60, (100 - 2 * margin - (rows - 1) * gap) / rows));
+  const x0 = Math.max(0, (100 - (cols * w + (cols - 1) * gap)) / 2);
+  const y0 = Math.max(0, (100 - (rows * h + (rows - 1) * gap)) / 2);
+  return { cols, rows, w: round1(w), h: round1(h), x0: round1(x0), y0: round1(y0), gap };
+}
+
+/**
+ * Lay every card out in numerical order, row by row, on the grid above — each card the same size, stacked in
+ * number order. The layout before it goes on the undo stack. Null when the board has no cards.
+ */
+export function arrangeCards(): { count: number; cols: number; rows: number } | null {
+  const state = read();
+  if (!state.cards.length) return null;
+  workspace.pushUndo("arrange_cards");
+  const cards = state.cards.slice().sort((a, b) => a.n - b.n);
+  const g = gridFor(cards.length);
+  state.cards = cards.map((c, i) => ({
+    ...c,
+    x: round1(g.x0 + (i % g.cols) * (g.w + g.gap)),
+    y: round1(Math.min(86, g.y0 + Math.floor(i / g.cols) * (g.h + g.gap))),
+    w: g.w,
+    h: g.h,
+    z: i + 1,
+  }));
+  if (!write(state)) return null;
+  return { count: cards.length, cols: g.cols, rows: g.rows };
 }
 
 /** True when a game owns the screen — media / widget cards must not steal it. */

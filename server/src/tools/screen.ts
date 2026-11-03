@@ -6,6 +6,7 @@ import {
   listCards,
   moveCard,
   moveCardRelative,
+  arrangeCards,
   parsePlace,
   removeCard,
   resolveCard,
@@ -229,8 +230,29 @@ const moveCardTool: Tool = {
   },
 };
 
+const arrangeCardsTool: Tool = {
+  name: "arrange_cards",
+  description:
+    "Organize the floating cards: lay every card out in numerical order on an aligned grid, all the same size (e.g. “organize the cards”, “tidy up the board”, “put the cards in a grid”, “line them up”). Undo brings the old layout back.",
+  input: {},
+  available: () => boardActive() && listCards().length > 0,
+  source: "builtin",
+  async run() {
+    if (!boardActive()) return { ok: false, say: "There aren't any floating cards on the board right now." };
+    const result = arrangeCards();
+    if (!result) return { ok: false, say: "There aren't any floating cards on the board right now." };
+    const { count, cols, rows } = result;
+    if (count === 1) return { ok: true, say: "There's just one card on the board — I centered it.", data: result };
+    return {
+      ok: true,
+      say: `Arranged ${count} cards in numerical order, ${cols} across${rows > 1 ? ` in ${rows} rows` : ""}.`,
+      data: result,
+    };
+  },
+};
+
 export function registerScreenTools(): void {
-  [clearWorkspace, undoWorkspace, describeWorkspace, removeCardTool, moveCardTool].forEach(registerTool);
+  [clearWorkspace, undoWorkspace, describeWorkspace, removeCardTool, moveCardTool, arrangeCardsTool].forEach(registerTool);
   registerContextProvider({
     describe: (persona) => {
       const base = describeScreen(persona);
@@ -245,7 +267,7 @@ export function registerScreenTools(): void {
     // undo_workspace stays available so an accidental clear can be reversed.
     hiddenActions: (persona) =>
       isGameMaster(persona) && gameOwned()
-        ? ["clear_workspace", "describe_workspace", "remove_card", "move_card", "make_text", "show_card", "edit_html", "set_speech_rate", "browser_open", "browser_tabs", "browser_read", "browser_act", "browser_modify", "browser_save", "browser_share"]
+        ? ["clear_workspace", "describe_workspace", "remove_card", "move_card", "arrange_cards", "make_text", "show_card", "edit_html", "set_speech_rate", "browser_open", "browser_tabs", "browser_read", "browser_act", "browser_modify", "browser_save", "browser_share"]
         : [],
   });
 }

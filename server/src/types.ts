@@ -90,6 +90,8 @@ export interface ToolContext {
   memory: MemoryStore;
   /** Situation summary from the context providers (persona, active game, …). */
   situation: string;
+  /** The user's own words when a planner (figure_out) runs the tool for them: what the safety checks read. */
+  userWords?: string;
 }
 
 export interface ToolArgSpec {

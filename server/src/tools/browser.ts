@@ -395,7 +395,7 @@ const browserAct: Tool = {
       if (!words) return refuse("What should I click?");
       const el = pickElement(items, words) ?? (await modelPick(items, words, ctx.utterance));
       if (!el) return refuse(`I don't see anything called ${words} on ${title(snap)}.`);
-      if (clickNeedsSayingSo(el.name) && !clickSaidSo(el.name, ctx.utterance))
+      if (clickNeedsSayingSo(el.name) && !clickSaidSo(el.name, ctx.userWords ?? ctx.utterance))
         return say(`That's the “${el.name}” control. If you want me to press it, say: yes, click ${el.name}.`, { ref: el.ref, name: el.name, held: true });
       const r = await browserCall<{ ok: boolean; detail?: string; error?: string }>("page.act", { tabId: tab.id, action: "click", ref: el.ref }, CALL_MS);
       if (r && r.ok === false) return refuse(r.error ?? "that control couldn't be clicked");

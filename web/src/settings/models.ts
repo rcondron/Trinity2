@@ -230,6 +230,13 @@ const GROUPS: GroupDef[] = [
             hint: "Careful answers (math, reasoning) and scheduled heartbeat turns. Used when Jev picks the quality text tier.",
           },
           {
+            key: "plannerModel",
+            label: "Problem solver",
+            kind: "model",
+            list: "dl-text-models",
+            hint: "Works out a request no tool covers (figure_out): plans, runs tools in turn, retries, forges a skill when none fits. kimi-k3 and z-ai-glm-5-3 are strong; claude-sonnet-5-5 is the most careful.",
+          },
+          {
             key: "cardModel",
             label: "Card designer",
             kind: "model",
@@ -361,7 +368,7 @@ const GROUPS: GroupDef[] = [
         max: 10000,
         step: 50,
         integer: true,
-        hint: "Say a quick “one sec” when a reply takes longer than this.",
+        hint: "Say a quick “one moment” when a reply takes longer than this.",
       },
     ],
   },

@@ -25,6 +25,9 @@ const DG_KEEPALIVE_MS = 4_000; // Deepgram closes after ~10s without audio
 const STANDBY_IDLE_MS = 15 * 60_000; // release the GPU session if nobody talks for 15 min
 const MAX_VOICE_PROMPT = 200;
 const PEND_HOLD_MAX_MS = 8_000; // a sentence-end action that never resolves can't mute the agent
+/** After a reply or an announcement the agent stays quiet until the user speaks again — no made-up follow-ups. */
+const QUIET_HOLD = "quiet:after-reply";
+const QUIET_MAX_MS = 60_000; // …unless transcription misses them for a minute
 const MAX_QUEUED_SPEECH_MS = 1_500; // keep at most this much forced speech queued at the pod
 const OUTCOME_WAIT_MS = 35_000; // past an action's own limits (argument extraction ≤ 16s, then the tool's 15s)
 const FIRST_WORDS_MS = 12_000; // the reply writer falls back on its own after 10s
@@ -715,6 +718,7 @@ export class VoiceCall {
     const now = Date.now();
     for (const [r, since] of this.holds) {
       if (r.startsWith("pend:") && now - since > PEND_HOLD_MAX_MS) this.setHold(r, false);
+      if (r === QUIET_HOLD && now - since > QUIET_MAX_MS) this.setHold(r, false);
     }
     // (Deepgram's KeepAlive runs per socket — see connectDeepgram.) Typed turns and replies count
     // as use too, and a reply in progress is never cut off.
@@ -839,7 +843,11 @@ export class VoiceCall {
       // Mic off and its last words already ended (Finalize was slow): this is a late copy of them.
       if (this.micOff === "ended") return;
       const said = m.channel?.alternatives?.[0]?.transcript ?? "";
-      if (said) this.lastCallerWordAt = Date.now();
+      if (said) {
+        this.lastCallerWordAt = Date.now();
+        // The user is talking again (not the agent's own tail in the mic): the agent may answer.
+        if (this.holds.has(QUIET_HOLD) && !this.isEcho(said)) this.setHold(QUIET_HOLD, false);
+      }
       if (m.is_final) {
         this.finals = `${this.finals} ${said}`.trim();
         this.interim = "";
@@ -893,6 +901,7 @@ export class VoiceCall {
     if (agentReply) this.lines.push(`Agent: ${agentReply}`);
     this.agentPending = "";
     this.lines.push(`User: ${text}`);
+    this.setHold(QUIET_HOLD, false); // the user has spoken: the agent may answer this
     const utterance = this.utterance++;
     // One last look at the whole sentence — the words that matter often come last.
     const routed = this.route(utterance, text, true);
@@ -903,6 +912,9 @@ export class VoiceCall {
   private async route(utterance: number, text: string, final: boolean) {
     if (!final && utterance !== this.utterance) return; // the sentence already ended
     let fired = false;
+    // A finished sentence: the agent waits for the decision (released below when nothing fires), so it never
+    // starts an answer of its own that a tool is about to contradict.
+    if (final) this.setHold(`pend:${utterance}`, true);
     try {
       const d = await decide({ persona: this.persona, conversation: this.conversation(text, final), done: this.done });
       if (this.closed || (!final && utterance !== this.utterance)) return; // stale mid-sentence answer
@@ -1004,6 +1016,7 @@ export class VoiceCall {
       return sent && !this.closed ? "said" : "unsaid";
     } finally {
       this.setHold(holdId, false);
+      this.setHold(QUIET_HOLD, true); // said its piece: nothing more until the user speaks
       this.replyActive--;
       this.lastActivityAt = Date.now();
     }
@@ -1012,7 +1025,7 @@ export class VoiceCall {
   private fillers() {
     return this.isGameMaster
       ? { mid: "Hmm, one moment.", wait: "Let me see.", slow: "Hmm, that's taking longer than it should." }
-      : { mid: "One sec, let me check.", wait: "One sec.", slow: "Sorry, that's taking longer than it should." };
+      : { mid: "One moment.", wait: "One moment.", slow: "Sorry, that's taking longer than it should." };
   }
 
   /** Make PersonaPlex say these words; false when they didn't go out (cut off, or the call is gone). */
@@ -1146,6 +1159,7 @@ export class VoiceCall {
       this.replyActive--;
       this.lastActivityAt = Date.now();
       this.setHold(`reply:${replyId}`, false);
+      this.setHold(QUIET_HOLD, true); // said its piece: nothing more until the user speaks
     }
   }
 

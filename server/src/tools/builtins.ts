@@ -6,6 +6,7 @@ import { registerHtmlTools } from "./html.js";
 import { registerMediaTools } from "./media.js";
 import { registerTool } from "./registry.js";
 import { registerScreenTools } from "./screen.js";
+import { registerSolveTools } from "./solve.js";
 import { registerVoiceTools } from "./voice.js";
 
 /** Web text as HTML text or an attribute value: a result's title or URL can't add tags or attributes to the card. */
@@ -80,6 +81,7 @@ const getTime: Tool = {
 export function registerBuiltins(): void {
   [webSearch, getTime].forEach(registerTool);
   registerScreenTools();
+  registerSolveTools();
   registerMediaTools();
   registerContentTools();
   registerHtmlTools();

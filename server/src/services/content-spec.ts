@@ -403,7 +403,7 @@ export function guessType(utterance: string): ContentType {
 }
 
 const LEAD =
-  /^(?:(?:hey|hi|ok(?:ay)?|so|please|trinity|can you|could you|would you|will you|i want you to|i['’]d like you to|i need you to|i want|i['’]d like|i need|let'?s)[\s,]*)*(?:(?:please\s+)?(?:make|create|build|put|show|give|get|find|pull up|bring up|look up|search|tell|write|design|lay out|do)\s+(?:me\s+|us\s+)?(?:up\s+)?)?(?:(?:a|an|the|some|another)\s+)?(?:(?:nice|good|quick|simple|detailed|full|proper|designed|pretty|beautiful)\s+)?(?:(?:info(?:rmation)?|details?|facts?|card|page|summary|rundown|overview|profile|recipe card|news card)\s+(?:card\s+)?(?:about|on|for|of)\s+)?/i;
+  /^(?:(?:hey|hi|ok(?:ay)?|alright|all right|so|and|also|then|now|um|uh|yeah|well|actually|next|please|trinity|can you|could you|would you|will you|i want you to|i['’]d like you to|i need you to|i want|i['’]d like|i need|let'?s)[\s,]*)*(?:(?:please\s+)?(?:make|create|build|put|show|give|get|find|pull up|bring up|look up|search|tell|write|design|lay out|do)\s+(?:me\s+|us\s+)?(?:up\s+)?)?(?:(?:a|an|the|some|another)\s+)?(?:(?:nice|good|quick|simple|detailed|full|proper|designed|pretty|beautiful)\s+)?(?:(?:info(?:rmation)?|details?|facts?|card|page|summary|rundown|overview|profile|recipe card|news card)\s+(?:card\s+)?(?:about|on|for|of)\s+)?(?:(?:a|an|the|some|another)\s+)?(?:(?:nice|good|quick|simple|detailed|full|proper)\s+)?(?:(?:recipe|recipes|itinerary|forecast|weather|headlines|news|profile|bio|biography|review|comparison|explainer|explanation|guide|how-?to|plan|list)\s+(?:for|of|about|on)\s+)?/i;
 const TAIL = /\s*(?:(?:on|in|to|onto)\s+(?:the\s+)?(?:workspace|board|screen|window)|for (?:me|us)|please|thanks|thank you)\s*[.!?]*$/i;
 
 /** The subject of the request: "put a blueberry muffin recipe on the board" → "blueberry muffin recipe". */
@@ -543,17 +543,27 @@ export function pickCardModel(quality: unknown, utterance: string): { model: str
   return { model, label: modelName(model), quality: pick.quality === "quality" ? "quality" : "fast" };
 }
 
-/** Ask the card designer for a spec. Null when the model gives nothing usable in time. */
+/**
+ * Ask the card designer for a spec. The designer gets most of the time; a model that stalls (it happens on the
+ * gateway) hands the card to the fast model for one more try. Null when neither gives anything usable in time.
+ */
 export async function composeContent(input: ComposeInput): Promise<Composed | null> {
   const pick = pickCardModel(input.quality, input.utterance);
   const started = Date.now();
   const live = input.live ?? null;
-  const raw = await jsonChat<Record<string, unknown>>(systemPrompt(input.persona, input.type, input.sources.length > 0 || Boolean(live), live), userPrompt(input), {
-    model: pick.model,
-    maxTokens: 2200,
-    temperature: 0.4,
-    timeoutMs: input.timeoutMs ?? 45_000,
-  });
+  const system = systemPrompt(input.persona, input.type, input.sources.length > 0 || Boolean(live), live);
+  const user = userPrompt(input);
+  const budget = input.timeoutMs ?? 45_000;
+  let model = pick.model;
+  let label = pick.label;
+  let raw = await jsonChat<Record<string, unknown>>(system, user, { model, maxTokens: 2200, temperature: 0.4, timeoutMs: Math.max(8_000, Math.round(budget * 0.6)) });
+  const { fastModel } = getEndpoints();
+  if (!raw && fastModel && fastModel !== model) {
+    console.warn(`[show_card] ${label} gave no card in ${Math.round((budget * 0.6) / 1000)}s; trying ${modelName(fastModel)}`);
+    model = fastModel;
+    label = modelName(fastModel);
+    raw = await jsonChat<Record<string, unknown>>(system, user, { model, maxTokens: 2200, temperature: 0.4, timeoutMs: Math.max(8_000, Math.round(budget * 0.4)) });
+  }
   if (!raw) return null;
   const known: WebResult[] = [
     ...input.sources,
@@ -561,7 +571,31 @@ export async function composeContent(input: ComposeInput): Promise<Composed | nu
   ];
   const spec = normalizeSpec(raw, input.type, input.topic, known);
   if (!spec) return null;
-  return { spec, model: pick.model, label: pick.label, ms: Date.now() - started };
+  return { spec, model, label, ms: Date.now() - started };
+}
+
+/** A plain card from what's in hand when no designer answered: the search answer, the sources, and a note saying so. */
+export function fallbackSpec(input: ComposeInput): ContentSpec | null {
+  const blocks: Record<string, unknown>[] = [];
+  const answer = (input.answer ?? "").trim();
+  if (answer) blocks.push({ kind: "text", paragraphs: answer.split(/\n{2,}/).slice(0, 3) });
+  if (input.sources.length) blocks.push({ kind: "list", title: "From the web", items: input.sources.slice(0, 8).map((s) => s.title || s.url) });
+  blocks.push({ kind: "note", tone: "warning", text: "The card designer didn't answer in time, so this is a plain version — ask again for a fuller card." });
+  const topic = input.topic.trim() || input.utterance.trim();
+  return normalizeSpec(
+    {
+      type: input.type,
+      title: topic.charAt(0).toUpperCase() + topic.slice(1),
+      summary: `The card designer didn't answer in time, so here's a plain card on ${topic}.`,
+      image: null,
+      meta: [],
+      blocks,
+      sources: input.sources.slice(0, 6).map((s) => ({ title: s.title, url: s.url })),
+    },
+    input.type,
+    topic,
+    [...input.sources],
+  );
 }
 
 // ─── Normalizing what the model returned ──────────────────────────────────────

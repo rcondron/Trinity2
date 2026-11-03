@@ -1,6 +1,7 @@
 import { getEndpoints, live } from "../settings.js";
 import { getTools } from "../tools/registry.js";
 import type { Persona, Tool, ToolArgSpec } from "../types.js";
+import { looksLikeAsk, secondOpinion } from "./arbiter.js";
 import { contextFor, type AgentContext } from "./context.js";
 
 /**
@@ -203,6 +204,10 @@ function pageText(conversation: string, ctx: AgentContext): string {
 function toolRules(tools: Tool[]): string[] {
   const has = (name: string) => tools.some((t) => t.name === name);
   const rules: string[] = [];
+  if (has("figure_out"))
+    rules.push(
+      "Something the user asks for that no listed tool does directly — several steps in a row, a site or service with no tool yet, 'figure out how to…', 'find a way to…' — is figure_out, not NONE; a direct match to another tool is still that tool.",
+    );
   if (has("build_ui") && has("create_skill"))
     rules.push(
       "Something to see or use on screen (a page, app, chart, game or form) is build_ui; a new ability the assistant should keep using later (a converter, a lookup, a connection to a web service) is create_skill.",
@@ -223,9 +228,9 @@ function toolRules(tools: Tool[]): string[] {
     rules.push(
       "Resizing or restyling an existing picture on the board is edit_html; generating a brand-new picture is make_image.",
     );
-  if (has("remove_card") || has("move_card") || has("undo_workspace"))
+  if (has("remove_card") || has("move_card") || has("undo_workspace") || has("arrange_cards"))
     rules.push(
-      "Floating cards on the board are numbered and tagged by content: removing one is remove_card, moving one is move_card (by number or by what it shows — 'the tiger', 'under the panda'), wiping every card / the whole screen is clear_workspace, and restoring a mistaken clear or remove is undo_workspace. A text sticky/note is make_text; asking for several pictures (a panda and a tiger) is still make_image (one card each).",
+      "Floating cards on the board are numbered and tagged by content: removing one is remove_card, moving one is move_card (by number or by what it shows — 'the tiger', 'under the panda'), organizing / tidying / sorting / lining up all the cards into a neat grid is arrange_cards, wiping every card / the whole screen is clear_workspace, and restoring a mistaken clear or remove is undo_workspace. A text sticky/note is make_text; asking for several pictures (a panda and a tiger) is still make_image (one card each).",
     );
   if (has("show_card")) {
     if (has("ask_brain"))
@@ -304,12 +309,28 @@ export function jevRequest(input: RouteInput) {
 }
 
 /** Screen ops the keyword heuristic may take when Jev abstains — clear/move/remove/undo are unambiguous. */
-const HEURISTIC_OVERRIDE = /^(clear_workspace|undo_workspace|remove_card|move_card|describe_workspace|edit_html|set_speech_rate)$/;
+const HEURISTIC_OVERRIDE = /^(clear_workspace|undo_workspace|remove_card|move_card|arrange_cards|describe_workspace|edit_html|set_speech_rate)$/;
 
 export async function decide(input: RouteInput): Promise<Decision> {
   const started = Date.now();
   const ctx = contextFor(input.persona);
   const prepared = prepare(input.persona, visibleTools(input.persona, hiddenFor(input, ctx)));
+  const first = await firstDecision(input, ctx, prepared, started);
+  // A finished sentence the first pass was unsure about (a real tool under the gate) or waved off although it asks
+  // for something: the fast model takes a second look at the same tools (agent/arbiter.ts). Never mid-sentence.
+  const min = getEndpoints().minConfidence;
+  const finished = /\(finished speaking\)/.test(input.conversation);
+  const unsure = first.action !== "NONE" && first.tool !== null && first.confidence < min && first.confidence >= 0.3;
+  const waved = first.action === "NONE" && looksLikeAsk(latestWords(input.conversation));
+  if (finished && (unsure || waved)) {
+    const second = await secondOpinion(input, prepared.tools, first, min);
+    if (second) return { ...second, ms: Date.now() - started, ...(first.error ? { error: first.error } : {}) };
+  }
+  return first;
+}
+
+/** Jev's pick reconciled with the keyword heuristic — or the heuristic alone without a TypeSafe key. */
+async function firstDecision(input: RouteInput, ctx: AgentContext, prepared: Prepared, started: number): Promise<Decision> {
   if (!live.jev) return heuristic(input, prepared.tools, started);
 
   const ep = getEndpoints();
@@ -419,6 +440,12 @@ const AUDIO = new RegExp(
  * Bring back what was just cleared or removed: "undo", "put it back", "restore the cards",
  * "bring them back", "go back", "oops, undo that".
  */
+/**
+ * Lay every card out in a neat grid: "organize the cards", "tidy up the board", "put the cards in a grid", "sort the
+ * cards", "line them up". Checked before undo, whose "put the cards …" would otherwise take "put the cards in order".
+ */
+const ARRANGE =
+  /\b(?:(?:organi[sz]e|tidy(?: up)?|arrange|re-?arrange|line up|straighten(?: up)?|clean up|neaten(?: up)?|sort|align|order)\s+(?:all\s+)?(?:of\s+)?(?:the\s+|my\s+|these\s+|those\s+)?(?:cards?|board|workspace|screen|notes?|pictures?|images?|everything|them)\b|\b(?:put|lay|set|get)\s+(?:all\s+)?(?:of\s+)?(?:the\s+|these\s+|those\s+|my\s+)?(?:cards|everything|them)\s+(?:in|into|on)\s+(?:a\s+|an\s+)?(?:neat\s+|tidy\s+|nice\s+)?(?:grid|order|rows?|line|place)\b|\b(?:grid|numerical order)\b[^.?!]{0,30}\bcards?\b|\bcards?\b[^.?!]{0,30}\b(?:in a grid|in numerical order|in order|lined up|tidied up|organi[sz]ed|arranged)\b|\btidy up\b|\bstraighten up\b)/;
 const UNDO =
   /\b(undo|undelete|restore|put (it|them|that|those|everything) back|bring (it|them|that|those|everything) back|go back|oops)\b(?:[^.?!]{0,40}\b(card|cards|board|workspace|screen|window|clear|remove|that|it|them)\b)?|\b(bring|put|get)\s+(back\s+)?(the\s+)?(cards?|board|workspace|screen)\b|\brestore\s+(the\s+)?(cards?|board|workspace|screen|last)\b/i;
 const CLEAR =
@@ -604,6 +631,8 @@ function heuristic(input: RouteInput, tools: Tool[], started: number): Decision 
   if (at("browser_read", BROWSER_READ) < Infinity) return pick("browser_read", 0.82);
   if (at("browser_open", BROWSER_OPEN) < Infinity && !IMAGE.test(t) && !VIDEO.test(t)) return pick("browser_open", 0.85);
   if (at("browser_act", BROWSER_ACT) < Infinity) return pick("browser_act", 0.8);
+  // Arranging before undo: "put the cards in a grid" is a layout, not "put the cards back".
+  if (at("arrange_cards", ARRANGE) < Infinity) return pick("arrange_cards", 0.9);
   // Undo before clear: "put the cards back" must not wipe the board again.
   if (at("undo_workspace", UNDO) < Infinity) return pick("undo_workspace", 0.9);
   if (at("clear_workspace", CLEAR) < Infinity) return pick("clear_workspace", 0.8);
@@ -644,7 +673,7 @@ function heuristic(input: RouteInput, tools: Tool[], started: number): Decision 
   const words = new Set(t.split(/[^a-z0-9]+/).filter((w) => w.length > 2));
   for (const tool of tools) {
     if (inGame && tool.name === "web_search") continue; // "search the chest": no web words, no web search
-    if (/^(make_image|make_video|make_audio|make_text|show_card|clear_workspace|undo_workspace|describe_workspace|remove_card|move_card|edit_html|set_speech_rate)$/.test(tool.name))
+    if (/^(make_image|make_video|make_audio|make_text|show_card|clear_workspace|undo_workspace|describe_workspace|remove_card|move_card|arrange_cards|edit_html|set_speech_rate)$/.test(tool.name))
       continue; // a video or picture mentioned isn't one asked for
     if (tool.name.split(/[_\s]+/).some((tok) => tok.length > 3 && words.has(tok))) return pick(tool.name, 0.7);
   }

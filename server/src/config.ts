@@ -74,6 +74,8 @@ export const config = {
     // z-ai-glm-5-3 is thinking-only on Mordiem: ~16 s of reasoning before any code).
     glmModel: process.env.QUICK_CODER || process.env.MORDIEM_GLM_MODEL || "mercury-3",
     kimiModel: process.env.STRONG_CODER || process.env.MORDIEM_KIMI_MODEL || "kimi-k3",
+    // The problem solver (figure_out): plans, runs tools in turn, retries, forges a skill when none fits.
+    plannerModel: process.env.PLANNER_MODEL || "kimi-k3",
     coderDefault: (process.env.CODER_DEFAULT === "kimi" || process.env.CODER_DEFAULT === "strong" ? "kimi" : "glm") as "glm" | "kimi",
     brainModel: process.env.BRAIN_MODEL || "claude-sonnet-5-5",
     // The card designer: writes information cards (show_card) — the facts, layout, look and picture
@@ -115,7 +117,7 @@ export const config = {
   timing: {
     routeEveryMs: Number(process.env.ROUTE_EVERY_MS) || 400,
     minConfidence: Number(process.env.MIN_CONFIDENCE) || 0.7,
-    // Say "one sec" only if no reply word is ready by then (reply TTFT measured ~0.8s).
+    // Say "one moment" only if no reply word is ready by then (reply TTFT measured ~0.8s).
     fillerAfterMs: Number(process.env.FILLER_AFTER_MS) || 900,
   },
 } as const;
