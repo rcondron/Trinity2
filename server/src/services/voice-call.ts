@@ -13,6 +13,7 @@ import { bg, safeInterval } from "../util/bg.js";
 import { readAfter, wordsForNumbers } from "../tools/schedule.js";
 import { curateExchange, curationAfter } from "./curator.js";
 import { voicePromptFile as mapVoiceFile } from "./voices.js";
+import { soundsLikeAsk } from "../agent/arbiter.js";
 import { workspace } from "../workspace/bus.js";
 import type { Persona, TranscriptTurn } from "../types.js";
 
@@ -693,7 +694,7 @@ export class VoiceCall {
   }
 
   private releasePendingHolds() {
-    for (const r of [...this.holds.keys()]) if (r.startsWith("pend:")) this.setHold(r, false);
+    for (const r of [...this.holds.keys()]) if (r.startsWith("pend:") || r.startsWith("early:")) this.setHold(r, false);
   }
 
   /**
@@ -730,7 +731,7 @@ export class VoiceCall {
   private housekeeping() {
     const now = Date.now();
     for (const [r, since] of this.holds) {
-      if (r.startsWith("pend:") && now - since > PEND_HOLD_MAX_MS) this.setHold(r, false);
+      if ((r.startsWith("pend:") || r.startsWith("early:")) && now - since > PEND_HOLD_MAX_MS) this.setHold(r, false);
       if (r === QUIET_HOLD && now > this.quietUntil) this.setHold(r, false);
     }
     // (Deepgram's KeepAlive runs per socket — see connectDeepgram.) Typed turns and replies count
@@ -856,6 +857,7 @@ export class VoiceCall {
       // Mic off and its last words already ended (Finalize was slow): this is a late copy of them.
       if (this.micOff === "ended") return;
       const said = m.channel?.alternatives?.[0]?.transcript ?? "";
+      const earlyKey = `early:${this.utterance}`;
       if (said) {
         this.lastCallerWordAt = Date.now();
         // The user is talking again (not the agent's own tail in the mic): the agent may answer.
@@ -868,6 +870,12 @@ export class VoiceCall {
         this.interim = said;
       }
       const text = this.current;
+      // A request or a question waits for the decision from its first words: Deepgram marks the end of speech ~300 ms
+      // after the words stop, and mid-sentence routing runs only every routeEveryMs, so a voice that isn't held by then
+      // answers on its own — "I can't…" — and the tool's reply has to take it back. Released at the sentence end when
+      // nothing fires (route), or after PEND_HOLD_MAX_MS of no new words (housekeeping). It follows the words: "can you
+      // hear" waits, "can you hear me" (just talk) doesn't.
+      if (said && !this.isEcho(text)) this.setHold(earlyKey, soundsLikeAsk(text));
       // Barge-in: the user talks over a reply we're injecting → drop the rest of it.
       if (Date.now() < this.sayingUntil && (text.match(WORD)?.length ?? 0) >= 2 && !this.isEcho(text)) {
         this.bargedIn = true;
@@ -958,6 +966,8 @@ export class VoiceCall {
     } finally {
       // A held sentence-end action that the final pass didn't confirm must free the agent.
       if (final && !fired) this.setHold(`pend:${utterance}`, false);
+      // The decision is in: the early hold has done its job (a tool that fired holds the voice for its reply now).
+      if (final) this.setHold(`early:${utterance}`, false);
     }
   }
 

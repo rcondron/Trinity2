@@ -14,7 +14,7 @@ const FILLERS = String.raw`(?:(?:hey|hi|ok|okay|alright|all right|so|and|now|the
 /** An explicit request lead-in — required, so an ordinary imperative in conversation ("tell me more") costs nothing. */
 const LEAD_IN = String.raw`(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|please\s+|i\s+(?:need|want)\s+you\s+to\s+|i'?d\s+like\s+you\s+to\s+|go\s+ahead\s+and\s+|try\s+to\s+|help\s+me\s+(?:to\s+)?)`;
 const VERBS =
-  "open|close|go|navigate|click|press|tap|type|enter|log|sign|choose|select|pick|find|search|look|check|get|grab|fetch|download|save|send|email|text|message|call|book|order|buy|purchase|schedule|set|turn|switch|play|pause|stop|start|run|build|make|create|write|draft|generate|draw|design|show|put|add|remove|delete|clear|move|arrange|organi[sz]e|sort|tidy|read|summari[sz]e|translate|convert|calculate|compute|figure|work|fix|change|update|edit|rename|copy|paste|upload|share|post|publish|install|deploy|test|try|do|handle|take|bring|pull|load|launch|visit|fill|submit|login|logout|register|subscribe|unsubscribe|cancel|renew|track|monitor|watch|remind|plan|compare|analy[sz]e|research|explain|teach|tell|give|use|zoom|scroll|refresh|reload|print|export|import|sync|connect|disconnect|pair|configure|setup|enable|disable|mute|unmute|increase|decrease|raise|lower|dim|brighten|lock|unlock|accept|decline|reply|respond|answer|forward|archive|mark|flag|star|pin|unpin|undo|redo|resize|rotate|crop|trim|merge|split|join|list|count|measure|wake|shut|restart|reboot|invite|leave|skip|repeat|shuffle|queue|dictate|transcribe|record|snap|capture|screenshot";
+  "open|close|go|navigate|click|press|tap|type|enter|log|sign|choose|select|pick|find|search|look|check|get|grab|fetch|download|save|send|email|text|message|call|book|order|buy|purchase|schedule|set|turn|switch|play|pause|stop|start|run|build|make|create|write|draft|generate|draw|design|show|put|add|remove|delete|clear|move|arrange|organi[sz]e|sort|tidy|read|summari[sz]e|translate|convert|calculate|compute|figure|work|fix|change|update|edit|rename|copy|paste|upload|share|post|publish|install|deploy|test|try|do|handle|take|bring|pull|load|launch|visit|fill|submit|login|logout|register|subscribe|unsubscribe|cancel|renew|track|monitor|watch|remind|plan|compare|analy[sz]e|research|explain|teach|tell|give|use|zoom|scroll|refresh|reload|print|export|import|sync|connect|disconnect|pair|configure|setup|enable|disable|mute|unmute|increase|decrease|raise|lower|dim|brighten|lock|unlock|accept|decline|reply|respond|answer|forward|archive|mark|flag|star|pin|unpin|undo|redo|resize|rotate|crop|trim|merge|split|join|list|count|measure|wake|shut|restart|reboot|invite|leave|skip|repeat|shuffle|queue|dictate|transcribe|record|snap|capture|screenshot|keep|trash|dismiss|drop|throw|empty|wipe|erase|minimi[sz]e|maximi[sz]e|full ?screen|shrink|enlarge|grow|expand|collapse|restore|hide|unhide|scatter|group|stack|spread|line|nudge|scoot|shift|swap|layer|align|flip|toggle|reset|resume|unpause|rewind|replay|loop|hit|cross|tick|duplicate|clone|jump";
 const ASK = new RegExp(String.raw`^${FILLERS}${LEAD_IN}(?:${VERBS})\b`, "i");
 /** A detail handed over for a form or a flow ("login is ryan", "the code is 4471", "my email is …"). */
 const DETAIL = /^(?:(?:the|my|our)\s+)?(?:login|log-in|username|user name|email|e-mail|address|name|account|password|passcode|code|pin|number|phone|zip|card)\s+(?:is|=|:)\s*\S/i;
@@ -32,6 +32,36 @@ export function looksLikeAsk(text: string): boolean {
   if ((t.match(/[A-Za-z']+/g)?.length ?? 0) < 2) return false;
   if (QUESTION.test(t)) return false;
   return ASK.test(t) || DETAIL.test(t) || SOLVE.test(t);
+}
+
+/** A request said straight out ("pause the video", "close cards 2 and 3", "I need the timer…"), a lead-in optional. */
+const COMMAND = new RegExp(
+  String.raw`^${FILLERS}(?:${LEAD_IN})?(?:(?:i\s+(?:want|need)|i'?d\s+like)\s+(?:you\s+to\s+|to\s+|the\s+|a\s+|an\s+|my\s+|it\b)|(?:${VERBS})\b)`,
+  "i",
+);
+/** A question — the kind a tool may answer (what's on the board, the weather, what's left on the timer). */
+const ASKED = new RegExp(String.raw`^${FILLERS}(?:what|what's|whats|who|where|when|why|how|which|whose|is|are|was|were|do|does|did|can|could|will|would|should|have|has)\b`, "i");
+/** Questions that are just talk: answered by the voice at once, never waiting for a decision. */
+const SOCIAL = new RegExp(
+  String.raw`^${FILLERS}(?:how\s+(?:are|r)\s+you|how'?s\s+it\s+going|how\s+(?:is|was)\s+your|how\s+have\s+you\s+been|what'?s\s+up|whats\s+up|what'?s\s+new|are\s+you\s+(?:there|okay|ok|real|happy|alive)|can\s+you\s+hear\s+me|you\s+there|do\s+you\s+(?:like|love|feel|know\s+me|remember\s+me|have\s+feelings)|what\s+do\s+you\s+think|who\s+are\s+you|what\s+are\s+you|what'?s\s+your\s+name)\b`,
+  "i",
+);
+/** One word that is a whole command on its own. */
+const ONE_WORD = /^(?:stop|pause|play|resume|undo|mute|unmute|next|previous|back|restart|reset|maximi[sz]e|minimi[sz]e|louder|quieter|refresh|reload|close|clear|shuffle)$/i;
+
+/**
+ * Said so far, does it sound like a request or a question — something Jev may answer with a tool? The voice waits for
+ * the decision on these from the first words, instead of answering on its own ("I can't…") in the moment before
+ * routing catches up and then having to take it back. Reactions and statements ("that's funny", "I went to the
+ * store") don't wait, so ordinary conversation keeps its pace.
+ */
+export function soundsLikeAsk(text: string): boolean {
+  const t = text.trim();
+  const words = t.match(/[A-Za-z']+/g) ?? [];
+  if (words.length === 1) return ONE_WORD.test(words[0]!);
+  if (words.length < 2) return false;
+  if (COMMAND.test(t) || DETAIL.test(t) || SOLVE.test(t)) return true;
+  return words.length >= 3 && ASKED.test(t) && !SOCIAL.test(t);
 }
 
 interface Verdict {
