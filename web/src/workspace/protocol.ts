@@ -18,6 +18,14 @@ export interface WorkspaceActivity {
 /** What windows draw over the board: everything, alerts only (background chips and toasts), or nothing but the board. */
 export type WorkspaceOverlays = "all" | "alerts" | "none";
 
+/** A command for one card on the board; the board answers through a "board" client event. */
+export interface CardCommand {
+  id: string;
+  n: number;
+  op: string;
+  arg: unknown;
+}
+
 export interface WorkspaceSnapshot {
   /** Changes on every engine boot — reset version tracking when it does. */
   epoch: string;
@@ -48,6 +56,7 @@ export type WorkspaceEvent =
   | { type: "toast"; text: string; tone: ToastTone }
   | { type: "activity"; id: string; text: string; busy: boolean }
   | { type: "overlays"; overlays: WorkspaceOverlays }
+  | { type: "command"; cmd: CardCommand }
   | {
       type: "agent";
       kind: AgentKind;
@@ -62,7 +71,8 @@ export type WorkspaceEvent =
 /** Window → server. */
 export type WorkspaceClientEvent =
   | { type: "hello" }
-  | { type: "render_error"; templateId: string; message: string };
+  | { type: "render_error"; templateId: string; message: string }
+  | { type: "board"; evt: Record<string, unknown> };
 
 /** Messages between the host page and the sandboxed template iframe. */
 export type FrameToHost =
@@ -74,7 +84,7 @@ export type FrameToHost =
  * can't load http://localhost images themselves (Chromium's local-network protections), so
  * the host fetches them and the frame shows them from its own blob: URLs.
  */
-export type HostToFrame = { type: "state"; state: unknown } | { type: "asset"; url: string; blob: Blob | null };
+export type HostToFrame = { type: "state"; state: unknown } | { type: "asset"; url: string; blob: Blob | null } | { type: "command"; cmd: CardCommand };
 
 /** Cross-tab coordination on BroadcastChannel("trinity"). */
 export type TrinityBroadcast =

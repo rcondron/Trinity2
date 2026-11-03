@@ -162,6 +162,9 @@ keys are editable at runtime on the Settings page.
 | `make_image` / `make_audio` / `make_video` / `make_text` | Adds numbered floating card(s) (loader first). Several subjects (“a panda and a tiger”) → one card each, tagged by content. |
 | `remove_card` / `move_card` | Remove or reposition by number or content (“remove the tiger”, “move the tiger under the panda”), including layering (“put the tiger behind the panda”, “bring card 2 forward”). |
 | `arrange_cards` | Lays every card out in numerical order: an aligned grid of equal cards (“organize the cards”, “tidy up the board”), a stack, a row or a column; undo restores the old layout. |
+| `control_card` | Operates what's on a card: play, pause, restart, reset, mute, louder, skip, loop, speed, next / previous, press a named control, set a value, scroll — on videos, audio, timers, games and any widget, one card or several (“start the timer”, “pause everything”). The board runs it in the window and reports what actually happened. |
+| `read_card` | Reads a card or answers a question about it from its live text (“how much time is left on the timer?”, “what are the ingredients?”). |
+| `edit_note` / `rename_card` / `duplicate_card` | Change a note's words (“add eggs to the shopping list”, “cross off milk”), retitle a card, copy one. |
 | `resize_card` | A card's own size: maximize / full screen, minimize to a tile on the bottom row, restore, bigger, smaller, wider, narrower, taller, shorter — by number or content (“maximize card 2”, “make the tiger bigger”). |
 | `figure_out` | **The problem solver.** For a request no tool covers: the Settings → Problem solver model plans, runs the tools in turn, tries another way when a step fails, forges a skill when none fits, and says what happened (in the background past eight seconds). |
 | `set_speech_rate` | Talk slower / faster / normal speed (browser playback rate). |
@@ -285,7 +288,15 @@ keys are editable at runtime on the Settings page.
 
 ### Floating card board (`workspace/board.ts`, `tools/media.ts`, `tools/screen.ts`, `tools/html.ts`)
 
-- Media, notes, builds and content cards share one board app (`board@5`): each **make_image** /
+- **Card selection.** Every board tool reads the same selection (`workspace/card-select.ts`): numbers and ranges
+  (“cards 2, 3 and 5”, “1 through 4”), all, a kind (“the pictures”), what cards show (“the tiger and the panda”), a
+  place (“the card on the left”), recency (“the last two”), a state (“the minimized ones”), exclusions (“everything
+  except the timer”, “keep card 2 and close the rest”) and pronouns (“it”, “them”) — the cards just made or acted on.
+- **Card commands.** `workspace/card-commands.ts` sends `{id, n, op, arg}` to the open windows; the board runs it
+  on the card (its video or audio, or inside a widget's frame: controls found by label, fields, media, scrolling, and
+  `window.trinityControls` hooks the coder is asked to define) and answers with what happened, so Trinity only says
+  “started the timer” when a Start control was pressed. Cards moved or resized by hand reach the engine the same way.
+- Media, notes, builds and content cards share one board app (`board@7`): each **make_image** /
   **make_audio** / **make_video** / **make_text** / **build_ui** / **show_card** call adds a
   **numbered floating card** at an absolute position (a tool's rendered page — search results — too).
   Cards show a loader while Mordiem works, then fill in when ready (`data/images|audio|videos/`).

@@ -351,6 +351,18 @@ listen(window, "message", function (event) {
     takeAsset(data);
     return;
   }
+  // A card command for the board template (it set window.trinity.oncommand); a throw still answers.
+  if (data.type === "command") {
+    var on = window.trinity && window.trinity.oncommand;
+    if (typeof on === "function") {
+      try {
+        on(data.cmd);
+      } catch (err) {
+        try { window.trinity.send({ __trinity: "board", op: "cmd_result", id: data.cmd && data.cmd.id, ok: false, reason: "error", detail: describe(err) }); } catch (e) { /* ignore */ }
+      }
+    }
+    return;
+  }
   if (data.type !== "state") return;
   latest = normalize(data.state);
   hasLatest = true;

@@ -54,7 +54,7 @@ function toolSheet(tools: Tool[]): string {
       const args = Object.entries(t.input).map(
         ([k, s]) => `${k}${s.required ? "*" : ""}: ${s.type}${s.options ? ` one of ${Object.keys(s.options).join("|")}` : ""} — ${clip(s.description.replace(/\s+/g, " "), 100)}`,
       );
-      const mode = t.argMode === "raw" ? ' [no args: give it "words", a plain-English instruction]' : "";
+      const mode = t.argMode === "raw" ? ' [reads "words": the instruction for THIS step only, e.g. "close the pictures" — required]' : "";
       return `- ${t.name}: ${clip(t.description.replace(/\s+/g, " "), 260)}${mode}${args.length ? `\n    args: ${args.join("; ")}` : ""}`;
     })
     .join("\n");
@@ -64,7 +64,7 @@ function systemPrompt(persona: Persona, tools: Tool[]): string {
   return [
     `You are the problem-solver behind ${persona.name}, a voice assistant on a live call. The user asked for something no single tool obviously covers; work it out with the tools below, one step at a time.`,
     "Each turn, reply ONLY with one JSON object:",
-    '  {"thought": "<short>", "call": {"tool": "<name>", "args": {...}, "words": "<plain-English instruction for the tool>"}}   to use a tool (args for its listed args; words for a tool that reads a sentence)',
+    '  {"thought": "<short>", "call": {"tool": "<name>", "args": {...}, "words": "<this step only, in plain English>"}}   to use a tool — one step per call: its words say only this step ("close the pictures", then "start the timer"), never the whole request',
     '  {"thought": "<short>", "done": true, "say": "<one or two spoken sentences>"}   when the job is done, or as far as it can go',
     '  {"thought": "<short>", "done": false, "say": "<one short question>"}   when you need something only the user knows',
     'Rules: never claim something happened unless a tool result says so; keep to what the user asked; prefer the tools listed; when a step fails, try a different way, at most twice; when no tool can do it, call create_skill with a precise "need" (a reusable tool to build), then finish with done:true saying the skill is being made.',
@@ -106,7 +106,18 @@ export async function solve(input: SolveInput): Promise<SolveResult> {
         user = `Result: there is no tool called ${name}. Use one of the listed tools, or finish.`;
         continue;
       }
-      const words = typeof plan.call.words === "string" && plan.call.words.trim() ? plan.call.words.trim() : input.utterance;
+      let given = typeof plan.call.words === "string" && plan.call.words.trim() ? plan.call.words.trim() : "";
+      // A tool that reads a sentence acts on its words: the whole request would make it do the other steps' parts too.
+      // Its one free-text argument (create_skill's "need") says the step just as well; otherwise the step comes back.
+      if (!given && tool.argMode === "raw") {
+        const free = tool.options ? [] : Object.entries(tool.input).filter(([k, spec]) => !spec.options && typeof plan.call?.args?.[k] === "string" && String(plan.call.args[k]).trim());
+        if (free.length === 1) given = String(plan.call.args![free[0]![0]]).trim();
+        else {
+          user = `Result: ${name} reads "words" — call it again with the instruction for just this step (for example "close the pictures"), not the whole request.`;
+          continue;
+        }
+      }
+      const words = given || input.utterance;
       input.onStep?.(`${modelName(model)}: ${name.replace(/_/g, " ")}…`);
       const options: Decision["options"] = {};
       for (const [k, v] of Object.entries(plan.call.args ?? {}))

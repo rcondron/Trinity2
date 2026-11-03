@@ -63,8 +63,17 @@ export interface AgentEvent {
   args?: Record<string, unknown>;
 }
 
+/** A command for one card on the board (workspace/card-commands.ts); the board answers with a "board" client event. */
+export interface CardCommand {
+  id: string;
+  n: number;
+  op: string;
+  arg: unknown;
+}
+
 export type WorkspaceEvent =
   | { type: "snapshot"; snapshot: WorkspaceSnapshot }
+  | { type: "command"; cmd: CardCommand }
   | { type: "state"; version: number; state: unknown; title: string }
   | { type: "template"; version: number; template: WorkspaceTemplate; state: unknown; title: string }
   | { type: "html"; version: number; title: string; html: string }
@@ -75,7 +84,9 @@ export type WorkspaceEvent =
 
 export type WorkspaceClientEvent =
   | { type: "hello" }
-  | { type: "render_error"; templateId: string; message: string };
+  | { type: "render_error"; templateId: string; message: string }
+  /** From the card board's own template only (the window checks): a command's answer, or a layout made by hand. */
+  | { type: "board"; evt: Record<string, unknown> };
 
 type Send = (e: WorkspaceEvent) => void;
 
@@ -150,6 +161,7 @@ export class WorkspaceBus {
   private unsaved: WorkspaceSnapshot | null = null;
   /** Recent screens that clear / remove can bring back. */
   private undoStack: WorkspaceUndoEntry[] = [];
+  private boardListeners = new Set<(evt: Record<string, unknown>) => void>();
 
   constructor(private persistPath: string | null = STORE) {
     this.restore();
@@ -219,6 +231,17 @@ export class WorkspaceBus {
     this.subs.add(send);
     this.safeSend(send, { type: "snapshot", snapshot: this.snapshot() });
     return () => this.subs.delete(send);
+  }
+
+  /** A command for one card, to every open window (the first answer wins — see card-commands.ts). */
+  command(cmd: CardCommand): void {
+    this.broadcast({ type: "command", cmd });
+  }
+
+  /** Board events from the windows (command answers, hand-made layouts). Returns an unsubscribe. */
+  onBoardEvent(cb: (evt: Record<string, unknown>) => void): () => void {
+    this.boardListeners.add(cb);
+    return () => this.boardListeners.delete(cb);
   }
 
   /** Settings → Workspace window → Overlays: every open window follows at once. */
@@ -383,6 +406,18 @@ export class WorkspaceBus {
   }
 
   handleClient(evt: WorkspaceClientEvent): void {
+    if (evt.type === "board") {
+      const e = evt.evt;
+      if (!e || typeof e !== "object" || Array.isArray(e)) return;
+      for (const cb of this.boardListeners) {
+        try {
+          cb(e);
+        } catch (err) {
+          console.warn("[workspace] board listener failed:", (err as Error).message);
+        }
+      }
+      return;
+    }
     if (evt.type === "render_error") {
       if (!evt.templateId || this.badTemplates.has(evt.templateId)) return; // loop guard
       this.badTemplates.add(evt.templateId);

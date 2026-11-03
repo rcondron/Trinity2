@@ -1,6 +1,7 @@
 import { jsonChat } from "../services/json-chat.js";
 import { search } from "../services/web.js";
 import type { Tool } from "../types.js";
+import { registerCardTools } from "./cards.js";
 import { registerContentTools } from "./content.js";
 import { registerHtmlTools } from "./html.js";
 import { registerMediaTools } from "./media.js";
@@ -81,6 +82,7 @@ const getTime: Tool = {
 export function registerBuiltins(): void {
   [webSearch, getTime].forEach(registerTool);
   registerScreenTools();
+  registerCardTools();
   registerSolveTools();
   registerMediaTools();
   registerContentTools();

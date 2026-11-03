@@ -207,7 +207,7 @@ function restartClass(el: Element, cls: string): void {
   el.classList.add(cls);
 }
 
-/** The card board hosts its widgets in isolated child frames of its own (see FramePayload.nested). */
+/** The engine's card board (board@N): it hosts its widgets in isolated child frames of its own (see FramePayload.nested), and only it may run card commands or speak for the board. */
 const isBoardTemplate = (t: WorkspaceTemplate | null): boolean => /^board@\d+$/.test(t?.id ?? "");
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -789,6 +789,9 @@ class WorkspaceView {
       case "overlays":
         this.setOverlays(evt.overlays);
         return;
+      case "command":
+        this.postCommand(evt.cmd);
+        return;
       case "agent":
         this.pushAgent(evt);
         return;
@@ -1099,6 +1102,18 @@ class WorkspaceView {
     }
   }
 
+  /** A card command: into the live card board (only the board's own template runs it, and answers through a ui_event). */
+  private postCommand(cmd: unknown): void {
+    const frame = this.current;
+    if (!frame || frame.kind !== "app" || !frame.ready || !isBoardTemplate(frame.template)) return;
+    const msg: HostToFrame = { type: "command", cmd: cmd as Extract<HostToFrame, { type: "command" }>["cmd"] };
+    try {
+      frame.el.contentWindow?.postMessage(msg, "*");
+    } catch {
+      /* the frame went away; the engine times out */
+    }
+  }
+
   /** Hot update: post the state into the live frame (queued until it's ready). */
   private pushState(raw: unknown): boolean {
     const target = this.pending ?? this.current;
@@ -1180,6 +1195,12 @@ class WorkspaceView {
     }
     if (internal === "link") {
       this.askToOpen(frame, String((evt as { href?: unknown }).href ?? ""));
+      return;
+    }
+    // The card board's own events (a command's answer, a card moved or resized by hand) go to the engine — and only
+    // from the board template: a built page in the workspace can't speak for the board.
+    if (internal === "board") {
+      if (frame.kind === "app" && isBoardTemplate(frame.template)) this.sendClient({ type: "board", evt: evt as Record<string, unknown> });
       return;
     }
     this.safe(() => this.opts.onUiEvent?.(evt));

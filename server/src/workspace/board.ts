@@ -65,8 +65,327 @@ const SLOT: Array<{ x: number; y: number }> = [
   { x: 50, y: 66 },
 ];
 
+/**
+ * The runtime that operates a card from inside it — the board's own video and audio, and every widget's document:
+ * its controls by label, its fields, its media, its scrolling, and the window.trinityControls hooks a widget may
+ * define. Plain ES5 with no backticks, no "${" and no closing tags, so it can sit in a script tag and inside a string.
+ */
+const CARD_RUNTIME = String.raw`(function () {
+  if (window.__trinityCard) return;
+  var SYN = {
+    play: ["start", "play", "resume", "go", "begin", "run", "unpause", "continue", "\u25b6", "\u25ba", "\u23f5"],
+    pause: ["pause", "stop", "halt", "hold", "freeze", "\u23f8", "\u23f9", "\u25a0", "\u275a\u275a"],
+    restart: ["restart", "replay", "start over", "play again", "again", "new game", "\u21bb", "\u27f3"],
+    reset: ["reset", "clear", "zero", "\u21ba", "\u27f2", "\ud83d\udd04"],
+    next: ["next", "forward", "skip", "\u203a", "\u00bb", "\u2192", "\u23ed"],
+    previous: ["previous", "prev", "back", "\u2039", "\u00ab", "\u2190", "\u23ee"],
+    mute: ["mute", "sound off", "\ud83d\udd07"],
+    unmute: ["unmute", "sound on", "\ud83d\udd0a", "\ud83d\udd08"]
+  };
+  var AVOID = { play: SYN.restart.concat(SYN.reset, SYN.previous), next: SYN.previous, previous: SYN.next };
+  var ALIAS = { play: ["play", "start", "resume"], pause: ["pause", "stop"], restart: ["restart"], reset: ["reset", "clear"], next: ["next"], previous: ["previous", "prev", "back"], set: ["set"], read: ["read", "status"], mute: ["mute"], unmute: ["unmute"], press: ["press"] };
+  var MEDIA = { play: 1, pause: 1, restart: 1, reset: 1, mute: 1, unmute: 1, louder: 1, quieter: 1, forward: 1, back: 1, loop: 1, no_loop: 1, faster: 1, slower: 1, normal_speed: 1 };
+  var CONTROL = 'button,[role="button"],input[type="button"],input[type="submit"],input[type="reset"],a[href],[onclick],[data-action]';
+  function canon(s) {
+    return String(s == null ? "" : s).toLowerCase()
+      .replace(/\bplus\b/g, "+").replace(/\bminus\b/g, "-").replace(/\u2212/g, "-")
+      .replace(/\b(?:minutes?|mins?)\b/g, "min").replace(/\b(?:seconds?|secs?)\b/g, "sec").replace(/\b(?:hours?|hrs?)\b/g, "hr")
+      .replace(/\bone\b/g, "1").replace(/\btwo\b/g, "2").replace(/\bfive\b/g, "5").replace(/\bten\b/g, "10")
+      .replace(/([+\-\u00d7\u00f7])/g, " $1 ").replace(/(\d)([a-z])/g, "$1 $2")
+      .replace(/\s+/g, " ").trim();
+  }
+  function nameOf(el) {
+    var l = el.getAttribute("aria-label") || el.getAttribute("title") || "";
+    if (!l) l = el.tagName === "INPUT" ? el.value : (el.innerText || el.textContent || "");
+    return String(l).replace(/\s+/g, " ").trim().slice(0, 60);
+  }
+  function labelOf(el) { return canon(nameOf(el)).slice(0, 60); }
+  function shown(el) {
+    if (el.disabled || el.getAttribute("aria-disabled") === "true") return false;
+    var r = el.getBoundingClientRect();
+    if (!r.width || !r.height) return false;
+    var st = window.getComputedStyle(el);
+    return st.visibility !== "hidden" && st.display !== "none";
+  }
+  function controls(root) {
+    var q = root.querySelectorAll(CONTROL), out = [];
+    for (var i = 0; i < q.length; i++) {
+      var el = q[i];
+      if (!shown(el)) continue;
+      var outer = el.parentElement && el.parentElement.closest ? el.parentElement.closest(CONTROL) : null;
+      if (outer && root.contains(outer)) continue;
+      var l = labelOf(el);
+      if (l) out.push({ el: el, label: l, name: nameOf(el) });
+    }
+    return out;
+  }
+  function labels(root) {
+    var cs = controls(root), out = [];
+    for (var i = 0; i < cs.length && out.length < 30; i++) if (out.indexOf(cs[i].name) < 0) out.push(cs[i].name);
+    return out;
+  }
+  function score(label, words) {
+    var best = 0;
+    for (var i = 0; i < words.length; i++) {
+      var w = canon(words[i]);
+      if (!w) continue;
+      if (label === w) return 3;
+      var symbol = !/[a-z0-9]/.test(w);
+      if (symbol ? label.indexOf(w) >= 0 : (" " + label + " ").indexOf(" " + w + " ") >= 0) best = 2;
+    }
+    return best;
+  }
+  function find(root, words, avoid) {
+    var cs = controls(root), best = null, bs = 0;
+    for (var i = 0; i < cs.length; i++) {
+      var s = score(cs[i].label, words);
+      if (!s) continue;
+      if (avoid && s < 3 && score(cs[i].label, avoid) >= 2) continue;
+      if (s > bs) { bs = s; best = cs[i]; }
+    }
+    return best;
+  }
+  function press(root, arg) {
+    var want = canon(arg).replace(/\b(?:the|a|an|button|control|key)\b/g, " ").replace(/\s+/g, " ").trim();
+    if (!want) return { ok: false, reason: "no-control", controls: labels(root) };
+    var cs = controls(root), toks = want.split(" "), best = null, bs = 0;
+    for (var i = 0; i < cs.length; i++) {
+      var l = cs[i].label, s = 0;
+      if (l === want) s = 100;
+      else if ((" " + l + " ").indexOf(" " + want + " ") >= 0) s = 60;
+      else {
+        for (var k = 0; k < toks.length; k++) if (toks[k] && (" " + l + " ").indexOf(" " + toks[k] + " ") >= 0) s += 20;
+        if (s && l.split(" ").length > toks.length + 2) s -= 5;
+      }
+      if (s > bs) { bs = s; best = cs[i]; }
+    }
+    if (!best) return { ok: false, reason: "no-control", controls: labels(root) };
+    best.el.click();
+    return { ok: true, via: "click", label: best.name };
+  }
+  function fields(root) {
+    var q = root.querySelectorAll('input,textarea,select,[contenteditable="true"],[contenteditable=""]'), out = [];
+    for (var i = 0; i < q.length; i++) {
+      var el = q[i], ty = (el.getAttribute("type") || "").toLowerCase();
+      if (/^(?:button|submit|reset|checkbox|radio|hidden|file|image|color)$/.test(ty) || !shown(el)) continue;
+      out.push(el);
+    }
+    return out;
+  }
+  function fieldName(el) {
+    var lab = "";
+    try { if (el.labels && el.labels.length) lab = el.labels[0].innerText || ""; } catch (e) {}
+    return String(lab || el.getAttribute("aria-label") || el.getAttribute("placeholder") || el.getAttribute("name") || el.id || "").replace(/\s+/g, " ").trim().slice(0, 60);
+  }
+  function fieldLabel(el) {
+    var l = el.getAttribute("aria-label") || el.getAttribute("placeholder") || el.getAttribute("name") || el.id || "";
+    try { if (el.labels && el.labels.length) l = (el.labels[0].innerText || "") + " " + l; } catch (e) {}
+    return canon(l).slice(0, 60);
+  }
+  function clock(value) {
+    var v = canon(value), m = /(\d+)\s*:\s*(\d{1,2})/.exec(v);
+    if (m) return m[1] + ":" + ("0" + m[2]).slice(-2);
+    var mins = /(\d+(?:\.\d+)?)\s*min/.exec(v), secs = /(\d+)\s*sec/.exec(v), hrs = /(\d+)\s*hr/.exec(v);
+    if (!mins && !secs && !hrs) return /^\d+$/.test(v) ? v + ":00" : null;
+    var total = (hrs ? Number(hrs[1]) * 3600 : 0) + (mins ? Number(mins[1]) * 60 : 0) + (secs ? Number(secs[1]) : 0);
+    return Math.floor(total / 60) + ":" + ("0" + Math.round(total % 60)).slice(-2);
+  }
+  function setValue(root, arg) {
+    var value = arg && typeof arg === "object" ? String(arg.value == null ? "" : arg.value) : String(arg == null ? "" : arg);
+    var want = canon(arg && typeof arg === "object" && arg.field ? arg.field : "");
+    if (!want) { var unit = /\b(min|sec|hr)\b/.exec(canon(value)); if (unit) want = unit[1]; }
+    var fs = fields(root);
+    if (!fs.length) return { ok: false, reason: "no-field", controls: labels(root) };
+    var el = fs.length === 1 ? fs[0] : null;
+    if (!el && want) {
+      var bs = 0, tw = want.split(" ");
+      for (var i = 0; i < fs.length; i++) {
+        var fl = fieldLabel(fs[i]), s = 0;
+        for (var k = 0; k < tw.length; k++) if (tw[k] && fl.indexOf(tw[k]) >= 0) s++;
+        if (s > bs) { bs = s; el = fs[i]; }
+      }
+    }
+    if (!el) el = fs[0];
+    var ty = (el.getAttribute("type") || "").toLowerCase(), v = value, hint = String(el.value || "") + " " + (el.getAttribute("placeholder") || "");
+    if (ty === "number" || ty === "range") {
+      var num = /-?\d+(?:\.\d+)?/.exec(canon(value));
+      if (!num) return { ok: false, reason: "error", detail: "not a number: " + value };
+      v = num[0];
+    } else if (/\d+\s*:\s*\d\d/.test(hint) || /mm\s*:\s*ss/i.test(hint)) {
+      v = clock(value) || value;
+    }
+    if (el.tagName === "SELECT") {
+      var o = el.options, at = -1, cv = canon(value);
+      for (var j = 0; j < o.length; j++) { var ot = canon(o[j].text); if (ot === cv || ot.indexOf(cv) >= 0) { at = j; break; } }
+      if (at < 0) return { ok: false, reason: "error", detail: "no option like " + value };
+      el.selectedIndex = at;
+      v = o[at].text;
+    } else if (el.isContentEditable) el.textContent = v;
+    else el.value = v;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    var confirm = find(root, ["set", "apply", "ok", "save", "update", "done"]);
+    if (confirm && confirm.el !== el) confirm.el.click();
+    else {
+      try {
+        el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
+        el.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", bubbles: true }));
+      } catch (e) {}
+    }
+    return { ok: true, via: "input", label: fieldName(el) || el.tagName.toLowerCase(), detail: String(v) };
+  }
+  function scroller(root) {
+    var doc = root.ownerDocument || document, best = null, area = 0, all = root.querySelectorAll("*");
+    for (var i = 0; i < all.length && i < 3000; i++) {
+      var el = all[i];
+      if (el.scrollHeight > el.clientHeight + 8) {
+        var oy = window.getComputedStyle(el).overflowY;
+        if (oy === "auto" || oy === "scroll") { var a = el.clientWidth * el.clientHeight; if (a > area) { area = a; best = el; } }
+      }
+    }
+    if (!best && root === doc.body) best = doc.scrollingElement || doc.documentElement;
+    return best;
+  }
+  function scroll(root, op) {
+    var el = scroller(root);
+    if (!el) return { ok: false, reason: "at-end", detail: "nothing to scroll" };
+    var before = el.scrollTop, h = el.clientHeight || 300;
+    if (op === "scroll_top") el.scrollTop = 0;
+    else el.scrollTop = before + (op === "scroll_down" ? 0.8 : -0.8) * h;
+    return Math.abs(el.scrollTop - before) > 1 ? { ok: true, via: "scroll" } : { ok: false, reason: op === "scroll_down" ? "at-end" : "at-top" };
+  }
+  function fmt(t) { t = Math.max(0, Math.floor(t || 0)); return Math.floor(t / 60) + ":" + (t % 60 < 10 ? "0" : "") + (t % 60); }
+  function mediaState(m) {
+    return { paused: !!m.paused, t: Math.round((m.currentTime || 0) * 10) / 10, dur: isFinite(m.duration) ? Math.round(m.duration * 10) / 10 : 0, muted: !!m.muted, volume: Math.round((m.volume || 0) * 100) / 100, rate: m.playbackRate || 1, loop: !!m.loop };
+  }
+  function mediaText(m) {
+    return (m.paused ? "paused" : "playing") + " at " + fmt(m.currentTime) + (isFinite(m.duration) ? " of " + fmt(m.duration) : "") + (m.muted ? ", muted" : "") + (m.loop ? ", looping" : "") + (m.playbackRate && m.playbackRate !== 1 ? ", " + m.playbackRate + "x speed" : "");
+  }
+  function readText(root) {
+    var t = String(root.innerText || root.textContent || "").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+    var extra = [], fs = fields(root);
+    for (var i = 0; i < fs.length && i < 10; i++) {
+      var el = fs[i], v = el.tagName === "SELECT" ? ((el.options[el.selectedIndex] || {}).text || "") : el.isContentEditable ? "" : String(el.value || "");
+      if (v) extra.push((fieldName(el) || "field") + ": " + v);
+    }
+    var ms = root.querySelectorAll("video,audio");
+    for (var j = 0; j < ms.length && j < 3; j++) extra.push((ms[j].tagName === "VIDEO" ? "video " : "audio ") + mediaText(ms[j]));
+    return (t + (extra.length ? "\n" + extra.join("\n") : "")).slice(0, 4000);
+  }
+  function settle(ms) { return new Promise(function (res) { setTimeout(res, ms); }); }
+  function mediaOp(m, op, arg) {
+    var sec = Number(arg), playing = !m.paused;
+    if (!isFinite(sec) || sec <= 0) sec = 10;
+    if (op === "play" && playing) return Promise.resolve({ ok: true, via: "media", already: "playing", media: mediaState(m) });
+    try {
+      if (op === "pause") m.pause();
+      else if (op === "reset") { m.pause(); m.currentTime = 0; }
+      else if (op === "restart") m.currentTime = 0;
+      else if (op === "mute") m.muted = true;
+      else if (op === "unmute") { m.muted = false; if (!m.volume) m.volume = 0.7; }
+      else if (op === "louder") { m.muted = false; m.volume = Math.min(1, Math.round(((m.volume || 0) + 0.2) * 100) / 100); }
+      else if (op === "quieter") m.volume = Math.max(0, Math.round(((m.volume || 0) - 0.2) * 100) / 100);
+      else if (op === "forward") m.currentTime = Math.min(isFinite(m.duration) ? m.duration : 1e9, (m.currentTime || 0) + sec);
+      else if (op === "back") m.currentTime = Math.max(0, (m.currentTime || 0) - sec);
+      else if (op === "loop") m.loop = true;
+      else if (op === "no_loop") m.loop = false;
+      else if (op === "faster") m.playbackRate = Math.min(3, (m.playbackRate || 1) + 0.25);
+      else if (op === "slower") m.playbackRate = Math.max(0.25, (m.playbackRate || 1) - 0.25);
+      else if (op === "normal_speed") m.playbackRate = 1;
+    } catch (err) {
+      return Promise.resolve({ ok: false, reason: "error", detail: String((err && err.message) || err).slice(0, 160) });
+    }
+    if (op === "play" || op === "restart") {
+      var p;
+      try { p = m.play(); } catch (err) { p = Promise.reject(err); }
+      return Promise.resolve(p).then(function () { return { ok: true, via: "media", media: mediaState(m) }; }, function (err) {
+        return { ok: false, reason: err && err.name === "NotAllowedError" ? "blocked" : "error", detail: String((err && err.message) || err).slice(0, 160), media: mediaState(m) };
+      });
+    }
+    if ((op === "unmute" || op === "louder") && playing) {
+      // A browser that won't play sound without a click pauses the media instead: say so, and keep it playing muted.
+      return settle(250).then(function () {
+        if (m.paused) { m.muted = true; try { m.play(); } catch (e) {} return { ok: false, reason: "blocked", media: mediaState(m) }; }
+        return { ok: true, via: "media", media: mediaState(m) };
+      });
+    }
+    return Promise.resolve({ ok: true, via: "media", media: mediaState(m) });
+  }
+  function byVerb(root, op) {
+    var hit = find(root, SYN[op], AVOID[op]);
+    if (hit) { hit.el.click(); return { ok: true, via: "click", label: hit.name }; }
+    if (op === "restart") {
+      var r = find(root, SYN.reset);
+      if (r) {
+        r.el.click();
+        var s = find(root, SYN.play, AVOID.play);
+        if (s) setTimeout(function () { var again = find(root, SYN.play, AVOID.play); if (again) again.el.click(); }, 80);
+        return { ok: true, via: "click", label: r.name + (s ? " + " + s.name : "") };
+      }
+    }
+    if (op === "play") { var running = find(root, SYN.pause); if (running) return { ok: true, already: "running", label: running.name }; }
+    if (op === "pause") { var idle = find(root, SYN.play, AVOID.play); if (idle) return { ok: true, already: "paused", label: idle.name }; }
+    return { ok: false, reason: "no-control", controls: labels(root) };
+  }
+  function hook(op) {
+    var h = window.trinityControls;
+    if (!h || typeof h !== "object") return null;
+    var names = ALIAS[op] || [op];
+    for (var i = 0; i < names.length; i++) if (typeof h[names[i]] === "function") return h[names[i]];
+    return null;
+  }
+  function run(root, op, arg) {
+    try {
+      if (op === "read") {
+        var reader = hook("read"), extra = "";
+        if (reader) { try { extra = String(reader() || ""); } catch (e) {} }
+        return Promise.resolve({ ok: true, via: "read", text: ((extra ? extra + "\n" : "") + readText(root)).slice(0, 4000) });
+      }
+      if (op === "controls") return Promise.resolve({ ok: true, via: "read", controls: labels(root) });
+      var h = hook(op);
+      if (!h && op === "restart" && hook("reset") && hook("play")) {
+        var doReset = hook("reset"), doPlay = hook("play");
+        return Promise.resolve().then(function () { return doReset(); }).then(function () { return doPlay(); }).then(function () { return { ok: true, via: "hook", label: "restart" }; });
+      }
+      if (h) return Promise.resolve().then(function () { return h(arg && typeof arg === "object" ? arg.value : arg); }).then(function () { return { ok: true, via: "hook", label: op }; });
+      var media = root.querySelector("video,audio");
+      if (media && MEDIA[op]) return mediaOp(media, op, arg);
+      if (op === "press") return Promise.resolve(press(root, arg));
+      if (op === "set") return Promise.resolve(setValue(root, arg));
+      if (op === "scroll_down" || op === "scroll_up" || op === "scroll_top") return Promise.resolve(scroll(root, op));
+      if (SYN[op]) return Promise.resolve(byVerb(root, op));
+      return Promise.resolve({ ok: false, reason: "no-control", controls: labels(root) });
+    } catch (err) {
+      return Promise.resolve({ ok: false, reason: "error", detail: String((err && err.message) || err).slice(0, 160) });
+    }
+  }
+  window.__trinityCard = { run: run, mediaOp: mediaOp, mediaText: mediaText, mediaState: mediaState, readText: readText, scroll: scroll, labels: labels };
+})();`;
+
+/** In a widget's document: run what the board sends (from the board only) and answer it. */
+const CARD_LISTENER = String.raw`(function () {
+  if (window.__trinityCardListening) return;
+  window.__trinityCardListening = true;
+  window.addEventListener("message", function (e) {
+    if (e.source !== window.parent) return;
+    var d = e.data;
+    if (!d || d.__trinity !== "cmd" || !window.__trinityCard) return;
+    var id = d.id;
+    var reply = function (r) {
+      var out = {};
+      for (var k in r) if (Object.prototype.hasOwnProperty.call(r, k)) out[k] = r[k];
+      out.__trinity = "cmd_result";
+      out.id = id;
+      try { window.parent.postMessage(out, "*"); } catch (x) {}
+    };
+    window.__trinityCard.run(document.body || document.documentElement, String(d.op || ""), d.arg).then(reply, function (err) {
+      reply({ ok: false, reason: "error", detail: String((err && err.message) || err).slice(0, 160) });
+    });
+  });
+})();`;
+
 export const BOARD_TEMPLATE: WorkspaceTemplate = {
-  id: "board@6",
+  id: "board@7",
   kind: "default",
   name: "Card board",
   source:
@@ -118,6 +437,7 @@ export const BOARD_TEMPLATE: WorkspaceTemplate = {
 @keyframes rise{from{opacity:0;transform:translateY(10px) scale(.98)}to{opacity:1;transform:none}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important}}
 </style>
+<script>${CARD_RUNTIME}</script>
 <div id="board"></div>
 <script>
 (function () {
@@ -127,6 +447,11 @@ export const BOARD_TEMPLATE: WorkspaceTemplate = {
   var local = Object.create(null);
   var busy = Object.create(null);
   var zTop = 1;
+  var cardsBy = Object.create(null);
+  var waiting = Object.create(null);
+  var RT = window.__trinityCard;
+  var CARD_RT = ${JSON.stringify(`${CARD_RUNTIME}
+${CARD_LISTENER}`)};
   var PLAY = '<svg viewBox="0 0 24 24"><path d="M8 5.2v13.6a.8.8 0 0 0 1.2.7l10.6-6.8a.8.8 0 0 0 0-1.4L9.2 4.5A.8.8 0 0 0 8 5.2z"/></svg>';
   var PAUSE = '<svg viewBox="0 0 24 24"><rect x="6" y="5" width="4.5" height="14" rx="1.2"/><rect x="13.5" y="5" width="4.5" height="14" rx="1.2"/></svg>';
   var BROWSE_SANDBOX = "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads";
@@ -138,7 +463,7 @@ export const BOARD_TEMPLATE: WorkspaceTemplate = {
     'function isFrame(n){var m=n.nodeName.toUpperCase();return m==="IFRAME"||m==="FRAME"||m==="OBJECT"||m==="EMBED"}' +
     'try{new MutationObserver(function(rs){for(var i=0;i<rs.length;i++){var a=rs[i].addedNodes;for(var j=0;j<a.length;j++){var n=a[j];if(!n||n.nodeType!==1)continue;if(isFrame(n)){if(n.parentNode)n.parentNode.removeChild(n);continue}if(n.querySelectorAll){var q=n.querySelectorAll("iframe,frame,object,embed");for(var k=0;k<q.length;k++)if(q[k].parentNode)q[k].parentNode.removeChild(q[k])}}}}).observe(document,{childList:true,subtree:true})}catch(e){}' +
     'document.addEventListener("click",function(e){var t=e.target;var a=t&&t.closest?t.closest("a[href]"):null;if(!a)return;var h=(a.getAttribute("href")||"").trim();var l=h.toLowerCase();if(l.indexOf("https://")===0||l.indexOf("http://")===0){e.preventDefault();try{parent.postMessage({__trinity:"link",href:h},"*")}catch(x){}}else if(l.charAt(0)!=="#"){e.preventDefault()}},true);' +
-    "})()<" + "/script>";
+    "})()<" + "/script><scr" + "ipt>" + CARD_RT + "<" + "/script>";
   function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];});}
   function fmt(t){t=Math.max(0,Math.floor(t||0));return Math.floor(t/60)+":"+(t%60<10?"0":"")+(t%60);}
   function clamp(n,a,b){return Math.max(a,Math.min(b,n));}
@@ -197,7 +522,7 @@ export const BOARD_TEMPLATE: WorkspaceTemplate = {
   function mediaBody(c){
     if(c.html){
       if(c.status==="error") return '<p class="cap err">'+esc(c.error||"Couldn't edit that")+"</p>";
-      return '<iframe sandbox="allow-scripts" title="'+esc(c.title||("Card "+c.n))+'"></iframe>';
+      return '<iframe sandbox="allow-scripts" allow="autoplay" title="'+esc(c.title||("Card "+c.n))+'"></iframe>';
     }
     if(c.kind==="widget"){
       if(c.status==="error") return '<p class="cap err">'+esc(c.error||"Couldn't build that")+"</p>";
@@ -261,7 +586,8 @@ export const BOARD_TEMPLATE: WorkspaceTemplate = {
     if(c.status==="pending"&&c.model) html+='<p class="cap">'+esc(c.model)+"</p>";
     html+='<div class="grip" data-resize="'+c.n+'" title="Resize"></div>';
     var keepFrame=!!c.html&&el.querySelector(".body iframe")&&widgetHtml[c.n]===String(c.html||"");
-    if(!keepFrame) el.innerHTML=html;
+    // Rebuilt only when what it shows changed: a move or a resize keeps a playing video, its sound and its place.
+    if(!keepFrame){ if(el._html!==html){ el.innerHTML=html; el._html=html; } }
     else {
       var title=el.querySelector(".title"); if(title) title.textContent=c.title||("Card "+c.n);
       var kind=el.querySelector(".kind"); if(kind) kind.textContent=c.kind;
@@ -325,8 +651,60 @@ export const BOARD_TEMPLATE: WorkspaceTemplate = {
     var h=d.href.trim(), l=h.toLowerCase();
     if(l.indexOf("https://")===0||l.indexOf("http://")===0) window.open(h);
   });
+  // Commands from the engine (workspace/card-commands.ts): run on the card itself — its video or audio here, or inside
+  // a widget's frame (the card runtime there answers) — and report what happened.
+  function answer(id, n, r){
+    r = r || {};
+    emit({__trinity:"board", op:"cmd_result", id:id, n:n, ok:!!r.ok, via:r.via, label:r.label, already:r.already, reason:r.reason, detail:r.detail, controls:r.controls, text:r.text, media:r.media});
+  }
+  function onCommand(cmd){
+    if(!cmd||typeof cmd!=="object") return;
+    var id=String(cmd.id||""), n=Number(cmd.n), op=String(cmd.op||""), arg=cmd.arg;
+    var el=board.querySelector('[data-n="'+n+'"]'), c=cardsBy[n];
+    if(!el||!c) return answer(id,n,{ok:false,reason:"missing"});
+    if(c.status==="pending") return answer(id,n,{ok:false,reason:"pending"});
+    if(!RT) return answer(id,n,{ok:false,reason:"error",detail:"no card runtime"});
+    if(c.kind==="audio"&&!c.html){
+      var a=audioBy[n];
+      if(!a) return answer(id,n,{ok:false,reason:"no-media"});
+      if(op==="read") return answer(id,n,{ok:true,via:"read",text:"audio "+RT.mediaText(a),media:RT.mediaState(a)});
+      if(op==="controls") return answer(id,n,{ok:true,controls:["play","pause","restart","mute","louder","quieter","skip ahead","skip back","loop"]});
+      return RT.mediaOp(a,op,arg).then(function(r){ refreshAudio(n); answer(id,n,r); });
+    }
+    var frame=el.querySelector(".body iframe");
+    if(frame){
+      if(frame.hasAttribute("src")) return answer(id,n,{ok:false,reason:"external"});
+      var win=frame.contentWindow;
+      if(!win) return answer(id,n,{ok:false,reason:"no-answer"});
+      waiting[id]={win:win,n:n,timer:setTimeout(function(){ delete waiting[id]; answer(id,n,{ok:false,reason:"no-answer"}); },1800)};
+      try{ win.postMessage({__trinity:"cmd",id:id,op:op,arg:arg},"*"); }
+      catch(e){ clearTimeout(waiting[id].timer); delete waiting[id]; answer(id,n,{ok:false,reason:"error",detail:String(e)}); }
+      return;
+    }
+    var vid=el.querySelector(".body video");
+    if(vid){
+      if(op==="read") return answer(id,n,{ok:true,via:"read",text:"video "+RT.mediaText(vid),media:RT.mediaState(vid)});
+      if(op==="controls") return answer(id,n,{ok:true,controls:["play","pause","restart","mute","unmute","louder","quieter","skip ahead","skip back","loop","faster","slower"]});
+      return RT.mediaOp(vid,op,arg).then(function(r){ answer(id,n,r); });
+    }
+    var body=el.querySelector(".text-body")||el.querySelector(".body")||el;
+    if(op==="read") return answer(id,n,{ok:true,via:"read",text:String(body.innerText||c.text||"").slice(0,4000)});
+    if(op==="scroll_down"||op==="scroll_up"||op==="scroll_top") return answer(id,n,RT.scroll(el,op));
+    if(op==="controls") return answer(id,n,{ok:true,controls:[]});
+    return answer(id,n,{ok:false,reason:c.kind==="image"||c.kind==="text"?"no-media":"no-control"});
+  }
+  if(window.trinity) window.trinity.oncommand=onCommand;
+  // A widget frame's answer: only from the frame the command went to, only for a command still waiting.
+  window.addEventListener("message", function(e){
+    var d=e.data; if(!d||d.__trinity!=="cmd_result") return;
+    var w=waiting[d.id]; if(!w||w.win!==e.source) return;
+    clearTimeout(w.timer); delete waiting[d.id];
+    answer(d.id,w.n,d);
+  });
   window.render=function(state){
     var cards=(state&&state.cards)||[];
+    cardsBy=Object.create(null);
+    for(var ci=0;ci<cards.length;ci++) cardsBy[cards[ci].n]=cards[ci];
     var keep=Object.create(null);
     for(var i=0;i<cards.length;i++) keep[cards[i].n]=true;
     for(var k in audioBy){ if(!keep[k]){ try{audioBy[k].pause();}catch(e){} delete audioBy[k]; } }
@@ -389,7 +767,7 @@ function emptyState(): BoardState {
   return { cards: [] };
 }
 
-const LEGACY_BOARD_IDS = new Set(["board@1", "board@2", "board@3", "board@4", "board@5", BOARD_TEMPLATE.id]);
+const LEGACY_BOARD_IDS = new Set(["board@1", "board@2", "board@3", "board@4", "board@5", "board@6", BOARD_TEMPLATE.id]);
 
 function isBoard(): boolean {
   const s = workspace.snapshot();
@@ -464,7 +842,12 @@ export function describeBoard(): string {
         : "";
     const htmlBits = c.html ? `, editable HTML (${summarizeHtml(c.html)})` : "";
     const tags = (c.tags ?? []).length ? `, about: ${(c.tags ?? []).slice(0, 6).join(", ")}` : "";
-    return `card ${c.n} (${c.kind}, ${status}${size}${htmlBits}${tags}): ${c.title}`;
+    const cx = c.x + c.w / 2;
+    const cy = c.y + (c.h ?? 40) / 2;
+    const v = cy < 34 ? "top" : cy > 66 ? "bottom" : "";
+    const h = cx < 34 ? "left" : cx > 66 ? "right" : "";
+    const where = isMinimized(c) ? "minimized" : isMaximized(c) ? "full screen" : v && h ? `${v} ${h}` : v || h || "center";
+    return `card ${c.n} (${c.kind}, ${status}, ${where}${size}${htmlBits}${tags}): ${c.title}`;
   });
   return `The workspace board has ${cards.length} card${cards.length === 1 ? "" : "s"}: ${bits.join("; ")}.`;
 }
@@ -598,6 +981,7 @@ export function addCard(input: AddCardInput): BoardCard {
   };
   state.cards.push(card);
   write(state, "Workspace");
+  touchCards([n], true);
   return card;
 }
 
@@ -746,6 +1130,16 @@ export function moveCard(n: number, place: MovePlace): BoardCard | null {
   if (place === "front") {
     const maxZ = state.cards.reduce((m, c) => Math.max(m, c.z), 0);
     card.z = maxZ + 1;
+    // "Bring card 2 to the front" while it's a tile on the bottom row: it comes back to its size too.
+    if (isMinimized(card)) {
+      const was = card.prev;
+      card.w = was?.w ?? CARD_W[card.kind];
+      if (was?.h == null) delete card.h;
+      else card.h = was.h;
+      card.x = was?.x ?? card.x;
+      card.y = was?.y ?? 30;
+      delete card.prev;
+    }
   } else if (place === "back") {
     const minZ = state.cards.reduce((m, c) => Math.min(m, c.z), card.z);
     card.z = minZ - 1;
@@ -875,11 +1269,12 @@ export function resizeCard(n: number, how: ResizeHow, amount: ResizeAmount = "no
       break;
     case "minimize": {
       keep();
-      const slot = state.cards.filter((c) => c.n !== n && isMinimized(c)).length % 5;
+      // Tiles fill the bottom row five across, then the row above it.
+      const slot = state.cards.filter((c) => c.n !== n && isMinimized(c)).length % 15;
       card.w = MINI.w;
       card.h = MINI.h;
-      card.x = 2 + slot * 18;
-      card.y = MINI.y;
+      card.x = 2 + (slot % 5) * 18;
+      card.y = MINI.y - Math.floor(slot / 5) * 18;
       card.z = topZ(state.cards) + 1;
       break;
     }
@@ -928,9 +1323,167 @@ export function resizeCard(n: number, how: ResizeHow, amount: ResizeAmount = "no
   return card;
 }
 
+// ─── What was just touched ──────────────────────────────────────────────────
+
+let touched: { ns: number[]; at: number; adding: boolean } = { ns: [], at: 0, adding: false };
+
+/** Remember the cards just made or acted on, so "it", "them" and "both" mean them (cards made together stay together). */
+export function touchCards(ns: number[], adding = false): void {
+  const now = Date.now();
+  if (adding && touched.adding && now - touched.at < 6_000) touched = { ns: [...touched.ns, ...ns].slice(-12), at: now, adding };
+  else touched = { ns: [...ns].slice(-12), at: now, adding };
+}
+
+/** The cards last made or acted on that are still on the board (within the last quarter hour), oldest first. */
+export function lastTouched(): number[] {
+  if (Date.now() - touched.at > 15 * 60_000) return [];
+  const have = new Set(read().cards.map((c) => c.n));
+  return touched.ns.filter((n) => have.has(n));
+}
+
+// ─── Several cards at once ───────────────────────────────────────────────────
+
+/** Remove several cards in one step — one undo brings them all back. */
+export function removeCards(ns: number[]): BoardCard[] {
+  const state = read();
+  const gone = state.cards.filter((c) => ns.includes(c.n));
+  if (!gone.length) return [];
+  workspace.pushUndo(`remove_cards:${gone.map((c) => c.n).join(",")}`);
+  state.cards = state.cards.filter((c) => !ns.includes(c.n));
+  write(state);
+  return gone;
+}
+
+/** Resize several cards in one step (one undo). */
+export function resizeCards(ns: number[], how: ResizeHow, amount: ResizeAmount = "normal"): BoardCard[] {
+  workspace.pushUndo(`resize_cards:${how}`);
+  const out: BoardCard[] = [];
+  for (const n of ns) {
+    const c = resizeCard(n, how, amount);
+    if (c) out.push(c);
+  }
+  return out;
+}
+
+const withBox = (c: BoardCard, b: { x: number; y: number; w: number; h?: number; z: number }): BoardCard => {
+  const next: BoardCard = { ...c, x: b.x, y: b.y, w: b.w, z: b.z };
+  if (b.h == null) delete next.h;
+  else next.h = b.h;
+  return next;
+};
+
+/** Two cards trade places and sizes. */
+export function swapCards(a: number, b: number): [BoardCard, BoardCard] | null {
+  const state = read();
+  const A = state.cards.find((c) => c.n === a);
+  const B = state.cards.find((c) => c.n === b);
+  if (!A || !B || a === b) return null;
+  workspace.pushUndo(`swap_cards:${a},${b}`);
+  const boxA = { x: A.x, y: A.y, w: A.w, h: A.h, z: A.z };
+  const boxB = { x: B.x, y: B.y, w: B.w, h: B.h, z: B.z };
+  const nextA = withBox(A, boxB);
+  const nextB = withBox(B, boxA);
+  state.cards = state.cards.map((c) => (c.n === a ? nextA : c.n === b ? nextB : c));
+  if (!write(state)) return null;
+  return [nextA, nextB];
+}
+
+/** Move a card a step without sending it to a corner ("a bit to the left", "up a little"). */
+export function nudgeCard(n: number, dx: number, dy: number): BoardCard | null {
+  const state = read();
+  const i = state.cards.findIndex((c) => c.n === n);
+  if (i < 0) return null;
+  workspace.pushUndo(`nudge_card:${n}`);
+  const card = { ...state.cards[i]! };
+  card.x = Math.round(Math.max(0, Math.min(Math.min(X_MAX, 100 - card.w), card.x + dx)) * 10) / 10;
+  card.y = Math.round(Math.max(0, Math.min(X_MAX, card.y + dy)) * 10) / 10;
+  state.cards[i] = card;
+  if (!write(state)) return null;
+  return card;
+}
+
+/** Line some cards up along one edge of the board ("put the pictures on the left"), in number order; the rest stay. */
+export function lineUpCards(ns: number[], side: "left" | "right" | "top" | "bottom"): BoardCard[] {
+  const state = read();
+  const picked = state.cards.filter((c) => ns.includes(c.n)).sort((a, b) => a.n - b.n);
+  if (!picked.length) return [];
+  workspace.pushUndo(`line_up:${side}`);
+  const k = picked.length;
+  const gap = 2;
+  const vertical = side === "left" || side === "right";
+  const len = Math.round(Math.min(vertical ? 46 : 44, (96 - (k - 1) * gap) / k) * 10) / 10;
+  let z = topZ(state.cards);
+  const moved = picked.map((c, i) => {
+    z += 1;
+    const box = vertical
+      ? { x: side === "left" ? 2 : 72, y: Math.round((2 + i * (len + gap)) * 10) / 10, w: 26, h: len, z }
+      : { x: Math.round((2 + i * (len + gap)) * 10) / 10, y: side === "top" ? 2 : 68, w: len, h: 30, z };
+    return withBox(c, box);
+  });
+  state.cards = state.cards.map((c) => moved.find((m) => m.n === c.n) ?? c);
+  write(state);
+  return moved;
+}
+
+/** A copy of a ready card (same picture, note, clip or widget), a little down and to the right; next number. */
+export function duplicateCard(n: number): BoardCard | null {
+  const src = read().cards.find((c) => c.n === n);
+  if (!src || src.status !== "ready") return null;
+  workspace.pushUndo(`duplicate_card:${n}`);
+  const copy = addCard({
+    kind: src.kind,
+    title: `${src.title} (copy)`.slice(0, 80),
+    text: src.text,
+    tags: src.tags,
+    status: "ready",
+    url: src.url,
+    html: src.html ?? null,
+    model: src.model,
+    x: Math.min(X_MAX, src.x + 4),
+    y: Math.min(X_MAX, src.y + 4),
+    w: src.w,
+    h: src.h,
+  });
+  if (src.mw != null || src.mh != null) return updateCard(copy.n, { mw: src.mw, mh: src.mh }) ?? copy;
+  return copy;
+}
+
+/** A new title (and its words as tags, so the card can be named by it). */
+export function renameCard(n: number, title: string): BoardCard | null {
+  const card = read().cards.find((c) => c.n === n);
+  if (!card) return null;
+  workspace.pushUndo(`rename_card:${n}`);
+  const tags = [...new Set([...tagsFromText(title), ...(card.tags ?? [])])].slice(0, 12);
+  return updateCard(n, { title: title.slice(0, 80), tags });
+}
+
+/** A note's new words (its title follows when it was the automatic "Note: …" one). */
+export function setNoteText(n: number, text: string): BoardCard | null {
+  const card = read().cards.find((c) => c.n === n);
+  if (!card || card.kind !== "text") return null;
+  workspace.pushUndo(`edit_note:${n}`);
+  const words = text.replace(/\s+/g, " ").trim();
+  const caption = words.length > 60 ? `${words.slice(0, 59).replace(/\s+\S*$/, "")}…` : words || "empty";
+  const tags = tagsFromText(text);
+  return updateCard(n, { text: text.slice(0, 2000), tags: tags.length ? tags : card.tags, ...(/^Note:\s/.test(card.title) ? { title: `Note: ${caption}` } : {}) });
+}
+
 // ─── Arranging ──────────────────────────────────────────────────────────────
 
-export type ArrangeLayout = "grid" | "stack" | "row" | "column";
+export type ArrangeLayout = "grid" | "stack" | "row" | "column" | "shuffle" | "scatter" | "by_kind" | "newest_first";
+
+const KIND_RANK: Record<CardKind, number> = { image: 0, video: 1, widget: 2, text: 3, audio: 4 };
+
+function shuffled<T>(xs: T[]): T[] {
+  const out = xs.slice();
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j]!, out[i]!];
+  }
+  // A shuffle that changed nothing isn't one.
+  if (out.length > 1 && out.every((x, i) => x === xs[i])) [out[0], out[1]] = [out[1]!, out[0]!];
+  return out;
+}
 
 export interface CardGrid {
   cols: number;
@@ -972,8 +1525,21 @@ export function arrangeCards(layout: ArrangeLayout = "grid"): { count: number; c
   const state = read();
   if (!state.cards.length) return null;
   workspace.pushUndo("arrange_cards");
-  const cards = state.cards.slice().sort((a, b) => a.n - b.n);
+  let cards = state.cards.slice().sort((a, b) => a.n - b.n);
   const n = cards.length;
+  if (layout === "scatter") {
+    // Strewn like a desk: random places and sizes, a random stacking order.
+    const order = shuffled(cards.map((c) => c.n));
+    state.cards = cards.map((c) => {
+      const w = round1(24 + Math.random() * 14);
+      const h = round1(30 + Math.random() * 18);
+      return { ...c, w, h, x: round1(2 + Math.random() * (96 - w)), y: round1(2 + Math.random() * (96 - h)), z: order.indexOf(c.n) + 1 };
+    });
+    return write(state) ? { count: n, cols: 0, rows: 0, layout } : null;
+  }
+  if (layout === "shuffle") cards = shuffled(cards);
+  else if (layout === "by_kind") cards.sort((a, b) => KIND_RANK[a.kind] - KIND_RANK[b.kind] || a.n - b.n);
+  else if (layout === "newest_first") cards.reverse();
   // A row or a column only while the cards stay a readable size; more than that is a grid.
   const used: ArrangeLayout = (layout === "row" && n > 6) || (layout === "column" && n > 5) ? "grid" : layout;
   if (used === "stack") {
@@ -988,7 +1554,7 @@ export function arrangeCards(layout: ArrangeLayout = "grid"): { count: number; c
   } else if (used === "column") {
     const h = round1(Math.min(60, (96 - (n - 1) * 2) / n));
     g = { cols: 1, rows: n, w: 44, h, x0: 28, y0: round1((100 - (n * h + (n - 1) * 2)) / 2), gap: 2 };
-  } else g = gridFor(n);
+  } else g = gridFor(n); // the grid, and the shuffled / grouped / newest-first orders laid out on it
   state.cards = cards.map((c, i) => ({
     ...c,
     x: round1(g.x0 + (i % g.cols) * (g.w + g.gap)),

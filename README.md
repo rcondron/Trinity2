@@ -121,6 +121,10 @@ requests addressed to localhost; for use from another device on a trusted networ
   the real voice loop with typed turns and reports Jev's decisions, the tools, what PersonaPlex
   actually said, and the workspace (`--persona <id>` to pick a persona, `--settle 60` to wait for
   background work).
+- `npm run eval:cards` runs the card-skill library: about 120 things people say about the cards on
+  the board (close several, minimize all, start the timer, read the note, add eggs to the list…)
+  through the real router and tools on a throwaway board, and reports by skill
+  (`-- --only control,read`, `-- --route-only`, `-- --verbose`). It never touches the engine's data.
 
 ## Status
 

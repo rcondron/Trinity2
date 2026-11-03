@@ -228,13 +228,31 @@ function toolRules(tools: Tool[]): string[] {
     rules.push(
       "Restyling an existing picture's markup on the board is edit_html; generating a brand-new picture is make_image.",
     );
+  if (has("control_card"))
+    rules.push(
+      "Playing, pausing, stopping, starting, resuming, restarting, resetting, muting, turning up or down, skipping, looping, or pressing a button on something ALREADY on the board — a timer, stopwatch, video, audio clip, slideshow or game card — is control_card ('start the timer', 'pause the video', 'restart it', 'mute card 5', 'press lap', 'set the timer to ten minutes', 'stop everything'), never build_ui, make_video, make_audio or edit_html. Asking for a NEW timer or clip ('start a five minute timer', 'make a video of…') is still build_ui / make_video.",
+    );
+  if (has("read_card"))
+    rules.push(
+      "Asking what a card on the board says or shows right now — 'read card 2', 'what does the note say', 'how much time is left on the timer', 'what's the score', 'what are the ingredients on the recipe card', 'is the video playing' — is read_card, not show_card, ask_brain, web_search or describe_workspace (which lists the whole board).",
+    );
+  if (has("edit_note"))
+    rules.push(
+      "Changing the words of a note already on the board — 'add eggs to the shopping list', 'cross off milk', 'change the note to say…', 'clear the to-do list' — is edit_note, not make_text (a new note), clear_workspace or edit_html.",
+    );
+  if (has("rename_card") || has("duplicate_card"))
+    rules.push("Giving a card a new name or title is rename_card; copying or duplicating a card is duplicate_card.");
+  if (has("figure_out") && has("remove_card"))
+    rules.push(
+      "Two or more DIFFERENT board actions in one request ('close the pictures and start the timer', 'minimize everything except the video and play it') is figure_out; one action on several cards ('close cards 2 and 3') is that action's tool.",
+    );
   if (has("resize_card"))
     rules.push(
-      "A card's own size — bigger, smaller, maximize / full screen, minimize, wider, taller, restore / back to normal — is resize_card (by number or by what the card shows: 'make the tiger bigger'); 'restore card 2' while card 2 is still on the board is resize_card, and undo_workspace is only for bringing back what was removed or cleared; only a picture's width percentage or its markup is edit_html.",
+      "A card's own size — bigger, smaller, maximize / full screen, minimize, wider, taller, restore / back to normal — is resize_card, for one card or several ('make the tiger bigger', 'minimize all the cards', 'minimize everything except the timer', 'restore them'); 'restore card 2' while card 2 is still on the board is resize_card, and undo_workspace is only for bringing back what was removed or cleared; only a picture's width percentage or its markup is edit_html.",
     );
   if (has("remove_card") || has("move_card") || has("undo_workspace") || has("arrange_cards"))
     rules.push(
-      "Floating cards on the board are numbered and tagged by content: removing one is remove_card, moving one is move_card (by number or by what it shows — 'the tiger', 'under the panda'), organizing / tidying / sorting / lining up / stacking all the cards (a grid, a stack, a row or a column) is arrange_cards, layering one card in front of / behind / on top of another, or one layer forward or backward, is move_card ('put the cards back' / 'bring them back' after a clear or remove is undo_workspace, not a move), wiping every card / the whole screen is clear_workspace, and restoring a mistaken clear or remove is undo_workspace. A text sticky/note is make_text; asking for several pictures (a panda and a tiger) is still make_image (one card each).",
+      "Floating cards on the board are numbered and tagged by content: removing one or several is remove_card ('cards 2 and 3', 'all the pictures', 'the last two', and anything with except / but / keep — 'close everything except the timer'), moving one is move_card (by number or by what it shows — 'the tiger', 'under the panda', a step — 'a bit to the left', 'move it up', swapping two, or lining a group up along one side — 'put the pictures on the left'), organizing / tidying / sorting / lining up / stacking / shuffling / scattering / grouping all the cards (a grid, a stack, a row, a column, a shuffle, by kind) is arrange_cards, layering one card in front of / behind / on top of another, or one layer forward or backward, is move_card ('put the cards back' / 'bring them back' after a clear or remove is undo_workspace, not a move), wiping every card / the whole screen is clear_workspace, and restoring a mistaken clear or remove is undo_workspace. A text sticky/note is make_text; asking for several pictures (a panda and a tiger) is still make_image (one card each).",
     );
   if (has("show_card")) {
     if (has("ask_brain"))
@@ -255,7 +273,9 @@ function toolRules(tools: Tool[]): string[] {
     );
   }
   if (has("set_speech_rate"))
-    rules.push("Asking Trinity to talk slower, faster, or at normal speed is set_speech_rate — not small talk.");
+    rules.push(
+      `Asking Trinity to talk slower, faster, or at normal speed is set_speech_rate — not small talk.${has("control_card") ? " Playing a video or audio card faster or slower ('play it faster', 'speed up the video', 'slow the song down') is control_card: set_speech_rate is only how Trinity herself talks." : ""}`,
+    );
   if (["build_ui", "clear_workspace", "undo_workspace", "make_image", "make_audio", "make_video", "make_text", "edit_html", "show_card"].some(has))
     rules.push(
       "The workspace is the live page beside the user — what they call the screen, the board or the window. Asking to build, change, show something on, add a card, picture, clear it, or undo a clear is an action, never small talk.",
@@ -313,7 +333,7 @@ export function jevRequest(input: RouteInput) {
 }
 
 /** Screen ops the keyword heuristic may take when Jev abstains — clear/move/remove/undo are unambiguous. */
-const HEURISTIC_OVERRIDE = /^(clear_workspace|undo_workspace|remove_card|move_card|arrange_cards|resize_card|describe_workspace|edit_html|set_speech_rate)$/;
+const HEURISTIC_OVERRIDE = /^(clear_workspace|undo_workspace|remove_card|move_card|arrange_cards|resize_card|control_card|read_card|edit_note|rename_card|duplicate_card|describe_workspace|edit_html|set_speech_rate)$/;
 
 export async function decide(input: RouteInput): Promise<Decision> {
   const started = Date.now();
@@ -449,7 +469,7 @@ const AUDIO = new RegExp(
  * cards", "line them up". Checked before undo, whose "put the cards …" would otherwise take "put the cards in order".
  */
 const ARRANGE =
-  /\b(?:(?:organi[sz]e|tidy(?: up)?|arrange|re-?arrange|line up|straighten(?: up)?|clean up|neaten(?: up)?|sort|align|order)\s+(?:all\s+)?(?:of\s+)?(?:the\s+|my\s+|these\s+|those\s+)?(?:cards?|board|workspace|screen|notes?|pictures?|images?|everything|them)\b|\b(?:stack|cascade|pile up|pile)\s+(?:up\s+)?(?:all\s+)?(?:of\s+)?(?:the\s+|these\s+|those\s+|my\s+)?(?:cards|everything|them)\b|\b(?:put|lay|set|get|line)\s+(?:all\s+)?(?:of\s+)?(?:the\s+|these\s+|those\s+|my\s+)?(?:cards|everything|them)\s+(?:up\s+)?(?:in|into|on)\s+(?:a\s+|an\s+|one\s+)?(?:neat\s+|tidy\s+|nice\s+|single\s+)?(?:grid|order|rows?|line|place|stack|cascade|column)\b|\b(?:grid|numerical order)\b[^.?!]{0,30}\bcards?\b|\bcards?\b[^.?!]{0,30}\b(?:in a grid|in numerical order|in order|lined up|tidied up|organi[sz]ed|arranged)\b|\btidy up\b|\bstraighten up\b)/;
+  /\b(?:(?:shuffle|scatter|jumble|randomi[sz]e|mix up)\b(?:\s+(?:up\s+)?(?:all\s+)?(?:the\s+|my\s+)?(?:cards|board|them|everything))?|group\s+(?:the\s+)?(?:cards|them|everything)\s+by\b|(?:organi[sz]e|tidy(?: up)?|arrange|re-?arrange|line up|straighten(?: up)?|clean up|neaten(?: up)?|sort|align|order)\s+(?:all\s+)?(?:of\s+)?(?:the\s+|my\s+|these\s+|those\s+)?(?:cards?|board|workspace|screen|notes?|pictures?|images?|everything|them)\b|\b(?:stack|cascade|pile up|pile)\s+(?:up\s+)?(?:all\s+)?(?:of\s+)?(?:the\s+|these\s+|those\s+|my\s+)?(?:cards|everything|them)\b|\b(?:put|lay|set|get|line)\s+(?:all\s+)?(?:of\s+)?(?:the\s+|these\s+|those\s+|my\s+)?(?:cards|everything|them)\s+(?:up\s+)?(?:in|into|on)\s+(?:a\s+|an\s+|one\s+)?(?:neat\s+|tidy\s+|nice\s+|single\s+)?(?:grid|order|rows?|line|place|stack|cascade|column)\b|\b(?:grid|numerical order)\b[^.?!]{0,30}\bcards?\b|\bcards?\b[^.?!]{0,30}\b(?:in a grid|in numerical order|in order|lined up|tidied up|organi[sz]ed|arranged)\b|\btidy up\b|\bstraighten up\b)/;
 const UNDO =
   /\b(undo|undelete|restore|put (it|them|that|those|everything) back|bring (it|them|that|those|everything) back|go back|oops)\b(?:[^.?!]{0,40}\b(card|cards|board|workspace|screen|window|clear|remove|that|it|them)\b)?|\b(bring|put|get)\s+back\s+(the\s+)?(cards?|board|workspace|screen)\b|\b(bring|put|get)\s+(the\s+)?(cards?|board|workspace|screen)\s+back\b|\brestore\s+(the\s+)?(cards?|board|workspace|screen|last)\b/i;
 const CLEAR =
@@ -466,13 +486,33 @@ const REMOVE_CARD =
  * Skipped entirely while Game Master tools are offered (story "put the torch on the left").
  */
 const MOVE_CARD =
-  /\b((move|put|place|shift|slide|drag|bring|send|layer) (card|note)s?\s*(number\s*)?\d+|(move|put|place|bring|send|layer) (the\s+)?\w+.*(top|bottom|left|right|center|middle|front|back|forward|backward|behind|corner|under|below|above|beside|next to)|(move|put|place) (card|note)s?\b)/i;
+  /\b((move|put|place|shift|slide|drag|bring|send|layer) (card|note)s?\s*(number\s*)?\d+|(move|put|place|bring|send|layer) (the\s+)?\w+.*(top|bottom|left|right|center|middle|front|back|forward|backward|behind|corner|under|below|above|beside|next to|up|down|higher|lower)|(move|put|place) (card|note)s?\b|\bswap\b|\bswitch\s+(?:card\s*\d+|the\s+\w+)\s+(?:and|with)\s+|\bnudge\b)/i;
 /**
  * A card's own size: "maximize card 2", "make the tiger bigger", "minimize the timer", "restore it", "a little
  * smaller", "wider". Not a picture's width percentage or anything inside the card (edit_html keeps those).
  */
 const RESIZE_CARD =
   /\b(?:maximi[sz]e|minimi[sz]e|full ?screen|fullscreen|fill (?:up )?the (?:whole |entire )?(?:screen|board|workspace|window)|as big as (?:it (?:can|will) go|possible)|un-?maximi[sz]e|un-?minimi[sz]e|normal size|regular size|usual size|default size|back to (?:normal|its (?:old |usual |normal )?size|the way it was)|(?:restore|expand|collapse)\s+(?:the\s+)?(?:card\s*(?:number\s*)?\d+|it|that|this|that card|this card|\w+ card)\b|(?:make|resize|scale|shrink|enlarge|grow|blow up|zoom)\b[^.?!]{0,40}\b(?:bigger|larger|smaller|tinier|huge|tiny|double|half|twice|wider|narrower|taller|shorter|in on|into)\b|\b(?:bigger|larger|smaller|tinier|wider|narrower|taller|shorter)\b|\b(?:enlarge|shrink)\b)/i;
+/**
+ * Operating something on the board: "start the timer", "pause the video", "restart it", "mute card 5", "press lap on
+ * the stopwatch", "set the timer to ten minutes", "stop everything". Not "start a timer for five minutes" (a new one).
+ */
+const CONTROL_CARD = new RegExp(
+  String.raw`\b(?:(?:start|stop|pause|resume|restart|reset|unpause|play|replay|mute|unmute|rewind|loop)\s+(?:it|that|this|everything|all(?:\s+(?:of\s+)?the\s+\w+)?|(?:the|my|that|this|both)\s+(?:\w+\s+)?(?:timers?|stopwatch(?:es)?|countdown|clock|videos?|clips?|movies?|audio|songs?|music|recordings?|sounds?|slideshow|game|animation)|card\s*\d+)(?:\s+(?:over|again))?\b)` +
+    String.raw`|\b(?:turn (?:it|that|the (?:video|audio|sound|volume|music)) (?:up|down)|skip (?:ahead|forward|back)|fast[- ]?forward|next slide|previous slide|play (?:it|that) (?:again|faster|slower)|(?:press|hit|click|tap)\s+(?:the\s+)?[\w+ -]{1,24}?\s+(?:button\s+)?on\s+(?:the\s+|card\s*\d)|set the (?:timer|countdown|clock) (?:to|for)\b(?!\s+(?:a|an)\s))`,
+);
+/** "read card 2", "what does the note say", "how much time is left on the timer", "what's the score". */
+const READ_CARD =
+  /\b(?:read (?:me |out |aloud )?(?:card\s*\d+|the (?:note|card|list|recipe|timer|score|\w+ (?:card|note|list))|it|that|what (?:it|card \d+) says)|what(?:'s| is| does) (?:on )?card\s*\d+(?: say| show)?|what does (?:the )?(?:note|card\s*\d+|timer|list|\w+ (?:card|note|list)) say|how much time (?:is |'s )?left|how long (?:is )?left on|what(?:'s| is) the (?:score|time on the timer)|is the (?:video|audio|music|timer) (?:playing|running|paused))\b/;
+/** Changing a note's words: "add eggs to the shopping list", "cross off milk", "change the note to say…", "clear the note". */
+const EDIT_NOTE =
+  /\b(?:(?:add|put|append|jot down)\s+.+?\s+(?:to|on|onto)\s+(?:the|my)\s+(?:[\w-]+\s+)?(?:note|list|sticky)|(?:cross|check|tick|mark) off\b|remove .+? from (?:the|my) (?:[\w-]+ )?(?:note|list)|change the (?:[\w-]+ )?note\b|clear (?:the|my) (?:[\w-]+ )?(?:note|list))\b/;
+const RENAME_CARD = /\b(?:rename|retitle|relabel)\b|\b(?:call|name|title)\s+(?:card\s*\d+|it|this|that)\s+\w+/;
+const DUPLICATE_CARD = /\b(?:duplicate|clone)\b|\b(?:make|add)\s+(?:a\s+|another\s+)?cop(?:y|ies)\s+of\b|\bcopy\s+(?:card\s*\d+|the\s+\w+|it|that)\b/;
+/** Several cards at once, or all but some: "close cards 2 and 3", "delete all the pictures", "close everything except the timer". */
+const REMOVE_SOME =
+  /\b(?:close|remove|delete|dismiss|get rid of|trash|clear)\s+(?:(?:all|both)\s+)?(?:of\s+)?(?:the\s+)?(?:cards?\s+\d+(?:\s*(?:,|and|through|to)\s*\d+)+|(?:pictures|images|photos|videos|clips|notes|widgets|recordings|other cards|others|rest)\b|everything\s+(?:except|but)\b|all(?:\s+the\s+cards)?\s+(?:except|but)\b|the\s+(?:last|first|newest|oldest)\s+(?:\d+\s+)?cards?\b)|\bkeep\s+.+?\s+and\s+(?:close|remove|delete|get rid of)\s+(?:the rest|everything else|the others)\b/;
+
 /** What keeps a size request with edit_html: a percentage, or something inside the card. */
 const INSIDE_CARD = /\b(?:\d{1,3}\s*(?:%|percent)|inside|within|html|svg|css|style|markup|element|background|font|colou?r|border)\b/i;
 /**
@@ -647,6 +687,16 @@ function heuristic(input: RouteInput, tools: Tool[], started: number): Decision 
   if (at("arrange_cards", ARRANGE) < Infinity) return pick("arrange_cards", 0.9);
   // A card's size before undo too: "restore card 2" / "put card 2 back to normal" is a resize, not an undo.
   if (!atGameTable && at("resize_card", RESIZE_CARD) < Infinity && !INSIDE_CARD.test(t)) return pick("resize_card", 0.88);
+  // Card skills before undo and clear: "clear the note" is a note edit, "close everything except the timer" isn't a wipe,
+  // "reset the timer" isn't an undo.
+  if (!atGameTable) {
+    if (at("remove_card", REMOVE_SOME) < Infinity) return pick("remove_card", 0.88);
+    if (at("edit_note", EDIT_NOTE) < Infinity) return pick("edit_note", 0.86);
+    if (at("read_card", READ_CARD) < Infinity) return pick("read_card", 0.86);
+    if (at("control_card", CONTROL_CARD) < Infinity) return pick("control_card", 0.86);
+    if (at("rename_card", RENAME_CARD) < Infinity) return pick("rename_card", 0.85);
+    if (at("duplicate_card", DUPLICATE_CARD) < Infinity) return pick("duplicate_card", 0.85);
+  }
   // Undo before clear: "put the cards back" must not wipe the board again.
   if (at("undo_workspace", UNDO) < Infinity) return pick("undo_workspace", 0.9);
   if (at("clear_workspace", CLEAR) < Infinity) return pick("clear_workspace", 0.8);
@@ -689,7 +739,7 @@ function heuristic(input: RouteInput, tools: Tool[], started: number): Decision 
   const words = new Set(t.split(/[^a-z0-9]+/).filter((w) => w.length > 2));
   for (const tool of tools) {
     if (inGame && tool.name === "web_search") continue; // "search the chest": no web words, no web search
-    if (/^(make_image|make_video|make_audio|make_text|show_card|clear_workspace|undo_workspace|describe_workspace|remove_card|move_card|arrange_cards|resize_card|edit_html|set_speech_rate)$/.test(tool.name))
+    if (/^(make_image|make_video|make_audio|make_text|show_card|clear_workspace|undo_workspace|describe_workspace|remove_card|move_card|arrange_cards|resize_card|control_card|read_card|edit_note|rename_card|duplicate_card|edit_html|set_speech_rate)$/.test(tool.name))
       continue; // a video or picture mentioned isn't one asked for
     if (tool.name.split(/[_\s]+/).some((tok) => tok.length > 3 && words.has(tok))) return pick(tool.name, 0.7);
   }

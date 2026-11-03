@@ -12,7 +12,8 @@
     "dev:web": "vite",
     "start": "tsx server/src/index.ts",
     "build:web": "vite build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "eval:cards": "tsx scripts/eval-card-skills.mts"
   },
   "engines": {
     "node": ">=22"
