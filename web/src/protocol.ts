@@ -22,6 +22,8 @@ export interface TranscriptTurn {
   proactive?: boolean;
   /** The user cut it off while the live call was saying it (talked over it, or ended the turn): shown, never read out again. */
   cut?: boolean;
+  /** No call that could be heard was up when it came: the live voice says it once one is, and that call's tab drops this text then. */
+  owed?: boolean;
   ts: number;
 }
 
@@ -79,7 +81,7 @@ export type ServerEvent =
   | { type: "workspace"; html: string; title?: string }
   | { type: "memory"; doc: MemoryDoc; op: "write" | "recall" }
   | { type: "heartbeat"; task: HeartbeatTask; fired: boolean }
-  | { type: "wake" } // a reminder or task is (about to be) due and no voice call is up anywhere: one tab warms one
+  | { type: "wake" } // no voice call is up anywhere, and a reminder or task is (about to be) due or a line is owed: one tab warms one
   | { type: "voice"; status: "free" | "taken" } // the pod's one session, lent out for a voice sample, is free again — or a call took it
   | { type: "skill_forged"; name: string; description: string; source: string }
   | { type: "status"; text: string }

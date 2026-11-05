@@ -1,7 +1,7 @@
 import { nanoid } from "nanoid";
 import { WebSocket } from "ws";
 import type { RawData } from "ws";
-import { getEndpoints } from "../settings.js";
+import { getEndpoints, live } from "../settings.js";
 import { dueForVoice, getActivePersona } from "../db/sqlite.js";
 import { getSpeechRate, onSpeechRateChange } from "./speech-rate.js";
 import type { MemoryStore } from "../db/memory.js";
@@ -35,6 +35,9 @@ const FIRST_WORDS_MS = 12_000; // the reply writer falls back on its own after 1
 const FINALIZE_WAIT_MS = 1_200; // mic off: how long Deepgram's Finalize result may take
 const ECHO_COVER = 0.7; // share of the user's words that must be one in-order piece of the agent's words
 const READY_WAIT_MS = 15_000; // an announcement waits this long for a call that's still connecting
+/** An unprompted line no voice could say (owed) is said by the next call that can be heard — if one comes this soon. */
+const OWED_MAX_AGE_MS = 10 * 60_000;
+const OWED_MAX = 5; // at most this many wait; with more, the oldest stays as the text it was shown as
 const RECENT_USE_MS = 10_000; // a standby that heard, was typed or said something this recently isn't lent out: the user may go on
 const LOAN_GRACE_MS = 2_500; // a returned loan is kept this long for a batch's next sample before the voice is freed
 
@@ -242,19 +245,69 @@ export function returnVoice(borrowed: VoiceLoan): void {
   }, LOAN_GRACE_MS);
 }
 
-/** How an unprompted line went in the call: said in full; cut off by the user; or not said (no call, or it went away). */
-export type Spoken = "said" | "cut" | "unsaid";
+/**
+ * How an unprompted line went: said in full in the call; cut off by the user; owed — no call that
+ * can be heard was up, so the next one says it (see owe); or unsaid (nothing in it to say, no turn
+ * to show it as, or no live voice set up).
+ */
+export type Spoken = "said" | "cut" | "owed" | "unsaid";
 
 /**
- * Say something unprompted in the live call — a due reminder, a finished background job
- * ("your new skill is ready"). It waits for a call that's still connecting, its turn behind
- * any reply, and until the user stops talking. Resolves "said" once the whole line was said;
- * "cut" when the user cut it off (talked over it, or ended the turn) — show it, but don't say
- * it again; "unsaid" when there's no call, or it closes or doesn't connect in time (deliver it
- * some other way).
+ * Say something unprompted in the live voice — a due reminder, a finished background job ("your
+ * new skill is ready"). It waits for a call that's still connecting, its turn behind any reply,
+ * and until the user stops talking. Resolves "said" once the whole line was said; "cut" when the
+ * user cut it off (talked over it, or ended the turn) — show it, but don't say it again; "owed"
+ * when no call that can be heard was up (none, its tab has had no tap or key press yet, or it went
+ * away mid-line): show it now, and the next call that's up and can be heard says it. No other voice
+ * ever reads it. `turnId` is the turn the line is shown as (that call's tab drops the text once it's
+ * said); without one, a line no call could say is "unsaid".
  */
-export function announce(text: string): Promise<Spoken> {
-  return activeCall ? activeCall.announce(text) : Promise.resolve("unsaid");
+export async function announce(text: string, turnId?: string): Promise<Spoken> {
+  const spoken = activeCall ? await activeCall.announce(text, turnId) : "unsaid";
+  return spoken === "unsaid" && turnId && owe(text, turnId) ? "owed" : spoken;
+}
+
+/**
+ * A line no voice could say when it came, kept for the next call that's up and can be heard
+ * (VoiceCall.drainOwed): oldest first, at most OWED_MAX, and only while it's under OWED_MAX_AGE_MS
+ * old — an older one stays the text it was shown as.
+ */
+interface OwedLine {
+  text: string;
+  turnId: string;
+  at: number;
+}
+const owed: OwedLine[] = [];
+
+/** The owed lines still worth saying, oldest first (stale ones are dropped). */
+function freshOwed(now = Date.now()): OwedLine[] {
+  while (owed.length && now - owed[0]!.at > OWED_MAX_AGE_MS) owed.shift();
+  return owed;
+}
+
+/**
+ * Keep a line for the next voice that can be heard: a call that's up but can't be heard yet asks its
+ * tab for a tap; with no call anywhere, the tabs are asked to warm one (a "wake"). False when no live
+ * voice is set up (browser-speech mode reads it instead) or there's nothing in it to say.
+ */
+function owe(text: string, turnId: string): boolean {
+  if (!live.stream || !speakable(wordsForNumbers(text))) return false;
+  freshOwed().push({ text, turnId, at: Date.now() });
+  if (owed.length > OWED_MAX) owed.splice(0, owed.length - OWED_MAX);
+  if (activeCall) activeCall.askForTap();
+  else wakeNotifier?.();
+  return true;
+}
+
+/** How many lines wait for a voice that can be heard (see owe). */
+export function owedLines(): number {
+  return freshOwed().length;
+}
+
+/** Asks the app tabs to warm a voice (index.ts broadcasts a "wake"): a line is owed and no call is up anywhere. */
+let wakeNotifier: (() => void) | null = null;
+export function setWakeNotifier(fn: () => void): void {
+  wakeNotifier = fn;
 }
 
 /** Whether a voice call is up or connecting (an announcement can be said in it). A sample's loan isn't one: nobody to tell. */
@@ -298,6 +351,10 @@ export class VoiceCall {
   private replyChain: Promise<void> = Promise.resolve();
   private replyActive = 0;
   private bargedIn = false;
+  /** Its tab can play what the voice says (it reported playback set up, or opened the mic): only then is a line announced here. */
+  private audible: boolean;
+  private drainingOwed = false;
+  private askedForTap = false; // its tab was asked for a tap to hear an owed line (see askForTap)
 
   private timers: ReturnType<typeof setInterval>[] = [];
   private lastAudioAt = 0;
@@ -323,6 +380,7 @@ export class VoiceCall {
   ) {
     this.persona = getActivePersona();
     this.micOn = !opts.standby;
+    this.audible = this.micOn; // a call opened with the mic on came from a tap, which set playback up
     // Before any await: a hang-up during the handshake must cancel it (and free the GPU).
     this.browser.on("message", (data, isBinary) => this.onBrowser(data, isBinary));
     this.browser.on("close", () => this.stop());
@@ -485,6 +543,9 @@ export class VoiceCall {
       ),
     );
     this.timers.push(safeInterval("housekeeping", () => this.housekeeping(), 1000));
+    // Lines owed from when no voice could say them: said now if this tab can hear them, else it's asked for a tap.
+    this.drainOwed();
+    this.askForTap();
   }
 
   /** Connect with ?no_wait=1; while the pod is still releasing a previous session it answers "busy" — retry. */
@@ -737,8 +798,9 @@ export class VoiceCall {
     // (Deepgram's KeepAlive runs per socket — see connectDeepgram.) Typed turns and replies count
     // as use too, and a reply in progress is never cut off.
     if (!this.micOn && this.replyActive === 0 && now - this.lastActivityAt > STANDBY_IDLE_MS) {
-      // A reminder or task coming up keeps the voice warm, so it's said aloud rather than only shown.
-      if (dueForVoice(now + STANDBY_IDLE_MS).length) return;
+      // A reminder or task coming up keeps the voice warm, so it's said aloud rather than only shown —
+      // and so does a line still owed (it's said once this tab can hear it).
+      if (dueForVoice(now + STANDBY_IDLE_MS).length || freshOwed().length) return;
       this.send({ type: "status", text: "Voice session paused after 15 minutes idle.", idle: true });
       this.stop();
     }
@@ -756,6 +818,7 @@ export class VoiceCall {
       }
       if (m.type === "stop") this.stop();
       else if (m.type === "mic") this.setMic(Boolean(m.on));
+      else if (m.type === "playback" && m.on) this.setAudible(); // a tap or key press there set playback up (call.ts)
       else if ((m.type === "text" || m.type === "inject_utterance") && typeof m.text === "string" && m.text.trim()) {
         // Typed turn (or a test): behave exactly as if Deepgram had delivered this finished sentence.
         this.lastActivityAt = Date.now();
@@ -777,6 +840,7 @@ export class VoiceCall {
   }
 
   private setMic(on: boolean) {
+    if (on) this.setAudible(); // the mic tap set playback up too (call.ts openMic)
     if (this.micOn === on) return;
     this.micOn = on;
     clearTimeout(this.micOffTimer);
@@ -1005,22 +1069,62 @@ export class VoiceCall {
 
   // ── telling the user ─────────────────────────────────────────────────────────
 
-  /** See the module-level announce(). Digits become words ("9:22 PM" → "nine twenty-two PM"): the voice reads words. */
-  async announce(text: string): Promise<Spoken> {
+  /**
+   * See the module-level announce(). Digits become words ("9:22 PM" → "nine twenty-two PM"): the
+   * voice reads words. "unsaid" when the call isn't up in time, or its tab can't hear it yet (no tap
+   * or key press there so far — said then, it would be lost): the line is owed instead. Its tab is
+   * told when the line starts ("announce") and how it went ("announced", with the turn it's shown as).
+   */
+  async announce(text: string, turnId?: string): Promise<Spoken> {
     const line = speakable(wordsForNumbers(text));
     if (!line) return "unsaid";
     // Still connecting: wait for the pod's hello (words sent before it are lost), but not for long.
     const until = Date.now() + READY_WAIT_MS;
     while (!this.ready && !this.closed && Date.now() < until) await sleep(100);
-    if (!this.ready || this.closed || this.pp?.readyState !== WebSocket.OPEN) return "unsaid";
-    this.send({ type: "announce", text: line });
-    const spoken = this.replyChain.then(() => this.speakUnprompted(line)).catch((): Spoken => "unsaid");
+    if (!this.ready || this.closed || this.pp?.readyState !== WebSocket.OPEN || !this.audible) return "unsaid";
+    const spoken = this.replyChain.then(() => this.speakUnprompted(line, turnId)).catch((): Spoken => "unsaid");
     this.replyChain = spoken.then(() => {});
-    return spoken;
+    const result = await spoken;
+    if (turnId) this.send({ type: "announced", turnId, spoken: result });
+    return result;
+  }
+
+  /** Say the lines owed from when no voice could (see owe), oldest first, once this call is up and its tab can hear them. */
+  private drainOwed(): void {
+    if (this.drainingOwed || !this.ready || this.closed || !this.audible || !freshOwed().length) return;
+    this.drainingOwed = true;
+    bg("owed-lines", async () => {
+      try {
+        while (!this.closed) {
+          const line = freshOwed().shift();
+          if (!line) break;
+          if ((await this.announce(line.text, line.turnId)) === "unsaid") {
+            owed.unshift(line); // the call went away first: the next one says it
+            break;
+          }
+        }
+      } finally {
+        this.drainingOwed = false;
+      }
+    });
+  }
+
+  /** A line is owed and this call is up but can't be heard (no tap or key press in its tab yet): the tab asks for one, once. */
+  askForTap(): void {
+    if (this.askedForTap || !this.ready || this.closed || this.audible || !freshOwed().length) return;
+    this.askedForTap = true;
+    this.send({ type: "owed" });
+  }
+
+  /** Its tab can play what the voice says now (playback set up, or the mic opened): what's owed is said. */
+  private setAudible(): void {
+    if (this.audible) return;
+    this.audible = true;
+    this.drainOwed();
   }
 
   /** How far the line got: "cut" when the user cut it off (a barge-in, or the tap that ended the turn), "unsaid" when the call went away first. */
-  private async speakUnprompted(line: string): Promise<Spoken> {
+  private async speakUnprompted(line: string, turnId?: string): Promise<Spoken> {
     this.replyActive++;
     this.lastActivityAt = Date.now();
     const holdId = `announce:${nanoid(6)}`;
@@ -1029,6 +1133,8 @@ export class VoiceCall {
       const until = Date.now() + 20_000;
       while (!this.closed && Date.now() < until && (this.current || Date.now() - this.lastCallerWordAt < 1200)) await sleep(150);
       if (this.closed) return "unsaid";
+      // It starts now: its own line in the tab's transcript, not the end of the last reply.
+      this.send({ type: "announce", text: line, ...(turnId ? { turnId } : {}) });
       this.bargedIn = false;
       this.setHold(holdId, true);
       let sent = true;

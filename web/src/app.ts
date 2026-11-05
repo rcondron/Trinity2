@@ -102,12 +102,13 @@ function handle(ev: ServerEvent) {
       if (ev.turn.voiced && liveCall.ready) break;
       renderTurn(ev.turn);
       // Browser-speech mode reads Trinity's turns aloud (an unprompted one, which every open tab gets,
-      // in one tab only); live voice speaks for itself — and an unprompted line it didn't say (no
-      // session in this tab) is read out by the browser instead.
+      // in one tab only). The live voice speaks for itself, and no other voice ever stands in for it:
+      // an unprompted line it couldn't say yet is owed — the engine says it once a call that can be
+      // heard is up (it wakes one, or asks the tab holding one for a tap), and that tab drops this text.
       if (ev.turn.speaker === "trinity" && !ev.turn.partial && voiceMode() === "browser") {
         if (ev.turn.proactive) void sayAloudOnce(ev.turn);
         else speech?.speak(ev.turn.text, persona?.voice ?? "");
-      } else if (ev.turn.proactive && !ev.turn.voiced && voiceMode() === "stream" && !liveCall.ready) void sayAloudOnce(ev.turn);
+      }
       break;
     case "route":
       if (ev.decision.action !== "speak")
@@ -274,8 +275,8 @@ const WAKE_LOCK = "trinity-wake"; // held by the one tab warming the voice for a
  */
 async function answerWake() {
   const free = () => voiceMode() === "stream" && !liveCall.ready && liveCall.state !== "connecting";
-  // (A background tab with no playback yet — no tap or typed turn through the call — would have the
-  // line said into silence: it leaves it to the browser's voice.)
+  // (A background tab with no playback yet — no tap or key press on its page — couldn't play the
+  // line: it leaves it to a tab that can, or to itself once it's tapped. The line waits, owed.)
   if (!free() || (document.hidden && ((!idlePaused && !evicted && !lent) || !liveCall.canPlay))) return;
   if (!("locks" in navigator)) {
     // No Web Locks (e.g. an insecure origin): nothing picks one background tab, so only a tab on screen answers.
@@ -447,6 +448,19 @@ function handleCallEvent(e: CallEvent) {
       if (turn?.text) renderTurn(turn);
       break;
     }
+    case "announce":
+      // An unprompted line starts: its own line in the call's transcript, not the end of the last reply.
+      callAgentEl = null;
+      break;
+    case "announced":
+      // A line owed from when no voice could say it, said now: the call's own line shows it, so the
+      // text it was shown as when it came goes.
+      if (e.spoken === "said" && s("turnId")) feed.querySelector(`.turn[data-turn="${CSS.escape(s("turnId"))}"]`)?.remove();
+      break;
+    case "owed":
+      // Something to say, and this tab can't play it yet (no tap or key press here so far): the first one sets playback up.
+      if (!liveCall.canPlay) renderEvent("status", "voice", `${personaDisplayName} has something to tell you. Tap anywhere to hear it.`);
+      break;
     case "skill_forged":
       renderEvent("tool", "skill", skillLine(s("name"), s("source")));
       break;
@@ -493,6 +507,7 @@ function renderTurn(turn: { id: string; speaker: string; text: string; partial?:
   if (!el) {
     el = document.createElement("div");
     el.className = `turn ${turn.speaker}`;
+    el.dataset.turn = turn.id; // an owed line the call says later drops this text (see "announced")
     const who = turn.speaker === "trinity" ? personaDisplayName : turn.speaker === "user" ? "you" : turn.speaker;
     el.innerHTML = `<span class="who"></span><div class="bubble"></div>`;
     el.querySelector(".who")!.textContent = who;
@@ -515,7 +530,7 @@ function renderEvent(cls: string, tag: string, text: string) {
   feed.scrollTop = feed.scrollHeight;
 }
 
-// ─── The browser's voice, for unprompted lines the live voice didn't say ──────────
+// ─── The browser's voice, in browser-speech mode (no live voice set up) ───────────
 const SAID_KEY = "trinity.said:"; // + turn id → when a tab claimed it
 const LIVE_LOCK = "trinity-call-live"; // held (shared) by the tab whose call is live: the user may be talking
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -557,11 +572,11 @@ function claimTurn(id: string): boolean {
 }
 
 /**
- * A due reminder (or another unprompted line) the live voice didn't say — no session in this tab —
- * read out by the browser's voice instead, in one tab only: the first tab to get the turn's lock
- * claims it and holds the lock while it speaks, so a tab that gets the turn a moment late skips it.
- * Never a line the user cut off in the call (talked over it, or ended the turn), and never over a
- * live call in another tab (that user may be talking).
+ * A due reminder (or another unprompted line) in browser-speech mode, read out by the browser's
+ * voice in one tab only: the first tab to get the turn's lock claims it and holds the lock while it
+ * speaks, so a tab that gets the turn a moment late skips it. Never a line the user cut off in a
+ * call (talked over it, or ended the turn), and never over a live call in another tab (that user may
+ * be talking). With the live voice set up, it never stands in for it (see "transcript" in handle).
  */
 async function sayAloudOnce(turn: TranscriptTurn) {
   if (!speech?.synthSupported || turn.cut) return;
@@ -836,7 +851,8 @@ document.addEventListener("visibilitychange", () => {
 });
 
 // The voice is only heard once the page has had a gesture: the first one anywhere (not just a mic
-// tap) sets playback up, so a reminder the voice says before the first tap isn't said into silence.
+// tap) sets playback up, and the engine is told (call.ts). It says a line only where it can be
+// heard, so one that came before the first tap waits (owed) and is said then.
 const unlockPlayback = () => {
   if (voiceMode() === "stream" && !liveCall.canPlay) void liveCall.ensurePlayback().catch(() => {});
 };

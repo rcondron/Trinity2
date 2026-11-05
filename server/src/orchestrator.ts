@@ -98,9 +98,10 @@ export class Orchestrator {
     speaker: TranscriptTurn["speaker"],
     text: string,
     emit: Emit,
-    flags: Pick<TranscriptTurn, "voiced" | "proactive" | "cut"> = {},
+    flags: Pick<TranscriptTurn, "voiced" | "proactive" | "cut" | "owed"> = {},
+    id = nanoid(8),
   ): TranscriptTurn {
-    const turn: TranscriptTurn = { id: nanoid(8), speaker, text, ts: Date.now(), ...flags };
+    const turn: TranscriptTurn = { id, speaker, text, ts: Date.now(), ...flags };
     this.transcript.push(turn);
     if (this.transcript.length > 40) this.transcript.shift();
     emit({ type: "transcript", turn });
@@ -218,27 +219,31 @@ export class Orchestrator {
   /**
    * Say something unprompted — a due reminder, a scheduled task's result: spoken into the
    * live call if there is one, shown at once as a workspace toast, and shown to text clients
-   * (transcript) once the call is done with it (see showUnprompted). Returns whether it was
-   * said in full.
+   * (transcript) once the call is done with it (see showUnprompted). With no call that can be
+   * heard, it's shown at once and the next one says it (owed). Returns whether it was said in full.
    */
   async proactive(text: string, emit: Emit, title?: string): Promise<boolean> {
     const line = text.replace(/\s+/g, " ").trim();
     if (!line) return false;
     workspace.toast(title ? `${clip(title, 60)}: ${clip(line, 220)}` : clip(line, 260), "info");
-    const spoken = await announce(line);
-    this.showUnprompted(line, emit, spoken);
+    const id = nanoid(8); // the turn it's shown as: a call that says it later drops that text in its tab
+    const spoken = await announce(line, id);
+    this.showUnprompted(line, emit, spoken, id);
     return spoken === "said";
   }
 
   /**
    * An unprompted line as Trinity's turn, after the call had its go at it (also a finished
-   * skill's news — see forge.ts): marked voiced only if it was said in full, and cut if the
-   * user cut it off there (it's shown, never read out again). A line no call said is read
-   * aloud by one app tab that has no voice up.
+   * skill's news — see forge.ts): marked voiced only if it was said in full, cut if the user cut
+   * it off there (it's shown, never read out again), and owed when no call that could be heard
+   * was up — the live voice says it once one is, and that tab drops this text then. Only in
+   * browser-speech mode (no live voice set up) does the app read a line with the browser's voice.
    */
-  showUnprompted(text: string, emit: Emit, spoken: Spoken): void {
+  showUnprompted(text: string, emit: Emit, spoken: Spoken, id?: string): void {
     const line = text.replace(/\s+/g, " ").trim();
-    if (line) this.pushTurn("trinity", line, emit, { proactive: true, voiced: spoken === "said", ...(spoken === "cut" ? { cut: true } : {}) });
+    if (!line) return;
+    const flags = { proactive: true, voiced: spoken === "said", ...(spoken === "cut" ? { cut: true } : {}), ...(spoken === "owed" ? { owed: true } : {}) };
+    this.pushTurn("trinity", line, emit, flags, id);
   }
 
   /**

@@ -91,7 +91,11 @@ export class LiveCall {
     return typeof navigator !== "undefined" && !!navigator.mediaDevices && !!window.AudioContext;
   }
 
-  /** Playback is set up (a mic tap or a typed turn through the call did it): what the voice says is heard here. */
+  /**
+   * Playback is set up (a tap or key press anywhere on the page, a mic tap or a typed turn did it):
+   * what the voice says is heard here. The engine is told ("playback") — it says an unprompted line
+   * only where it can be heard, and keeps it (owed) until then.
+   */
   get canPlay(): boolean {
     return !!this.speaker && this.ctx?.state === "running";
   }
@@ -115,6 +119,10 @@ export class LiveCall {
     const ws = new WebSocket(url);
     this.ws = ws;
     ws.binaryType = "arraybuffer";
+    // Playback set up before this call (a re-warm, a wake): the engine knows at once that it's heard here.
+    ws.onopen = () => {
+      if (ws === this.ws && this.canPlay) ws.send(JSON.stringify({ type: "playback", on: true }));
+    };
     ws.onmessage = (m) => {
       if (ws !== this.ws) return;
       if (typeof m.data !== "string") {
@@ -148,6 +156,7 @@ export class LiveCall {
 
   /** Create/resume playback. Must run inside a user gesture (click, key press). */
   async ensurePlayback(): Promise<void> {
+    const could = this.canPlay;
     if (!this.ctx) {
       this.ctx = new AudioContext({ sampleRate: 24000 });
       this.workletReady = this.ctx.audioWorklet.addModule(
@@ -169,6 +178,8 @@ export class LiveCall {
       }
       this.speaker.port.postMessage({ rate: this.speechRate });
     }
+    // Heard here from now on: the engine says what it kept for a voice that can be heard.
+    if (!could && this.canPlay) this.sendJson({ type: "playback", on: true });
   }
 
   /** Run the voice through the clean-up chain, or straight to the speakers (Settings → Voices). */

@@ -11,7 +11,7 @@ import { emitPersonaActivated } from "./events.js";
 import { createApi } from "./http.js";
 import { startHeartbeat } from "./heartbeat.js";
 import { Orchestrator } from "./orchestrator.js";
-import { VoiceCall, hasVoiceCall, setVoiceNotifier, setVoiceResolver } from "./services/voice-call.js";
+import { VoiceCall, hasVoiceCall, setVoiceNotifier, setVoiceResolver, setWakeNotifier } from "./services/voice-call.js";
 import { ensureVoiceOnPod } from "./services/voices.js";
 import { registerGameContext, sweepGamesOnBoot } from "./game/integration.js";
 import { registerStoryTools } from "./game/story-tools.js";
@@ -174,9 +174,11 @@ async function main() {
     for (const c of clients) if (c.readyState === c.OPEN) c.send(msg);
   };
   // News from work that finished later (a forged skill, a content card) that no call said in full goes to every open app, like a heartbeat line.
-  setTellFallback((text, spoken) => orchestrator.showUnprompted(text, broadcast, spoken));
+  setTellFallback((text, spoken, id) => orchestrator.showUnprompted(text, broadcast, spoken, id));
   // The voice came back from a sample ("free": the tab that lent it re-warms) — or a call took it ("taken").
   setVoiceNotifier((status) => broadcast({ type: "voice", status }));
+  // A line no voice could say is owed, and no call is up anywhere: one tab warms one, so the live voice says it.
+  setWakeNotifier(() => broadcast({ type: "wake" }));
   // The user's name rides along: the voice hears it at connect, so the app re-warms a session set up before it changed.
   const readyEvent = (): ServerEvent => ({
     type: "ready",
@@ -241,7 +243,7 @@ async function main() {
   });
 
   startHeartbeat(orchestrator, broadcast, {
-    // Someone can get a due item: an open app (it shows it, and speaks it if the voice can't), a
+    // Someone can get a due item: an open app (it shows it, and the live voice says it once it can be heard), a
     // workspace window (it shows the toast) or a voice call.
     canDeliver: () => [...clients].some((c) => c.readyState === c.OPEN) || workspace.subscribers > 0 || hasVoiceCall(),
   });

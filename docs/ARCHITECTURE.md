@@ -89,16 +89,22 @@ keys are editable at runtime on the Settings page.
   compressor, limiter) with a 240 ms jitter cushion that grows on underruns; Settings → Voices
   turns the chain off per browser. A hold
   (0x04) keeps the agent quiet while you're still talking or an action is pending; a silence
-  pump keeps the model stepping; a filler ("One sec.") covers slow tools. `announce()` lets
+  pump keeps the model stepping; a filler ("One moment.") covers slow tools. `announce()` lets
   background work speak up unprompted (a due reminder, a new skill that's ready): it waits up
   to 15 s for a call that's still connecting (words sent before the pod's hello are lost),
   its turn behind any reply, and a pause in your speech, and it resolves `"said"` once the
   whole line was said, `"cut"` when the user cut it off (talked over it, or tapped to end
-  the turn) and `"unsaid"` when no call said it (none, it closed or moved to another window,
-  or no hello in time). Every line is also shown as text; a cut one is never read out again,
-  and an unsaid one is read aloud with the browser's voice, in one tab only, never while any
-  tab has a live call. The browser plays nothing before a gesture, so the first click or key
-  press anywhere on the page sets playback up, not only a mic tap.
+  the turn) and `"owed"` when no call that can be heard was up (none, its tab has had no tap
+  or key press yet, it closed or moved to another window, or no hello in time). An owed line
+  waits for the next call that is up and can be heard (oldest first, at most five, for up to
+  10 minutes) and that call says it; with no call anywhere the engine sends a `wake` so one
+  tab warms one, and a call whose tab can't play yet asks it for a tap (`owed`). The browser
+  plays nothing before a gesture, so the first click or key press anywhere on the page sets
+  playback up, not only a mic tap, and tells the engine (`playback`; a call opened in a tab
+  that already plays says so as its socket opens). Every line is also shown as text at once;
+  a cut one is never read out again, and when an owed one is said, that call's tab drops the
+  text (`announced`). No other voice stands in for PersonaPlex: the browser's own speech reads
+  lines only in browser-speech mode, when no live voice is set up.
 - **Barge-in.** Talking over the agent flushes its queued words (0x05) and the browser's
   speaker buffer. An order-aware echo gate ignores transcripts of the agent's own voice.
 - **Resilience.** Reason-tracked holds with a watchdog, Deepgram reconnects and keepalives,
@@ -416,8 +422,8 @@ keys are editable at runtime on the Settings page.
   anywhere, a one-time reminder due within 45 s (or due and waiting), or a recurring task that
   runs at most hourly due within 45 s, sends a `wake` event and one tab warms the voice so it's
   said aloud: a tab on screen, else (after 1.5 s) a background tab that held the voice before
-  and can play it (one per browser, by Web Lock). If none can, the line arrives unsaid and the
-  browser's voice reads it.
+  and can play it (one per browser, by Web Lock). If none can, the line is owed: shown as text,
+  and said by the next call that can be heard (see `announce()` above).
 - **Failures.** A scheduled run is stopped at 90 s and says nothing; a live brain that fails
   never stands in a canned line. A one-time item that fails gets one spoken notice ("Your
   scheduled … didn't run — …").
