@@ -1,20 +1,24 @@
 import { nanoid } from "nanoid";
+import { tellEveryone } from "../agent/tell.js";
 import { build, pageTitle } from "../services/mordiem.js";
 import { coderModel, coderName, getEndpoints } from "../settings.js";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
 import {
   boardActive,
   boardBlocked,
+  BoardLimitError,
+  cardById,
   cardEditableHtml,
   findCardToEdit,
-  getCard,
   listCards,
+  patchCard,
   setMediaSize,
   summarizeHtml,
-  updateCard,
   type BoardCard,
+  type CardPatch,
 } from "../workspace/board.js";
 import { workspace } from "../workspace/bus.js";
+import { cardQueueLength, queueOnCard } from "../workspace/card-jobs.js";
 import { registerTool } from "./registry.js";
 
 /**
@@ -106,30 +110,45 @@ function applySize(card: BoardCard, utterance: string): ToolResult | null {
   };
 }
 
-let editQueue: Promise<void> = Promise.resolve();
-let editsPending = 0;
-
-async function runHtmlEdit(cardN: number, utterance: string, ctx: ToolContext): Promise<void> {
+/**
+ * One HTML edit, run on its card's own queue (workspace/card-jobs.ts) — the same queue build_ui uses — so it starts
+ * only once everything asked of that card before it has finished, and it starts from the page the card has THEN:
+ * never from a build that is still streaming in. If the edit fails, that same settled page goes back.
+ */
+async function runHtmlEdit(cardId: string, utterance: string, ctx: ToolContext): Promise<void> {
   const id = `html:${nanoid(6)}`;
-  const card0 = getCard(cardN);
+  const card0 = cardById(cardId);
   if (!card0) return;
-  const prevHtml = cardEditableHtml(card0);
+  const cardN = card0.n;
+  // What the card shows now that its turn has come (an edit it was left with mid-way keeps its page in the stash).
+  const prevHtml = card0.stash ?? (card0.status === "error" ? null : cardEditableHtml(card0));
   if (!prevHtml) {
     workspace.toast(`Card ${cardN} has nothing I can edit as HTML.`, "error");
     return;
   }
 
   const coder = getEndpoints().coderDefault === "kimi" ? "kimi" : "glm";
-  updateCard(cardN, {
-    status: "pending",
-    html: prevHtml,
-    model: coderName(coder),
-    error: undefined,
-  });
+  const cancel = new AbortController();
+  let lost = false;
+  let refused: BoardLimitError | null = null;
+  const put = (patch: CardPatch): boolean => {
+    if (lost || refused) return false;
+    try {
+      if (patchCard(cardId, patch)) return true;
+      lost = true;
+      cancel.abort(new Error("the workspace moved on"));
+    } catch (err) {
+      if (!(err instanceof BoardLimitError)) throw err;
+      refused = err;
+      cancel.abort(err);
+    }
+    return false;
+  };
+  if (!put({ status: "pending", html: prevHtml, stash: prevHtml, model: coderName(coder), error: undefined })) return;
   workspace.activity(id, `Editing card ${cardN} HTML…`);
 
   const others = listCards()
-    .filter((c) => c.n !== cardN)
+    .filter((c) => c.id !== cardId)
     .map((c) => `card ${c.n} (${c.kind}): ${c.title}`)
     .join("; ");
   const context = [
@@ -137,14 +156,13 @@ async function runHtmlEdit(cardN: number, utterance: string, ctx: ToolContext): 
     "Keep everything the request does not ask to change. Prefer adjusting style width/height percentages on img, video, svg, and canvas.",
     "You may edit inline SVG paths/shapes, canvas drawing code, CSS, and DOM structure inside this card only.",
     "Do NOT recreate other cards. Do NOT wrap the card in outer chrome. Return ONLY the updated HTML fragment.",
+    "Keep any use of trinity.saveState / trinity.loadState / trinity.emit working. Never add fields for passwords, card numbers, security codes or one-time codes: Trinity opens her own secure form for those.",
     others ? `Other cards on the board (leave them alone): ${others}` : "",
     ctx.situation ? `Situation: ${ctx.situation}` : "",
   ]
     .filter(Boolean)
     .join("\n\n");
 
-  const cancel = new AbortController();
-  const ours = () => boardActive() && Boolean(getCard(cardN));
   try {
     const html = await build(utterance, {
       model: coderModel(coder),
@@ -154,39 +172,42 @@ async function runHtmlEdit(cardN: number, utterance: string, ctx: ToolContext): 
       context,
       signal: cancel.signal,
       onProgress: (partial) => {
-        if (!ours()) {
-          cancel.abort(new Error("the workspace moved on"));
-          return;
-        }
-        updateCard(cardN, { status: "pending", html: partial, model: coderName(coder) });
+        put({ status: "pending", html: partial, model: coderName(coder) });
       },
     });
-    if (!ours()) return;
+    if (lost) return;
     const title = pageTitle(html) ?? card0.title;
     // Pull mw from the edited img/video style when present so later size tweaks stay in sync.
     const mwMatch = /<(?:img|video)\b[^>]*\bstyle\s*=\s*["'][^"']*\bwidth\s*:\s*(\d+(?:\.\d+)?)%/i.exec(html);
     const mw = mwMatch ? clamp(Number(mwMatch[1]), 10, 100) : card0.mw;
-    updateCard(cardN, {
+    const done = put({
       status: "ready",
       title,
       html,
       mw,
       model: undefined,
       error: undefined,
+      stash: undefined,
     });
+    if (!done) {
+      if (refused) throw refused;
+      return;
+    }
     workspace.toast(`Card ${cardN}: HTML updated`, "success");
   } catch (err) {
-    if (ours()) {
-      updateCard(cardN, {
-        status: "ready",
-        html: prevHtml,
-        model: undefined,
-        error: undefined,
-      });
+    if (lost) return;
+    const why = (refused as BoardLimitError | null)?.message ?? (err as Error).message;
+    let kept = false;
+    try {
+      // Back to the page the card had when this edit's turn came — a settled page, never a half-streamed one.
+      kept = Boolean(patchCard(cardId, { status: "ready", html: prevHtml, model: undefined, error: undefined, stash: undefined }));
+    } catch (again) {
+      console.warn(`[edit_html] card ${cardN}: ${(again as Error).message}`);
     }
-    workspace.toast(`Card ${cardN} HTML edit failed: ${(err as Error).message.slice(0, 120)}`, "error");
+    workspace.toast(`Card ${cardN} HTML edit failed: ${why.slice(0, 120)}`, "error");
+    // Said once, briefly: a change that didn't happen must not pass in silence.
+    if (kept) tellEveryone(`That change to card ${cardN} didn't work, so I left it as it was.`, "edit_html");
   } finally {
-    editsPending--;
     workspace.activity(id, null);
   }
 }
@@ -220,8 +241,13 @@ const editHtml: Tool = {
     const sized = applySize(card, utterance);
     if (sized) return sized;
 
-    const html = cardEditableHtml(card);
-    if (!html) {
+    // A coder job is at work on this card (or waiting to be): this edit waits its turn behind it, on the card's queue.
+    const busy = cardQueueLength(card.id) > 0;
+    if (card.status === "pending" && !busy) {
+      return { ok: false, say: `Card ${card.n} is still being made — ask again once it's ready.` };
+    }
+    const html = busy ? (card.stash ?? card.html ?? "") : cardEditableHtml(card);
+    if (!html && !busy) {
       return {
         ok: false,
         say: `Card ${card.n} (${card.kind}) doesn't have HTML I can tweak. I can resize pictures and videos, or edit widget markup.`,
@@ -229,13 +255,11 @@ const editHtml: Tool = {
     }
 
     // Seed editable HTML onto media cards so later size tweaks and the board stay in sync.
-    if (!card.html) updateCard(card.n, { html });
+    if (!busy && !card.html && html) patchCard(card.id, { html });
 
-    const queued = editsPending > 0;
-    editsPending++;
-    editQueue = editQueue.then(() => runHtmlEdit(card.n, utterance, ctx)).catch(() => {});
+    const { queued } = queueOnCard(card.id, () => runHtmlEdit(card.id, utterance, ctx));
 
-    const tags = summarizeHtml(html);
+    const tags = html ? summarizeHtml(html) : "its page";
     return {
       ok: true,
       say: queued

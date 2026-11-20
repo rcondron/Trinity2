@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Card details (payment provider frame)</title>
+    <style>
+      body { font: 14px system-ui, sans-serif; margin: 8px; }
+      .row { display: block; margin: 6px 0; }
+    </style>
+  </head>
+  <body>
+    <!-- Served from the OTHER fixture origin and shown inside iframe-card.html: Trinity must never fill these. -->
+    <form id="card" action="/tokenize" method="post">
+      <div class="row">
+        <label for="num">Card number</label>
+        <input id="num" name="number" autocomplete="cc-number" inputmode="numeric" />
+      </div>
+      <div class="row">
+        <label for="exp">Expiry (MM / YY)</label>
+        <input id="exp" name="exp" autocomplete="cc-exp" placeholder="MM / YY" />
+        <label for="csc">CVC</label>
+        <input id="csc" name="csc" autocomplete="cc-csc" maxlength="4" />
+      </div>
+      <button type="button" id="inframe">Check card</button>
+    </form>
+    <script type="module" src="/harness.js"></script>
+  </body>
+</html>

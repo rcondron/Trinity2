@@ -97,6 +97,8 @@ export interface ToolContext {
   situation: string;
   /** The user's own words when a planner (figure_out) runs the tool for them: what the safety checks read. */
   userWords?: string;
+  /** Who is asking (agent/act.ts): the user in their own words, a planner working through steps, or a scheduled run. */
+  origin?: "user" | "planner" | "scheduled";
 }
 
 export interface ToolArgSpec {
@@ -128,6 +130,11 @@ export interface Tool {
    */
   available?: (ctx: { persona: Persona }) => boolean;
   /**
+   * The tool reaches the vault or spends money (signing in, filling a card, buying). Only the user's own words may
+   * start it: it is never offered to the multi-step solver, to scheduled runs or to forged skills.
+   */
+  sensitive?: boolean;
+  /**
    * How free-text (non-option) arguments are filled — this also decides WHEN the tool fires:
    *  - "llm"  (default): the fast model extracts them from the finished sentence → fires at sentence end.
    *  - "raw":  the tool reads ctx.utterance itself → fires at sentence end.
@@ -152,6 +159,8 @@ export interface ToolResult {
   error?: string;
   /** The work continues in the background (a build streaming in, or queued behind one): the reply must not claim it's done. */
   inProgress?: "started" | "queued";
+  /** Nothing to say: the words weren't for Trinity (talk between players at a game table). Nothing is spoken or shown. */
+  silent?: boolean;
 }
 
 // ─── WebSocket protocol ──────────────────────────────────────────────────────

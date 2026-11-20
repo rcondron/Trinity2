@@ -1,8 +1,9 @@
 <!--
-  Trinity — default game screen (template contract v1).
-  window.render(state, prev) renders a GameView (server/src/game/types.ts). It re-skins itself
-  from state.theme, keeps the DOM stable between updates (keyed morph, so bars animate and
-  images never flicker), and never throws on missing fields. No network, no web fonts.
+  Trinity — default game screen (template contract v2).
+  window.render(state, prev) renders a GameView (server/src/game/types.ts). The fields it reads are
+  declared in CONTRACT below and checked against server/src/game/view.ts by scripts/test-game-board.mts.
+  It re-skins itself from state.theme, keeps the DOM stable between updates (keyed morph, so bars
+  animate and images never flicker), and never throws on missing fields. No network, no web fonts.
 -->
 <style>
 :root {
@@ -536,6 +537,97 @@ img.is-loaded + .shim { display: none; }
   .map-ring.on { display: none; }
 }
 </style>
+<style>
+/* ── Turn strip: initiative order, the roll being waited for ───────────────── */
+.strip { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 10px var(--pad) 0; min-width: 0; }
+.L-narrow .strip { padding: 10px 12px 0; }
+.init { display: flex; align-items: center; gap: 8px; min-width: 0; overflow-x: auto; padding: 3px 2px; }
+.init-k { flex: none; display: inline-flex; flex-direction: column; align-items: center; justify-content: center; min-width: 66px; height: 46px; padding: 0 10px; border-radius: 12px; border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); background: color-mix(in srgb, var(--danger) 11%, transparent); color: var(--danger); }
+.init-k small { font: 800 8.5px/1 var(--font-label); letter-spacing: .2em; text-transform: uppercase; }
+.init-k b { margin-top: 3px; font: 800 19px/1 var(--font-theme); color: var(--ink); font-variant-numeric: tabular-nums; }
+.ini-c { flex: none; display: inline-flex; align-items: center; gap: 8px; max-width: 200px; height: 46px; padding: 0 14px 0 7px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--panel); transition: border-color .3s, box-shadow .3s, background-color .3s, opacity .3s; }
+.ini-n { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font: 650 13.5px/1.2 var(--font-ui); color: var(--ink); }
+.ini-v { flex: none; width: 31px; height: 31px; display: grid; place-items: center; border-radius: 50%; background: var(--soft-2); font: 800 12.5px/1 var(--font-ui); font-variant-numeric: tabular-nums; color: var(--ink); }
+.ini-c.is-npc .ini-v { background: color-mix(in srgb, var(--danger) 24%, transparent); }
+.ini-c.is-cur { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--panel)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent), 0 0 22px -8px var(--accent); }
+.ini-c.is-cur .ini-v { background: var(--accent); color: var(--bg); }
+.ini-c.is-down { opacity: .5; }
+.ini-c.is-down .ini-n { text-decoration: line-through; }
+.ini-t { flex: none; margin-left: 2px; padding: 3px 6px; border-radius: 5px; background: var(--accent); color: var(--bg); font: 800 8.5px/1 var(--font-label); letter-spacing: .16em; text-transform: uppercase; }
+.pend { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 11px 16px; border-radius: 12px; border: 1px solid var(--accent-line); background: color-mix(in srgb, var(--accent) 12%, var(--panel)); }
+.pend-k { flex: none; padding: 5px 8px; border-radius: 6px; background: var(--accent); color: var(--bg); font: 800 10px/1 var(--font-label); letter-spacing: .16em; text-transform: uppercase; }
+.pend-t { min-width: 0; font: 700 18px/1.3 var(--font-theme); overflow-wrap: anywhere; }
+.pend-h { margin-left: auto; flex: none; color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+.pend.ask { border-color: var(--line-2); background: var(--soft); }
+.pend.ask .pend-k { background: var(--accent2); }
+.pend.ask .pend-t { font-size: 15.5px; font-weight: 600; }
+.pend .roll-out { flex: none; margin: 0; }
+.tiny .pend-h, .L-narrow .pend-h { display: none; }
+.chip.rules { font-size: 11px; opacity: .85; }
+
+/* ── Hero extras: who plays them, death saves, spell slots ─────────────────── */
+.pc-who { color: var(--muted); font-weight: 600; }
+.turn.spot { background: var(--accent2); }
+.turn.ask { background: var(--warn); }
+.pc.is-asked { border-color: color-mix(in srgb, var(--warn) 70%, transparent); }
+.pips { display: flex; align-items: center; flex-wrap: wrap; gap: 7px 14px; margin-top: 10px; color: var(--muted); font: 800 9.5px/1 var(--font-label); letter-spacing: .12em; text-transform: uppercase; }
+.pipset { display: inline-flex; align-items: center; gap: 4px; }
+.pipset b { margin-right: 1px; color: var(--ink); font-weight: 800; letter-spacing: .02em; }
+.pip { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--pc, var(--muted)); background: transparent; }
+.pip.on { background: var(--pc, var(--muted)); }
+.pip.sq { border-radius: 2.5px; }
+.ds-ok { --pc: var(--good); }
+.ds-bad { --pc: var(--danger); }
+.slot { --pc: var(--accent2); }
+.tag.info { color: var(--muted); border-color: var(--line-2); background: var(--soft); }
+.tag small { margin-left: 4px; opacity: .8; font-weight: 800; font-variant-numeric: tabular-nums; text-transform: none; }
+.hp-n em { margin-left: 3px; color: var(--accent2); font-style: normal; font-weight: 800; font-size: 11.5px; }
+.pc.is-dead { opacity: .6; filter: grayscale(.85); }
+.ic.eq { border-color: var(--accent-line); background: var(--accent-soft); }
+.qty { margin-left: 5px; color: var(--muted); font-weight: 700; font-size: 12px; }
+.d3 .pips { margin-top: 7px; }
+.d3 .pips.slots { display: none; }
+
+/* ── Creatures: health as a band, never a number ───────────────────────────── */
+.band { margin-top: 5px; display: flex; align-items: center; gap: 7px; }
+.band-bar { flex: 1 1 auto; min-width: 30px; height: 6px; border-radius: 999px; overflow: hidden; background: color-mix(in srgb, var(--ink) 9%, transparent); }
+.band-bar i { display: block; height: 100%; border-radius: inherit; background: var(--bc); transition: width .7s cubic-bezier(.2, .8, .2, 1), background-color .4s; }
+.band-l { flex: none; color: var(--bc); font: 800 9px/1 var(--font-label); letter-spacing: .1em; text-transform: uppercase; }
+.b-healthy { --bc: var(--good); }
+.b-bloodied { --bc: var(--warn); }
+.b-near-death { --bc: var(--danger); }
+.b-down { --bc: var(--muted); }
+.npc.is-out { opacity: .5; }
+.npc.is-out .npc-n { text-decoration: line-through; }
+.npc.is-turn { background: color-mix(in srgb, var(--danger) 10%, transparent); box-shadow: inset 3px 0 0 var(--danger); }
+.npc-c { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
+.npc-c .tag { padding: 2px 7px; font-size: 10.5px; }
+
+/* ── Quests ────────────────────────────────────────────────────────────────── */
+.p-quests { flex: none; }
+.quests { list-style: none; margin: 0; padding: 0 12px 12px; }
+.quest { display: flex; align-items: flex-start; gap: 9px; padding: 6px 4px; }
+.quest + .quest { box-shadow: inset 0 1px 0 var(--line); }
+.q-mark { flex: none; width: 18px; height: 18px; margin-top: 1px; display: grid; place-items: center; border-radius: 50%; border: 1.5px solid var(--accent); color: var(--accent); font: 800 12px/1 var(--font-ui); }
+.q-b { flex: 1 1 auto; min-width: 0; }
+.q-mark svg { width: 11px; height: 11px; stroke-width: 3; }
+.quest.q-done .q-mark { background: var(--good); border-color: var(--good); color: var(--bg); }
+.quest.q-failed .q-mark { border-color: var(--danger); color: var(--danger); }
+.quest.q-done .q-t, .quest.q-failed .q-t { color: var(--muted); text-decoration: line-through; }
+.q-t { font: 650 13.5px/1.3 var(--font-ui); overflow-wrap: anywhere; }
+.q-d { margin-top: 2px; color: var(--muted); font-size: 12px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* ── Roll extras: both dice of advantage, what it was against ──────────────── */
+.rb.kept { outline: 2px solid var(--accent); outline-offset: 1px; }
+.rb.drop { opacity: .45; text-decoration: line-through; }
+.roll-out { display: inline-block; margin: 7px 6px 0 0; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--line-2); color: var(--muted); font: 800 9.5px/1 var(--font-label); letter-spacing: .14em; text-transform: uppercase; transition: opacity .35s ease; }
+.roll-out.good { color: var(--good); border-color: color-mix(in srgb, var(--good) 45%, transparent); }
+.roll-out.bad { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+.roll.fx-rolling .roll-out { opacity: 0; }
+.ph-paused { color: var(--accent2); border-color: color-mix(in srgb, var(--accent2) 45%, transparent); background: color-mix(in srgb, var(--accent2) 11%, transparent); }
+.ph-ended { color: var(--muted); border-color: var(--line-2); background: var(--soft); }
+.ph-fight { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); background: color-mix(in srgb, var(--danger) 11%, transparent); }
+</style>
 <div id="app" data-texture="parchment" data-font="serif"></div>
 <div id="fx" aria-hidden="true"></div>
 <script>
@@ -709,12 +801,39 @@ img.is-loaded + .shim { display: none; }
       /sci|space|cyber|galac|futur|mech|alien|robot|android|orbit|planet|colony|nebula|starship|star\s?ship/i.test(s.genre + " " + s.tone);
   }
 
+  // ── The state contract ─────────────────────────────────────────────────────
+  // Every field of the GameView this screen reads, by part. The engine keeps the full list
+  // (server/src/game/view.ts VIEW_CONTRACT); scripts/test-game-board.mts checks this declaration
+  // against that list, against what the normalizers below really read, and against what the engine
+  // really sends. The block between the two markers is strict JSON.
+  var CONTRACT = /*CONTRACT*/{
+    "top": ["id", "title", "genre", "tone", "setting", "theme", "phase", "mode", "setup", "round", "activePlayerId", "turn", "combat", "pendingCheck", "pendingQuestion", "quests", "storyTurn", "partyGold", "about", "titleImage", "scene", "players", "npcs", "items", "locations", "currentLocationId", "log", "lastRoll"],
+    "player": ["id", "name", "playerName", "race", "className", "level", "hp", "maxHp", "tempHp", "ac", "speed", "stats", "background", "traits", "conditions", "conditionInfo", "exhaustion", "gold", "xp", "inventory", "portrait", "pending", "slots", "concentration", "inspiration", "deathSaves", "stable", "dead", "equipped", "isTurn"],
+    "npc": ["id", "name", "role", "description", "attitude", "portrait", "status", "health", "conditionInfo", "inCombat", "isTurn"],
+    "item": ["id", "name", "type", "rarity", "description", "ownerId", "icon", "quantity", "equipped"],
+    "location": ["id", "name", "x", "y", "connections", "visited"],
+    "log": ["id", "ts", "kind", "text"],
+    "roll": ["id", "who", "notation", "rolls", "modifier", "total", "label", "ts", "adv", "kept", "natural", "dc", "outcome"],
+    "combat": ["round", "order"],
+    "combatant": ["id", "kind", "name", "init", "current", "down"],
+    "turn": ["kind", "id", "name", "playerName", "isHero"],
+    "pendingCheck": ["heroId", "hero", "label", "dc", "adv", "text"],
+    "quest": ["id", "title", "detail", "status"],
+    "setup": ["steps", "next"],
+    "scene": ["title", "description", "image"]
+  }/*END CONTRACT*/;
+
   // ── Normalization: every field defaulted, so builders never see undefined ──
+  // Each normalizer reads its raw part through one variable (p, it, n, l, e, r, sc, t, c, x, pc, q,
+  // su, s): the board test scans these functions to keep CONTRACT honest.
   var KINDS = ["narration", "roll", "combat", "loot", "party", "system"];
   var ITEM_TYPES = ["weapon", "armor", "potion", "scroll", "wondrous", "gear", "treasure", "quest"];
   var RARITIES = ["common", "uncommon", "rare", "very rare", "legendary", "artifact"];
   var ATTITUDES = ["friendly", "neutral", "hostile", "unknown"];
   var STATS = ["str", "dex", "con", "int", "wis", "cha"];
+  var PHASES = ["setup", "playing", "paused", "ended"];
+  var BANDS = ["healthy", "bloodied", "near death", "down"];
+  var OUTCOMES = ["success", "failure", "hit", "miss", "crit", "fumble"];
   var NEW_TITLE = "New Adventure";
 
   function imgRef(v) {
@@ -733,16 +852,39 @@ img.is-loaded + .shim { display: none; }
   function strList(v, maxItems, maxLen) {
     return arr(v).map(function (x) { return str(x, maxLen); }).filter(Boolean).slice(0, maxItems);
   }
+  function advOf(v) { return v === "adv" || v === "dis" ? v : null; }
+  function numOrNull(v, lo, hi) { return typeof v === "number" && isFinite(v) ? int(v, 0, lo, hi) : null; }
+  /** Conditions with the rounds they have left; a plain list of names (an older state) has none. */
+  function condList(info, plain) {
+    var out = arr(info).map(function (c) {
+      c = obj(c);
+      var name = str(c.name, 32), rounds = numOrNull(c.rounds, 0, 999);
+      return name ? { name: name, rounds: rounds && rounds > 0 ? rounds : null } : null;
+    }).filter(Boolean);
+    if (!out.length) out = strList(plain, 8, 32).map(function (name) { return { name: name, rounds: null }; });
+    return out.slice(0, 8);
+  }
+  function normSlot(x) {
+    x = obj(x);
+    var max = int(x.max, 0, 0, 9);
+    return { level: int(x.level, 1, 1, 9), max: max, used: int(x.used, 0, 0, max) };
+  }
   function normPlayer(p, i, used) {
     p = obj(p);
-    var maxHp = int(p.maxHp, 1, 1, 99999), stats = obj(p.stats), st = {};
+    var maxHp = int(p.maxHp, 1, 1, 99999), stats = obj(p.stats), st = {}, ds = obj(p.deathSaves), eq = obj(p.equipped);
     STATS.forEach(function (k) { st[k] = int(stats[k], 10, 1, 30); });
     return {
-      id: uniq(p.id, "p", i, used), name: str(p.name, 60), race: str(p.race, 40), className: str(p.className, 40),
-      level: int(p.level, 1, 0, 99), hp: int(p.hp, maxHp, -99999, 99999), maxHp: maxHp, ac: int(p.ac, 10, 0, 99),
+      id: uniq(p.id, "p", i, used), name: str(p.name, 60), playerName: str(p.playerName, 40), race: str(p.race, 40), className: str(p.className, 40),
+      level: int(p.level, 1, 0, 99), hp: int(p.hp, maxHp, -99999, 99999), maxHp: maxHp, tempHp: int(p.tempHp, 0, 0, 99999), ac: int(p.ac, 10, 0, 99),
       speed: int(p.speed, 30, 0, 9999), stats: st, background: str(p.background, 80), traits: strList(p.traits, 6, 60),
-      conditions: strList(p.conditions, 8, 32), gold: int(p.gold, 0, -1e12, 1e12), xp: int(p.xp, 0, 0, 1e12),
-      inventory: strList(p.inventory, 80, 120), portrait: imgRef(p.portrait), pending: p.pending === true
+      conditions: condList(p.conditionInfo, p.conditions), exhaustion: int(p.exhaustion, 0, 0, 6), gold: int(p.gold, 0, -1e12, 1e12), xp: int(p.xp, 0, 0, 1e12),
+      inventory: strList(p.inventory, 80, 120), portrait: imgRef(p.portrait), pending: p.pending === true,
+      slots: arr(p.slots).slice(0, 9).map(normSlot).filter(function (x) { return x.max > 0; }),
+      concentration: str(p.concentration, 40), inspiration: p.inspiration === true,
+      deathSaves: { successes: int(ds.successes, 0, 0, 3), failures: int(ds.failures, 0, 0, 3) },
+      stable: p.stable === true, dead: p.dead === true,
+      equipped: [eq.weapon, eq.armor, eq.shield].filter(function (x) { return typeof x === "string" && x; }),
+      isTurn: p.isTurn === true
     };
   }
   function normItem(it, i, used) {
@@ -750,14 +892,17 @@ img.is-loaded + .shim { display: none; }
     return {
       id: uniq(it.id, "i", i, used), name: str(it.name, 70), type: oneOf(it.type, ITEM_TYPES, "gear"),
       rarity: oneOf(it.rarity, RARITIES, "common"), description: str(it.description, 240),
-      ownerId: typeof it.ownerId === "string" && it.ownerId ? it.ownerId : null, icon: imgRef(it.icon)
+      ownerId: typeof it.ownerId === "string" && it.ownerId ? it.ownerId : null, icon: imgRef(it.icon),
+      quantity: int(it.quantity, 1, 1, 9999), equipped: it.equipped === true
     };
   }
   function normNpc(n, i, used) {
     n = obj(n);
     return {
       id: uniq(n.id, "n", i, used), name: str(n.name, 60), role: str(n.role, 60), description: str(n.description, 260),
-      attitude: oneOf(n.attitude, ATTITUDES, "unknown"), portrait: imgRef(n.portrait)
+      attitude: oneOf(n.attitude, ATTITUDES, "unknown"), portrait: imgRef(n.portrait),
+      status: oneOf(n.status, ["alive", "defeated", "fled"], "alive"), health: oneOf(n.health, BANDS, "") || null,
+      conditions: condList(n.conditionInfo, null), inCombat: n.inCombat === true, isTurn: n.isTurn === true
     };
   }
   function normLoc(l, i, used) {
@@ -780,7 +925,9 @@ img.is-loaded + .shim { display: none; }
     var total = int(r.total, sum, -999999, 999999);
     return {
       id: str(r.id, 120) || "roll:" + total + ":" + num(r.ts, 0), who: str(r.who, 60) || null, notation: str(r.notation, 32),
-      rolls: rolls, modifier: mod, total: total, label: str(r.label, 80) || null
+      rolls: rolls, modifier: mod, total: total, label: str(r.label, 80) || null,
+      adv: advOf(r.adv), kept: numOrNull(r.kept, 1, 9999), natural: numOrNull(r.natural, 1, 20), dc: numOrNull(r.dc, 0, 99),
+      outcome: oneOf(r.outcome, OUTCOMES, "") || null
     };
   }
   function normScene(sc) {
@@ -788,35 +935,71 @@ img.is-loaded + .shim { display: none; }
     var out = { title: str(sc.title, 90), description: str(sc.description, 1200), image: imgRef(sc.image) };
     return out.title || out.description || out.image.status !== "none" ? out : null;
   }
+  function normTurn(t) {
+    if (!isObj(t)) return null;
+    var id = str(t.id, 120);
+    return id ? { kind: t.kind === "turn" ? "turn" : "spotlight", id: id, name: str(t.name, 60), playerName: str(t.playerName, 40), isHero: t.isHero !== false } : null;
+  }
+  function normCombatant(x) {
+    x = obj(x);
+    return { id: str(x.id, 120), kind: x.kind === "npc" ? "npc" : "hero", name: str(x.name, 60) || "?", init: int(x.init, 0, -99, 99), current: x.current === true, down: x.down === true };
+  }
+  function normCombat(c) {
+    if (!isObj(c)) return null;
+    var order = arr(c.order).slice(0, 24).map(normCombatant).filter(function (x) { return x.id; });
+    return order.length ? { round: int(c.round, 1, 1, 99999), order: order } : null;
+  }
+  function normPending(pc) {
+    if (!isObj(pc)) return null;
+    var hero = str(pc.hero, 60), label = str(pc.label, 60), dc = int(pc.dc, 10, 0, 99);
+    var text = str(pc.text, 160) || (hero ? hero + ": " : "") + (label || "Roll") + ", DC " + dc;
+    return { heroId: str(pc.heroId, 120) || null, hero: hero, label: label, dc: dc, adv: advOf(pc.adv), text: text };
+  }
+  function normQuest(q, i, used) {
+    q = obj(q);
+    return { id: uniq(q.id, "q", i, used), title: str(q.title, 90), detail: str(q.detail, 240), status: oneOf(q.status, ["open", "done", "failed"], "open") };
+  }
+  function normSetup(su) {
+    su = obj(su);
+    return {
+      steps: arr(su.steps).slice(0, 6).map(function (x, i) {
+        x = obj(x);
+        return { label: str(x.label, 60) || "Step " + (i + 1), done: x.done === true };
+      }),
+      next: str(su.next, 400) || null
+    };
+  }
   function norm(raw) {
     var s = obj(raw), used;
     var title = str(s.title, 120) || NEW_TITLE;
+    var about = obj(s.about);
     var out = {
       id: str(s.id, 120), title: title, genre: str(s.genre, 40), tone: str(s.tone, 40), setting: str(s.setting, 500),
-      theme: normTheme(s.theme), phase: s.phase === "playing" ? "playing" : "setup", round: int(s.round, 0, 0, 99999),
-      activePlayerId: str(s.activePlayerId, 120) || null, titleImage: imgRef(s.titleImage), scene: normScene(s.scene),
+      theme: normTheme(s.theme), phase: oneOf(s.phase, PHASES, "setup"), mode: oneOf(s.mode, ["explore", "combat", "paused"], "explore"),
+      round: int(s.round, 0, 0, 99999), storyTurn: int(s.storyTurn, 0, 0, 999999), partyGold: int(s.partyGold, 0, 0, 1e12),
+      turn: normTurn(s.turn), combat: normCombat(s.combat), pendingCheck: normPending(s.pendingCheck), pendingQuestion: str(s.pendingQuestion, 240) || null,
+      about: { rules: str(about.rules, 40), attribution: str(about.attribution, 400) },
+      titleImage: imgRef(s.titleImage), scene: normScene(s.scene),
       currentLocationId: str(s.currentLocationId, 120) || null, lastRoll: normRoll(s.lastRoll)
     };
     out.isNew = title === NEW_TITLE && !out.setting;
+    out.inPlay = out.phase === "playing" || out.phase === "paused";
     used = {}; out.players = arr(s.players).slice(0, 12).map(function (p, i) { return normPlayer(p, i, used); });
     used = {}; out.items = arr(s.items).slice(0, 80).map(function (x, i) { return normItem(x, i, used); });
     used = {}; out.npcs = arr(s.npcs).slice(0, 40).map(function (x, i) { return normNpc(x, i, used); });
     used = {}; out.locations = arr(s.locations).slice(0, 40).map(function (x, i) { return normLoc(x, i, used); });
     used = {}; out.log = arr(s.log).slice(-200).map(function (x, i) { return normLog(x, i, used); });
-    var setup = obj(s.setup);
-    out.setup = {
-      steps: arr(setup.steps).slice(0, 6).map(function (x, i) {
-        x = obj(x);
-        return { label: str(x.label, 60) || "Step " + (i + 1), done: x.done === true };
-      }),
-      next: str(setup.next, 400) || null
-    };
+    used = {}; out.quests = arr(s.quests).slice(0, 12).map(function (x, i) { return normQuest(x, i, used); }).filter(function (q) { return q.title; });
+    // A state from before the turn model names the active hero only by id.
+    var active = str(s.activePlayerId, 120);
+    if (active && !out.turn && out.inPlay) out.players.forEach(function (p) { if (p.id === active) p.isTurn = true; });
+    out.setup = normSetup(s.setup);
     if (!out.setup.steps.length) {
       var real = out.players.filter(function (p) { return !p.pending; }).length;
       out.setup.steps = [
         { label: "Choose the adventure", done: !out.isNew },
         { label: "Assemble the " + out.theme.labels.party.toLowerCase(), done: real > 0 },
-        { label: "Begin the adventure", done: out.phase === "playing" }
+        { label: "Begin the adventure", done: out.phase !== "setup" }
       ];
     }
     return out;
@@ -986,16 +1169,45 @@ img.is-loaded + .shim { display: none; }
     if (s.tone) h += '<span class="chip tone">' + esc(s.tone) + "</span>";
     if (!s.genre && !s.tone) h += '<span class="chip wait">' + (s.phase === "setup" ? "Awaiting your idea…" : "Adventure") + "</span>";
     // Background work (state.busy) is shown by the workspace host as activity chips — not repeated here.
-    if (s.setting && s.phase === "playing" && lay.L === "wide") h += '<span class="premise">' + esc(s.setting) + "</span>";
+    if (s.setting && s.inPlay && lay.L === "wide") h += '<span class="premise">' + esc(s.setting) + "</span>";
+    if (s.about.rules && lay.L !== "narrow") h += '<span class="chip rules" title="' + esc(s.about.attribution) + '">' + esc(s.about.rules) + "</span>";
     h += "</div></div><div class=\"hdr-right\">";
-    if (s.phase === "playing") {
-      h += '<span class="phase ph-play"><i class="pdot"></i>Playing</span>';
-      h += '<div class="round" data-k="round"><small>Round</small><b>' + Math.max(1, s.round) + "</b></div>";
-    } else {
+    // The round belongs to a fight and is shown with the initiative order (buildStrip), not here.
+    if (s.phase === "setup") {
       var done = s.setup.steps.filter(function (x) { return x.done; }).length;
       h += '<span class="phase ph-setup"><i class="pdot"></i>Setup <b>' + done + "/" + s.setup.steps.length + "</b></span>";
+    } else if (s.phase === "ended") {
+      h += '<span class="phase ph-ended">The end</span>';
+    } else if (s.phase === "paused") {
+      h += '<span class="phase ph-paused">Paused</span>';
+    } else if (s.combat) {
+      h += '<span class="phase ph-fight"><i class="pdot"></i>Combat</span>';
+    } else {
+      h += '<span class="phase ph-play"><i class="pdot"></i>Playing</span>';
     }
     return h + "</div></header>";
+  }
+
+  // ── Turn strip: the initiative order, and the roll or answer being waited for ─
+  function buildStrip(s) {
+    var h = "", c = s.combat, pc = s.pendingCheck;
+    if (!s.inPlay) return "";
+    if (c) {
+      h += '<div class="init" data-k="init"><span class="init-k" data-k="round"><small>Round</small><b>' + c.round + "</b></span>";
+      c.order.forEach(function (x) {
+        h += '<span class="ini-c' + (x.kind === "npc" ? " is-npc" : "") + (x.current ? " is-cur" : "") + (x.down ? " is-down" : "") + '" data-k="c:' + esc(x.id) + '">' +
+          '<b class="ini-v">' + x.init + '</b><span class="ini-n">' + esc(x.name) + "</span>" + (x.current ? '<i class="ini-t">Turn</i>' : "") + "</span>";
+      });
+      h += "</div>";
+    }
+    if (pc) {
+      h += '<div class="pend" data-k="pend"><span class="pend-k">Roll</span><span class="pend-t">' + esc(pc.text) + "</span>" +
+        (pc.adv ? '<span class="roll-out ' + (pc.adv === "adv" ? "good" : "bad") + '">' + (pc.adv === "adv" ? "Advantage" : "Disadvantage") + "</span>" : "") +
+        '<span class="pend-h">Say what you rolled, or “roll for me”.</span></div>';
+    } else if (s.pendingQuestion) {
+      h += '<div class="pend ask" data-k="ask"><span class="pend-k">Waiting</span><span class="pend-t">' + esc(s.pendingQuestion) + "</span></div>";
+    }
+    return h ? '<div class="strip" data-k="strip">' + h + "</div>" : "";
   }
 
   // ── Party ──────────────────────────────────────────────────────────────────
@@ -1018,39 +1230,70 @@ img.is-loaded + .shim { display: none; }
       '<div class="pc-id">' + (named ? '<div class="pc-name">' + esc(p.name) + "</div>" : '<div class="skel w60"></div>') + '<div class="skel w40"></div></div></div>' +
       '<div class="approach">' + who + ' approaches<span class="dots"><i>.</i><i>.</i><i>.</i></span></div><div class="skel bar"></div></article>';
   }
+  /** A row of pips: `on` of `n` filled. */
+  function pips(n, on, cls, lead) {
+    var h = '<span class="pipset">' + (lead ? "<b>" + esc(lead) + "</b>" : "");
+    for (var i = 0; i < n; i++) h += '<i class="pip ' + cls + (i < on ? " on" : "") + '"></i>';
+    return h + "</span>";
+  }
+  /** Condition tags, each with the rounds it has left when it is timed. */
+  function condTags(list, boons) {
+    return list.map(function (x) {
+      return '<span class="tag ' + (boons && BOON.test(x.name) ? "boon" : "bad") + '">' + esc(x.name) +
+        (x.rounds ? "<small>" + x.rounds + (x.rounds === 1 ? " rd" : " rds") + "</small>" : "") + "</span>";
+    }).join("");
+  }
   function playerCard(p, s) {
     var maxHp = Math.max(1, p.maxHp), hp = Math.max(0, Math.min(p.hp, maxHp)), pct = hp / maxHp;
     var c = pct > 0.5 ? "var(--good)" : pct > 0.25 ? "var(--warn)" : "var(--danger)";
-    var active = s.activePlayerId === p.id;
-    var h = '<article class="pc' + (active ? " is-active" : "") + (p.hp <= 0 ? " is-down" : "") + '" data-k="p:' + esc(p.id) + '">';
-    if (active) h += '<span class="turn">Turn</span>';
+    // Whose go it is: a turn in a fight, the spotlight outside one. The hero asked for a roll says so.
+    var fight = !!s.combat, active = p.isTurn && s.inPlay, down = p.hp <= 0;
+    var asked = !!(s.pendingCheck && s.pendingCheck.heroId === p.id);
+    var h = '<article class="pc' + (active ? " is-active" : "") + (asked ? " is-asked" : "") + (p.dead ? " is-dead" : down ? " is-down" : "") + '" data-k="p:' + esc(p.id) + '">';
+    if (asked) h += '<span class="turn ask">Roll</span>';
+    else if (active) h += '<span class="turn' + (fight ? "" : " spot") + '">' + (fight ? "Turn" : "Spotlight") + "</span>";
     var sub = [p.race, p.className].filter(Boolean).map(esc).join(" · ");
     h += '<div class="pc-top">' + pic(p.portrait, "av", { fallback: iniHtml(p.name) }) + '<div class="pc-id"><div class="pc-name">' + esc(p.name || "Unnamed " + partyNoun(s)) +
-      '</div><div class="pc-sub">' + sub + (sub ? " · " : "") + "<b>Lv " + p.level + "</b></div></div>";
+      '</div><div class="pc-sub">' + sub + (sub ? " · " : "") + "<b>Lv " + p.level + "</b>" + (p.playerName ? '<span class="pc-who"> · ' + esc(p.playerName) + "</span>" : "") + "</div></div>";
     h += '<div class="ac">' + SHIELD + "<b>" + p.ac + "</b><small>AC</small></div></div>";
     h += '<div class="hp-row"><span class="hp-l">' + icon("heart") + 'HP</span><div class="hp"><i style="width:' + (pct * 100).toFixed(1) + "%;--c:" + c + '"></i></div><span class="hp-n">' +
-      p.hp + "<small> / " + maxHp + "</small></span></div>";
+      p.hp + "<small> / " + maxHp + "</small>" + (p.tempHp ? "<em>+" + p.tempHp + "</em>" : "") + "</span></div>";
+    if (down && !p.dead && !p.stable) {
+      h += '<div class="pips saves"><span>Death saves</span>' + pips(3, p.deathSaves.successes, "ds-ok") + pips(3, p.deathSaves.failures, "ds-bad sq") + "</div>";
+    }
+    if (p.slots.length) {
+      h += '<div class="pips slots"><span>Spell slots</span>' + p.slots.map(function (x) { return pips(x.max, x.max - x.used, "slot", String(x.level)); }).join("") + "</div>";
+    }
     var top = 0;
     STATS.forEach(function (k) { top = Math.max(top, p.stats[k]); });
     h += '<div class="stats">' + STATS.map(function (k) {
       var v = p.stats[k];
       return '<div class="st' + (v === top && v >= 13 ? " top" : "") + '"><span>' + k.toUpperCase() + "</span><b>" + modStr(v) + "</b><em>" + v + "</em></div>";
     }).join("") + "</div>";
-    if (p.conditions.length) {
-      h += '<div class="tags">' + p.conditions.map(function (x) { return '<span class="tag ' + (BOON.test(x) ? "boon" : "bad") + '">' + esc(x) + "</span>"; }).join("") + "</div>";
-    }
+    var tags = p.dead ? '<span class="tag bad">Dead</span>' : down && p.stable ? '<span class="tag info">Stable</span>' : "";
+    tags += condTags(p.conditions, true);
+    if (p.exhaustion) tags += '<span class="tag bad">Exhaustion<small>' + p.exhaustion + "</small></span>";
+    if (p.concentration) tags += '<span class="tag info">Concentrating: ' + esc(p.concentration) + "</span>";
+    if (p.inspiration) tags += '<span class="tag boon">Inspired</span>';
+    if (tags) h += '<div class="tags">' + tags + "</div>";
     h += '<div class="purse"><span>' + icon("coins") + "<b>" + esc(money(p.gold, s)) + "</b></span><span>" + icon("star") + "<b>" + esc(fmt(p.xp)) + "</b>&nbsp;XP</span></div>";
     var seen = {}, gear = [];
+    var own = function (it) {
+      seen[it.id] = true;
+      gear.push({ name: (it.name || "Unrevealed item") + (it.quantity > 1 ? " ×" + it.quantity : ""), rarity: it.rarity, eq: it.equipped || p.equipped.indexOf(it.id) >= 0 });
+    };
     p.inventory.forEach(function (id) {
       var it = itemById[id];
-      if (it && !seen[it.id]) { seen[it.id] = true; gear.push({ name: it.name || "Unrevealed item", rarity: it.rarity }); }
-      else if (!it && /\s/.test(id) && !seen[id]) { seen[id] = true; gear.push({ name: id, rarity: "common" }); }
+      if (it && !seen[it.id]) own(it);
+      else if (!it && /\s/.test(id) && !seen[id]) { seen[id] = true; gear.push({ name: id, rarity: "common", eq: false }); }
     });
-    s.items.forEach(function (it) { if (it.ownerId === p.id && !seen[it.id]) { seen[it.id] = true; gear.push({ name: it.name || "Unrevealed item", rarity: it.rarity }); } });
+    s.items.forEach(function (it) { if (it.ownerId === p.id && !seen[it.id]) own(it); });
+    // What the hero holds ready comes first.
+    gear = gear.filter(function (g) { return g.eq; }).concat(gear.filter(function (g) { return !g.eq; }));
     if (gear.length) {
       var max = gear.length > 5 ? 4 : 5;
       h += '<div class="inv">' + gear.slice(0, max).map(function (g) {
-        return '<span class="ic r-' + g.rarity.replace(/\s+/g, "-") + '"><i></i><span>' + esc(g.name) + "</span></span>";
+        return '<span class="ic r-' + g.rarity.replace(/\s+/g, "-") + (g.eq ? " eq" : "") + '"><i></i><span>' + esc(g.name) + "</span></span>";
       }).join("") + (gear.length > max ? '<span class="ic more">+' + (gear.length - max) + " more</span>" : "") + "</div>";
     }
     var lore = [p.background].concat(p.traits).filter(Boolean).join(" · ");
@@ -1094,6 +1337,19 @@ img.is-loaded + .shim { display: none; }
     return h + "</section>";
   }
 
+  // ── Quests ─────────────────────────────────────────────────────────────────
+  function buildQuests(s) {
+    var list = s.quests;
+    if (!list.length) return "";
+    var open = list.filter(function (q) { return q.status === "open"; }).length;
+    var h = '<section class="panel p-quests" data-k="quests">' + head(s, "Quests", open ? String(open) : "") + '<ul class="quests">';
+    list.forEach(function (q) {
+      h += '<li class="quest q-' + q.status + '" data-k="q:' + esc(q.id) + '"><span class="q-mark">' + (q.status === "done" ? icon("check") : q.status === "failed" ? "×" : "") + "</span>" +
+        '<div class="q-b"><div class="q-t">' + esc(q.title) + "</div>" + (q.detail && q.status === "open" ? '<div class="q-d">' + esc(q.detail) + "</div>" : "") + "</div></li>";
+    });
+    return h + "</ul></section>";
+  }
+
   // ── Log ────────────────────────────────────────────────────────────────────
   var LOG_ICON = { narration: "book", roll: "dice", combat: "swords", loot: "coins", party: "users", system: "info" };
   function rollText(text) {
@@ -1130,11 +1386,18 @@ img.is-loaded + .shim { display: none; }
       mod: m[4] ? (m[3] === "+" ? 1 : -1) * parseInt(m[4], 10) : 0
     };
   }
+  /** Natural 20 or natural 1: decided by the d20 that counted (`natural`), so a roll with advantage, which shows two dice, still gets its ribbon. */
   function critKind(r) {
-    var p = parseNotation(r.notation);
-    if (p.faces === 20 && r.rolls.length === 1) return r.rolls[0] === 20 ? "crit" : r.rolls[0] === 1 ? "fumble" : "";
-    return "";
+    var nat = r.natural;
+    if (nat === null) {
+      // A state without `natural`: only a lone d20 can be read safely.
+      var p = parseNotation(r.notation);
+      if (p.faces === 20 && p.count === 1 && r.rolls.length === 1 && !r.adv) nat = r.rolls[0];
+    }
+    return nat === 20 ? "crit" : nat === 1 ? "fumble" : "";
   }
+  var OUT_LABEL = { success: "Success", failure: "Failure", hit: "Hit", miss: "Miss", crit: "Critical hit", fumble: "Miss" };
+  var OUT_GOOD = { success: true, hit: true, crit: true };
   function buildRoll(s) {
     var r = s.lastRoll, h = '<section class="panel p-roll" data-k="roll">' + head(s, "Last Roll", "");
     if (!r) {
@@ -1145,11 +1408,19 @@ img.is-loaded + .shim { display: none; }
     h += '<div class="roll' + (kind ? " " + kind : "") + '"><div class="die">' + D20 + '<span class="roll-num" data-static>' + r.total + "</span></div>";
     h += '<div class="roll-info"><div class="roll-label">' + esc(r.label || (r.notation ? "Rolled " + r.notation : "Roll")) + "</div>";
     h += '<div class="roll-who">' + (r.who ? "<b>" + esc(r.who) + "</b>" : "Game Master") + "</div>";
-    h += '<div class="roll-break">' + r.rolls.slice(0, 8).map(function (v) {
-      return '<span class="rb' + (faces > 1 && v === faces ? " max" : v === 1 ? " min" : "") + '">' + v + "</span>";
+    // With advantage or disadvantage both d20s are shown: the one that counts is ringed, the other struck out.
+    var keptAt = r.adv && r.kept !== null ? r.rolls.indexOf(r.kept) : -1;
+    h += '<div class="roll-break">' + r.rolls.slice(0, 8).map(function (v, i) {
+      var mark = keptAt < 0 ? "" : i === keptAt ? " kept" : " drop";
+      return '<span class="rb' + (faces > 1 && v === faces ? " max" : v === 1 ? " min" : "") + mark + '">' + v + "</span>";
     }).join("") + (r.rolls.length > 8 ? "<span>…</span>" : "") +
       (r.modifier ? "<span>" + (r.modifier > 0 ? "+ " : "− ") + Math.abs(r.modifier) + "</span>" : "") +
       (r.notation ? '<span class="nota">' + esc(r.notation) + "</span>" : "") + "</div>";
+    if (r.adv) h += '<span class="roll-out ' + (r.adv === "adv" ? "good" : "bad") + '">' + (r.adv === "adv" ? "Advantage" : "Disadvantage") + "</span>";
+    if (r.outcome) {
+      var against = r.dc === null ? "" : (r.outcome === "success" || r.outcome === "failure" ? " · DC " : " · AC ") + r.dc;
+      h += '<span class="roll-out ' + (OUT_GOOD[r.outcome] ? "good" : "bad") + '">' + OUT_LABEL[r.outcome] + against + "</span>";
+    }
     if (kind) h += '<span class="ribbon">' + (kind === "crit" ? "Natural 20!" : "Natural 1") + "</span>";
     return h + "</div></div></section>";
   }
@@ -1157,29 +1428,44 @@ img.is-loaded + .shim { display: none; }
   // ── NPCs & items ───────────────────────────────────────────────────────────
   var ATT_LABEL = { friendly: "Friendly", neutral: "Neutral", hostile: "Hostile", unknown: "Unknown" };
   var ITEM_ICON = { weapon: "sword", armor: "shield", potion: "flask", scroll: "scroll", wondrous: "sparkles", gear: "backpack", treasure: "gem", quest: "key" };
+  // A creature's health is a band — how hurt it looks — never its numbers.
+  var BAND_LABEL = { healthy: "Healthy", bloodied: "Bloodied", "near death": "Near death", down: "Down" };
+  var BAND_FILL = { healthy: 100, bloodied: 50, "near death": 16, down: 0 };
   function buildNpcs(s) {
     var list = s.npcs, h = '<section class="panel p-npcs" data-k="npcs">' + head(s, s.theme.labels.npcs, list.length ? String(list.length) : "");
     if (!list.length) return h + '<div class="empty">' + icon("user") + "<span>No one met yet.</span></div></section>";
+    // Whoever is in the fight comes first, the fallen and the fled last; the newest first within each.
+    var rank = function (n) { return n.status !== "alive" ? 2 : n.inCombat ? 0 : 1; };
+    var shown = list.slice().reverse();
+    shown = [0, 1, 2].reduce(function (all, k) { return all.concat(shown.filter(function (n) { return rank(n) === k; })); }, []);
     h += '<ul class="npcs' + (list.length > 3 ? " many" : "") + '">';
-    list.slice().reverse().forEach(function (n) {
-      h += '<li class="npc a-' + n.attitude + (n.name ? "" : " is-pending") + '" data-k="n:' + esc(n.id) + '">' + pic(n.portrait, "npc-av", { fallback: iniHtml(n.name || "?") }) +
-        '<div class="npc-m"><div class="npc-n">' + esc(n.name || "A figure approaches…") + '</div><div class="npc-r">' + esc(n.role || "Stranger") + "</div>" +
-        (n.description ? '<div class="npc-d">' + esc(n.description) + "</div>" : "") + '</div><span class="att">' + ATT_LABEL[n.attitude] + "</span></li>";
+    shown.forEach(function (n) {
+      var out = n.status !== "alive";
+      h += '<li class="npc a-' + n.attitude + (n.name ? "" : " is-pending") + (out ? " is-out" : "") + (n.isTurn ? " is-turn" : "") + '" data-k="n:' + esc(n.id) + '">' + pic(n.portrait, "npc-av", { fallback: iniHtml(n.name || "?") }) +
+        '<div class="npc-m"><div class="npc-n">' + esc(n.name || "A figure approaches…") + '</div><div class="npc-r">' + esc(n.role || "Stranger") + "</div>";
+      if (n.health && !out) {
+        h += '<div class="band b-' + n.health.replace(/\s+/g, "-") + '"><div class="band-bar"><i style="width:' + BAND_FILL[n.health] + '%"></i></div><span class="band-l">' + BAND_LABEL[n.health] + "</span></div>";
+      }
+      if (n.conditions.length && !out) h += '<div class="npc-c">' + condTags(n.conditions, false) + "</div>";
+      if (n.description && !n.health) h += '<div class="npc-d">' + esc(n.description) + "</div>";
+      h += '</div><span class="att">' + (out ? (n.status === "fled" ? "Fled" : "Defeated") : n.isTurn ? "Turn" : ATT_LABEL[n.attitude]) + "</span></li>";
     });
     return h + "</ul></section>";
   }
   function buildItems(s) {
-    var list = s.items, h = '<section class="panel p-items" data-k="items">' + head(s, s.theme.labels.items, list.length ? String(list.length) : "");
-    if (!list.length) return h + '<div class="empty">' + icon("gem") + "<span>No treasure yet.</span></div></section>";
     var shared = /^party$/i.test(s.theme.labels.party) ? "Party loot" : "Shared";
+    var pool = s.partyGold ? '<span class="here"><span>' + esc(shared) + ": " + esc(money(s.partyGold, s)) + "</span></span>" : "";
+    var list = s.items, h = '<section class="panel p-items" data-k="items">' + head(s, s.theme.labels.items, list.length ? String(list.length) : "", pool);
+    if (!list.length) return h + '<div class="empty">' + icon("gem") + "<span>No treasure yet.</span></div></section>";
     h += '<ul class="items' + (list.length > 4 ? " many" : "") + '">';
     list.slice().reverse().forEach(function (it) {
       var owner = it.ownerId ? playerById[it.ownerId] : null;
       var whose = owner ? owner.name : it.ownerId ? "" : shared;
       h += '<li class="item r-' + it.rarity.replace(/\s+/g, "-") + '" data-k="i:' + esc(it.id) + '">' +
         pic(it.icon, "item-ic", { fallback: '<span class="glyph">' + icon(ITEM_ICON[it.type]) + "</span>" }) +
-        '<div class="item-m"><div class="item-n">' + esc(it.name || "Unrevealed item") + '</div><div class="item-s"><span class="rar">' + esc(it.rarity) + "</span> · " + esc(cap(it.type)) +
-        (whose ? " · " + esc(whose) : "") + "</div>" + (it.description ? '<div class="item-d">' + esc(it.description) + "</div>" : "") + "</div></li>";
+        '<div class="item-m"><div class="item-n">' + esc(it.name || "Unrevealed item") + (it.quantity > 1 ? '<small class="qty">×' + it.quantity + "</small>" : "") +
+        '</div><div class="item-s"><span class="rar">' + esc(it.rarity) + "</span> · " + esc(cap(it.type)) +
+        (whose ? " · " + esc(whose) : "") + (it.equipped ? " · in use" : "") + "</div>" + (it.description ? '<div class="item-d">' + esc(it.description) + "</div>" : "") + "</div></li>";
     });
     return h + "</ul></section>";
   }
@@ -1198,7 +1484,8 @@ img.is-loaded + .shim { display: none; }
   }
   // Panel cache: a panel whose markup equals last render's becomes a tiny keyed placeholder
   // the morph skips — only changed panels are parsed and walked. Disabled whenever the
-  // board's structure changes (layout, setup card, scene), so placeholders always match.
+  // board's structure changes (layout, setup card, scene, turn strip, quests), so placeholders
+  // always match.
   var panelCache = {}, structKey = "";
   function cachedPanel(html, allow) {
     var m = /^<(\w+)[^>]*?\sdata-k="([^"]+)"/.exec(html);
@@ -1209,7 +1496,8 @@ img.is-loaded + .shim { display: none; }
   }
   function buildBoard(s, lay, full) {
     var setup = s.phase === "setup", hasScene = !!(s.scene || !setup);
-    var sk = [lay.L, setup, hasScene].join("|");
+    var stripHtml = guard(buildStrip, s, lay), questHtml = guard(buildQuests, s, lay);
+    var sk = [lay.L, setup, hasScene, !!stripHtml, !!questHtml].join("|");
     var allow = !full && sk === structKey;
     structKey = sk;
     var P = function (fn) { return cachedPanel(guard(fn, s, lay), allow); };
@@ -1217,15 +1505,16 @@ img.is-loaded + .shim { display: none; }
     var map = P(buildMap), npcs = P(buildNpcs), items = P(buildItems);
     var setupCard = setup ? P(buildSetup) : "";
     var scene = hasScene ? P(buildScene) : "";
-    var h = '<div class="bgfx" data-k="bgfx"></div>' + P(buildHeader);
+    var strip = cachedPanel(stripHtml, allow), quests = cachedPanel(questHtml, allow);
+    var h = '<div class="bgfx" data-k="bgfx"></div>' + P(buildHeader) + strip;
     var bcls = "board" + (setup ? " is-setup" : "") + (s.scene ? "" : " no-scene");
     if (lay.L === "narrow") {
-      return h + '<main class="' + bcls + '" data-k="board-n">' + setupCard + (setup ? party : "") + scene +
+      return h + '<main class="' + bcls + '" data-k="board-n">' + setupCard + (setup ? party : "") + scene + quests +
         '<div class="row2" data-k="row-rm">' + roll + map + "</div>" + (setup ? "" : party) + log +
         '<div class="row2 even" data-k="row-ni">' + npcs + items + "</div></main>";
     }
     return h + '<main class="' + bcls + '" data-k="board-w"><div class="col col-party" data-k="col-party">' + party + "</div>" +
-      '<div class="col col-main" data-k="col-main">' + setupCard + scene + log + "</div>" +
+      '<div class="col col-main" data-k="col-main">' + setupCard + scene + quests + log + "</div>" +
       '<div class="col col-side" data-k="col-side">' + roll + map + npcs + items + "</div></main>";
   }
   // ── Effects (transient, never part of the markup) ──────────────────────────
@@ -1265,9 +1554,11 @@ img.is-loaded + .shim { display: none; }
     s.players.forEach(function (p) { keys["p:" + p.id] = true; });
     s.npcs.forEach(function (n) { keys["n:" + n.id] = true; });
     s.items.forEach(function (it) { keys["i:" + it.id] = true; });
+    s.quests.forEach(function (q) { keys["q:" + q.id] = true; });
     s.log.slice(-40).forEach(function (e) { keys["l:" + e.id] = true; });
     return keys;
   }
+  var BAND_RANK = { healthy: 0, bloodied: 1, "near death": 2, down: 3 };
   function effects(s, prev) {
     var els = {}, nodes = app.querySelectorAll("[data-k]"), i;
     for (i = 0; i < nodes.length; i++) els[nodes[i].getAttribute("data-k")] = nodes[i];
@@ -1296,9 +1587,23 @@ img.is-loaded + .shim { display: none; }
         floatAt(purse && purse.offsetWidth ? purse : el.querySelector(".pc-sub") || el, (g > 0 ? "+" : "−") + money(Math.abs(g), s), "gold");
       }
     });
+    // A creature that looks worse than a moment ago flinches (its numbers are never shown).
+    var seenNpc = {};
+    prev.npcs.forEach(function (n) { seenNpc[n.id] = n; });
+    s.npcs.forEach(function (n) {
+      var o = seenNpc[n.id], el = els["n:" + n.id];
+      if (!o || !el) return;
+      var a = o.health ? BAND_RANK[o.health] : 0, b = n.health ? BAND_RANK[n.health] : 0;
+      if (b > a) restartFx(el, "fx-hurt");
+      else if (b < a) restartFx(el, "fx-heal");
+    });
     if (s.setup.next && prev.setup.next !== s.setup.next) restartFx(els.next, "fx-pulse");
     if (prev.phase === "setup" && s.phase === "playing") banner("Let the adventure begin", s.title, s.theme.ornament);
-    if (s.phase === "playing" && prev.phase === "playing" && s.round > prev.round) restartFx(els.round, "fx-pulse");
+    if (s.combat && !prev.combat) restartFx(els.init, "fx-in");
+    if (s.combat && prev.combat && s.combat.round > prev.combat.round) restartFx(els.round, "fx-pulse");
+    if (s.turn && (!prev.turn || prev.turn.id !== s.turn.id)) restartFx(els[(s.turn.isHero ? "p:" : "n:") + s.turn.id], "fx-pulse");
+    if (s.pendingCheck && (!prev.pendingCheck || prev.pendingCheck.text !== s.pendingCheck.text)) restartFx(els.pend, "fx-pulse");
+    if (s.pendingQuestion && prev.pendingQuestion !== s.pendingQuestion) restartFx(els.ask, "fx-pulse");
     if (s.scene && (!prev.scene || prev.scene.title !== s.scene.title)) restartFx(els.scene, "fx-swap");
     if (prev.isNew && !s.isNew) restartFx(els.hdr, "fx-swap");
   }
@@ -1702,10 +2007,21 @@ img.is-loaded + .shim { display: none; }
   } catch (e) { /* window resize below still works */ }
   window.addEventListener("resize", function () { scheduleRedraw(60); });
 
-  /** Template contract v1 entry point. */
+  /** Template contract v2 entry point. */
   window.render = function (state, prev) {
     lastRaw = state === undefined ? null : state;
     safeDraw(lastRaw);
+  };
+  // For scripts/test-game-board.mts: the declared contract, the normalizer, and the board's markup
+  // for a state — so the screen can be checked against the engine's view without a browser.
+  window.__gameScreen = {
+    contract: CONTRACT,
+    norm: norm,
+    html: function (state, layout) {
+      var s = norm(state);
+      indexes(s);
+      return buildBoard(s, layout || { L: "wide", free: false, tiny: false, h: 900 }, true);
+    }
   };
 })();
 </script>

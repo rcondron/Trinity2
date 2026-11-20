@@ -1,17 +1,49 @@
+import { customAlphabet } from "nanoid";
 import { pageTitle } from "../services/mordiem.js";
-import { workspace, type WorkspaceTemplate } from "./bus.js";
+import { workspace, type UndoMerge, type WorkspaceTemplate, type WorkspaceUndoEntry } from "./bus.js";
+import { cardHeld } from "./card-jobs.js";
+import { isDataKindName, kindSummary, normalizeKindData } from "./kinds/index.js";
+import { KIND_CSS, KIND_RENDERERS } from "./kinds/render.js";
+import { WIDGET_CSP, WIDGET_RUNTIME } from "./widget-runtime.js";
 
 /**
  * The floating card board: one workspace app that holds many numbered cards
- * (image / audio / video / text / widget). Cards are absolutely positioned so the
+ * (image / audio / video / text / widget, and the kinds the engine draws itself from data: table / chart /
+ * document / code / file). Cards are absolutely positioned so the
  * user can ask to move or remove "card 2". Media and build_ui add cards — they
  * never replace the whole screen (unless a game owns it).
  */
 
-export type CardKind = "image" | "audio" | "video" | "text" | "widget";
+/**
+ * "form" is the placeholder for a secure form (vault/forms.ts): a lock, the form's title and "Waiting for you in the
+ * secure form". The form itself is drawn by the trusted window page, never on the board; the card holds nothing typed,
+ * can't be read, edited or controlled, and goes — with no undo entry — when its form ends.
+ *
+ * "table", "chart", "document", "code" and "file" are drawn by the board template itself from the card's `data`
+ * (workspace/kinds/*.ts): no model writes their markup, so they appear at once and can't hang or invent anything.
+ */
+export type CardKind = "image" | "audio" | "video" | "text" | "widget" | "form" | "table" | "chart" | "document" | "code" | "file";
 export type CardStatus = "pending" | "ready" | "error";
 
+/** The kinds the board draws from `data`. */
+export const DATA_KINDS: readonly CardKind[] = ["table", "chart", "document", "code", "file"];
+export const isDataKind = (kind: CardKind): boolean => DATA_KINDS.includes(kind);
+
+/** What it takes to make a card again after it failed or was interrupted: the tool, and the words it was asked with. */
+export interface CardRetry {
+  tool: string;
+  /** The user's own words (the whole request). */
+  request: string;
+  /** The tool's arguments, when it had any worth keeping (short strings and numbers only). */
+  args?: Record<string, string | number | boolean>;
+}
+
 export interface BoardCard {
+  /**
+   * The card itself: a short random id given once and never changed or reused. Everything that works on a card over
+   * time (a job painting into it, a queue, an undo) holds this, never the number.
+   */
+  id: string;
   /** Stable number spoken by the user ("remove card 3"). Never renumbered. */
   n: number;
   kind: CardKind;
@@ -45,15 +77,68 @@ export interface BoardCard {
   error?: string;
   /** The layout before a maximize / minimize, so "restore" can put the card back. */
   prev?: { x: number; y: number; w: number; h?: number; z: number };
+  /** For the kinds the board draws itself (table, chart, document, code, file): the data, already normalized. */
+  data?: unknown;
+  /** Bumped whenever `data` changes, so a window redraws that card's body only then. */
+  dv?: number;
+  /**
+   * What a widget asked to keep (trinity.saveState): a small JSON object, replayed in every window and after a
+   * restart — a check-off list's ticks, a counter, a choice. Never a secret (see cleanCardState).
+   */
+  state?: unknown;
+  /** How to make this card again ("try again"), kept while that is still possible. */
+  retry?: CardRetry;
+  /** The page a card showed before an edit began streaming into it: what an interrupted or failed edit puts back. */
+  stash?: string;
 }
 
 export interface BoardState {
   cards: BoardCard[];
+  /** The highest card number handed out on this board so far (numbers are not given twice). */
+  seq?: number;
 }
 
 export const BOARD_OWNER = "board";
 
-const CARD_W: Record<CardKind, number> = { image: 34, audio: 32, video: 40, text: 28, widget: 38 };
+const CARD_W: Record<CardKind, number> = { image: 34, audio: 32, video: 40, text: 28, widget: 38, form: 30, table: 46, chart: 42, document: 40, code: 44, file: 30 };
+/** The height the data kinds start with (they scroll inside it); the others size to their content. */
+const CARD_H: Partial<Record<CardKind, number>> = { table: 52, chart: 50, document: 60, code: 52 };
+/** A guess at a content-sized card's height in % of the board, until a window has measured it. */
+const GUESS_H: Record<CardKind, number> = { image: 44, audio: 22, video: 40, text: 22, widget: 48, form: 30, table: 52, chart: 50, document: 60, code: 52, file: 26 };
+
+// ─── Limits ─────────────────────────────────────────────────────────────────
+
+/** The most cards a board holds (a secure form's placeholder doesn't count), the most HTML one card holds, and the most a whole board does. */
+export const BOARD_LIMITS = { cards: 40, cardHtml: 600_000, cardData: 1_500_000, cardState: 16_384, total: 8_000_000 };
+
+/** A refusal to grow the board past its limits. The message is a plain sentence that can be said aloud. */
+export class BoardLimitError extends Error {
+  constructor(
+    readonly limit: "cards" | "html" | "data" | "total",
+    message: string,
+  ) {
+    super(message);
+    this.name = "BoardLimitError";
+  }
+}
+
+const kb = (chars: number) => `${Math.max(1, Math.round(chars / 1024))} KB`;
+
+/** The sentence to say when the board refused something for its limits; null for any other error (which is thrown on). */
+export function boardRefusal(err: unknown): string | null {
+  return err instanceof BoardLimitError ? err.message : null;
+}
+
+/** addCard, with a full board answered in words instead of thrown: the card, or the sentence to say. */
+export function tryAddCard(input: AddCardInput): BoardCard | string {
+  try {
+    return addCard(input);
+  } catch (err) {
+    const no = boardRefusal(err);
+    if (no === null) throw err;
+    return no;
+  }
+}
 const SLOT: Array<{ x: number; y: number }> = [
   { x: 4, y: 6 },
   { x: 42, y: 8 },
@@ -163,11 +248,23 @@ const CARD_RUNTIME = String.raw`(function () {
     best.el.click();
     return { ok: true, via: "click", label: best.name };
   }
+  // A field that may hold a secret is never read and never set from here: a password input, or any field whose
+  // autocomplete, name, id, label or placeholder says password, one-time code, card, security code and the like
+  // (or that is drawn masked). Secrets are typed into Trinity's secure form, never into a card.
+  var SECRET_FIELD = /pass(?:word|code|phrase)|otp|one[- ]?time|cvv|cvc|card|ssn|secret|token|\bcsc\b|\bpin\b|security code|\bcc-/i;
+  function secretField(el, ty) {
+    if (ty === "password") return true;
+    var hint = [el.getAttribute("autocomplete"), el.getAttribute("name"), el.id, el.getAttribute("aria-label"), el.getAttribute("placeholder"), el.getAttribute("title")].join(" ");
+    try { if (el.labels) for (var i = 0; i < el.labels.length; i++) hint += " " + (el.labels[i].innerText || el.labels[i].textContent || ""); } catch (e) {}
+    if (SECRET_FIELD.test(hint)) return true;
+    try { var mask = window.getComputedStyle(el).webkitTextSecurity; if (mask && mask !== "none") return true; } catch (e) {}
+    return false;
+  }
   function fields(root) {
     var q = root.querySelectorAll('input,textarea,select,[contenteditable="true"],[contenteditable=""]'), out = [];
     for (var i = 0; i < q.length; i++) {
       var el = q[i], ty = (el.getAttribute("type") || "").toLowerCase();
-      if (/^(?:button|submit|reset|checkbox|radio|hidden|file|image|color)$/.test(ty) || !shown(el)) continue;
+      if (/^(?:button|submit|reset|checkbox|radio|hidden|file|image|color)$/.test(ty) || secretField(el, ty) || !shown(el)) continue;
       out.push(el);
     }
     return out;
@@ -262,7 +359,15 @@ const CARD_RUNTIME = String.raw`(function () {
     return (m.paused ? "paused" : "playing") + " at " + fmt(m.currentTime) + (isFinite(m.duration) ? " of " + fmt(m.duration) : "") + (m.muted ? ", muted" : "") + (m.loop ? ", looping" : "") + (m.playbackRate && m.playbackRate !== 1 ? ", " + m.playbackRate + "x speed" : "");
   }
   function readText(root) {
-    var t = String(root.innerText || root.textContent || "").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+    var t = String(root.innerText || root.textContent || "");
+    // What was typed into an editable region that is labelled as a secret is part of the page's text: it is taken out.
+    var ed = root.querySelectorAll('[contenteditable="true"],[contenteditable=""]');
+    for (var e = 0; e < ed.length; e++) {
+      if (!secretField(ed[e], "")) continue;
+      var typed = String(ed[e].innerText || ed[e].textContent || "").trim();
+      if (typed) t = t.split(typed).join(" ");
+    }
+    t = t.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
     var extra = [], fs = fields(root);
     for (var i = 0; i < fs.length && i < 10; i++) {
       var el = fs[i], v = el.tagName === "SELECT" ? ((el.options[el.selectedIndex] || {}).text || "") : el.isContentEditable ? "" : String(el.value || "");
@@ -384,8 +489,17 @@ const CARD_LISTENER = String.raw`(function () {
   });
 })();`;
 
+/**
+ * The board's template. Its id is "board@N": bump N whenever the template changes. Any id of that shape is taken for
+ * the board (BOARD_ID below), so a board saved under an earlier N is upgraded in place, cards kept.
+ *
+ * Inside it every card is keyed by its id. A widget card's page runs in a nested sandboxed frame whose document starts
+ * with WIDGET_RUNTIME (workspace/widget-runtime.ts) and the card runtime above; the board passes on what a widget
+ * says — a link, a script error, a saved state, an event — only when it comes from one of its own card frames, and
+ * always marked with the card it came from.
+ */
 export const BOARD_TEMPLATE: WorkspaceTemplate = {
-  id: "board@7",
+  id: "board@9",
   kind: "default",
   name: "Card board",
   source:
@@ -395,17 +509,25 @@ export const BOARD_TEMPLATE: WorkspaceTemplate = {
   radial-gradient(900px 600px at 110% 10%,rgba(167,139,250,.08),transparent 50%),
   #0c0c14;color:#e8e8ef;font:13px/1.45 system-ui,sans-serif;overflow:hidden}
 #board{position:relative;width:100%;height:100vh;min-height:100%}
-.empty{position:absolute;inset:0;display:grid;place-items:center;color:#7a7a9a;font-size:14px;pointer-events:none}
+#board.is-busy iframe{pointer-events:none}
+.empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;box-sizing:border-box;padding:24px;text-align:center;color:#7a7a9a;font-size:14px;line-height:1.6;pointer-events:none}
+.empty[hidden]{display:none}
+.empty span{display:block;max-width:560px}
 .card{position:absolute;display:flex;flex-direction:column;gap:10px;padding:12px;border-radius:16px;
   background:rgba(20,20,34,.92);border:1px solid rgba(255,255,255,.1);box-shadow:0 18px 50px rgba(0,0,0,.45);
   backdrop-filter:blur(10px);animation:rise .4s cubic-bezier(.2,.8,.2,1) both;overflow:hidden;touch-action:none;
   transition:left .5s cubic-bezier(.2,.8,.2,1),top .5s cubic-bezier(.2,.8,.2,1),width .5s cubic-bezier(.2,.8,.2,1),height .5s cubic-bezier(.2,.8,.2,1)}
-.card.widget,.card.has-h{min-height:220px}
+.card.widget:not(.has-h){min-height:220px}
+.card.has-h{min-height:0}
+.card.form{border-color:rgba(103,232,249,.38)}
+.formcard{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;flex:1;min-height:120px;padding:18px 12px;text-align:center;color:#c9c9dc}
+.formcard svg{width:34px;height:34px;color:#67e8f9;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.formcard p{margin:0;font-size:13px;line-height:1.45}
 .card.has-h .body{min-height:0}
 .card.has-h .body iframe{height:100%;min-height:0;max-height:none;flex:1}
 .card.is-drag,.card.is-resize{z-index:10000!important;animation:none;transition:none;user-select:none}
 .card.is-drag{cursor:grabbing}
-.chrome{cursor:grab;user-select:none;-webkit-user-select:none}
+.chrome{flex:none;cursor:grab;user-select:none;-webkit-user-select:none;touch-action:none}
 .chrome:active{cursor:grabbing}
 .badge{position:absolute;top:10px;left:10px;z-index:2;min-width:26px;height:26px;padding:0 8px;border-radius:999px;
   display:grid;place-items:center;font-size:12px;font-weight:700;color:#0c0c14;background:#a78bfa;box-shadow:0 0 0 3px rgba(167,139,250,.25);pointer-events:none}
@@ -415,16 +537,21 @@ export const BOARD_TEMPLATE: WorkspaceTemplate = {
 .body img,.body video{display:block;width:100%;max-width:100%;max-height:42vh;object-fit:contain;background:#000;opacity:0;transition:opacity .45s}
 .body img.is-on,.body video.is-on{opacity:1}
 .body iframe{display:block;width:100%;height:min(42vh,360px);border:0;border-radius:12px;background:#0f0f18;flex:1}
-.grip{position:absolute;right:4px;bottom:4px;z-index:4;width:18px;height:18px;cursor:nwse-resize;border-radius:4px;
+.grip{position:absolute;right:4px;bottom:4px;z-index:4;width:18px;height:18px;cursor:nwse-resize;border-radius:4px;touch-action:none;
   background:linear-gradient(135deg,transparent 50%,rgba(167,139,250,.55) 50%);opacity:.7}
 .grip:hover{opacity:1}
 .shim{width:100%;aspect-ratio:1;border-radius:12px;background:linear-gradient(110deg,rgba(255,255,255,.03) 30%,rgba(255,255,255,.09) 50%,rgba(255,255,255,.03) 70%);background-size:220% 100%;animation:shim 1.6s linear infinite}
 .shim.wide{aspect-ratio:16/9}
 .shim.tall{aspect-ratio:4/3}
-.shim.still{animation:none;background:rgba(255,255,255,.03);border:1px dashed rgba(252,165,165,.35)}
+.shim.still{animation:none;background:rgba(255,255,255,.03);border:1px dashed rgba(252,165,165,.35);box-sizing:border-box}
+.card.has-h .body>.shim{aspect-ratio:auto;flex:1;min-height:0}
+.caps{flex:none;display:flex;flex-direction:column;gap:6px}
+.caps:empty{display:none}
 .cap{margin:0;color:#a5a5c6;font-size:12px;line-height:1.45;max-height:4.5em;overflow:hidden}
 .cap.err{color:#fca5a5}
+.cap.warn{color:#fcd34d}
 .text-body{margin:0;padding:8px 2px;color:#e8e8ef;font-size:14px;line-height:1.55;white-space:pre-wrap;overflow:auto;max-height:36vh}
+.card.has-h .text-body{max-height:none;flex:1;min-height:0}
 .player{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:12px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08)}
 .btn{flex:none;width:44px;height:44px;border-radius:50%;border:0;cursor:pointer;color:#0c0c14;background:#a78bfa;display:grid;place-items:center}
 .btn:disabled{background:#34344c;color:#8a8aa6;cursor:default}
@@ -436,60 +563,83 @@ export const BOARD_TEMPLATE: WorkspaceTemplate = {
 @keyframes shim{from{background-position:120% 0}to{background-position:-100% 0}}
 @keyframes rise{from{opacity:0;transform:translateY(10px) scale(.98)}to{opacity:1;transform:none}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important}}
+${KIND_CSS}
 </style>
 <script>${CARD_RUNTIME}</script>
-<div id="board"></div>
+<script>${KIND_RENDERERS}</script>
+<div id="board"><div class="empty" id="empty"><span>Ask Trinity for a picture, a note, a table, a chart, a document, a file or a widget. Drag a card by its header to move it, and by its corner to resize it.</span></div></div>
 <script>
 (function () {
   var board = document.getElementById("board");
-  var audioBy = Object.create(null);
-  var widgetHtml = Object.create(null);
-  var local = Object.create(null);
-  var busy = Object.create(null);
+  var emptyEl = document.getElementById("empty");
+  var els = Object.create(null);      // card id -> its element
+  var audioBy = Object.create(null);  // card id -> its Audio
+  var local = Object.create(null);    // card id -> its box in this window (a drag under way is never snapped back)
+  var busy = Object.create(null);     // card id -> "drag" | "resize"
   var zTop = 1;
-  var cardsBy = Object.create(null);
+  var cardsByN = Object.create(null); // commands name a card by its number
+  var cardsById = Object.create(null);
   var waiting = Object.create(null);
+  var heights = Object.create(null);  // card id -> the height last reported to the engine
+  var noise = Object.create(null);    // card id -> when its widget last sent errors, events, states (so each can be capped)
+  var kindView = Object.create(null); // card id -> what this window has done to an engine-drawn card (a table's sort)
+  var kindCache = Object.create(null);
   var RT = window.__trinityCard;
-  var CARD_RT = ${JSON.stringify(`${CARD_RUNTIME}
+  var KINDS = window.__trinityKinds || {};
+  function kindFn(name){ return Object.prototype.hasOwnProperty.call(KINDS, name)&&typeof KINDS[name]==="function"?KINDS[name]:null; }
+  var WIDGET_RT = ${JSON.stringify(`${WIDGET_RUNTIME}
+${CARD_RUNTIME}
 ${CARD_LISTENER}`)};
+  var WIDGET_CSP = ${JSON.stringify(WIDGET_CSP)};
   var PLAY = '<svg viewBox="0 0 24 24"><path d="M8 5.2v13.6a.8.8 0 0 0 1.2.7l10.6-6.8a.8.8 0 0 0 0-1.4L9.2 4.5A.8.8 0 0 0 8 5.2z"/></svg>';
   var PAUSE = '<svg viewBox="0 0 24 24"><rect x="6" y="5" width="4.5" height="14" rx="1.2"/><rect x="13.5" y="5" width="4.5" height="14" rx="1.2"/></svg>';
-  var BROWSE_SANDBOX = "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads";
-  // Each widget document is hardened like the board's own frame (web/src/workspace/frame.ts): no WebRTC side
-  // channel, no frames of its own, and a link goes to the host through the board instead of navigating the card.
+  var LOCK = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="9.5" rx="2.2"/><path d="M8 10.5V7.6a4 4 0 0 1 8 0v2.9"/></svg>';
   // (Built by concatenation: a script tag or an HTML comment written out whole would end THIS script early.)
-  var GUARD = "<scr" + "ipt>(function(){" +
-    '["RTCPeerConnection","webkitRTCPeerConnection","RTCDataChannel","RTCIceCandidate","RTCSessionDescription"].forEach(function(n){try{Object.defineProperty(window,n,{configurable:false,writable:false,value:undefined})}catch(e){}});' +
-    'function isFrame(n){var m=n.nodeName.toUpperCase();return m==="IFRAME"||m==="FRAME"||m==="OBJECT"||m==="EMBED"}' +
-    'try{new MutationObserver(function(rs){for(var i=0;i<rs.length;i++){var a=rs[i].addedNodes;for(var j=0;j<a.length;j++){var n=a[j];if(!n||n.nodeType!==1)continue;if(isFrame(n)){if(n.parentNode)n.parentNode.removeChild(n);continue}if(n.querySelectorAll){var q=n.querySelectorAll("iframe,frame,object,embed");for(var k=0;k<q.length;k++)if(q[k].parentNode)q[k].parentNode.removeChild(q[k])}}}}).observe(document,{childList:true,subtree:true})}catch(e){}' +
-    'document.addEventListener("click",function(e){var t=e.target;var a=t&&t.closest?t.closest("a[href]"):null;if(!a)return;var h=(a.getAttribute("href")||"").trim();var l=h.toLowerCase();if(l.indexOf("https://")===0||l.indexOf("http://")===0){e.preventDefault();try{parent.postMessage({__trinity:"link",href:h},"*")}catch(x){}}else if(l.charAt(0)!=="#"){e.preventDefault()}},true);' +
-    "})()<" + "/script><scr" + "ipt>" + CARD_RT + "<" + "/script>";
+  var OPEN = "<scr" + "ipt>", CLOSE = "<" + "/scr" + "ipt>";
+  var HEAD_TAGS = new RegExp("<(?:link|meta|base)(?=[\\s/>]|$)", "i");
+  var LINK_TAGS = new RegExp("<(?:link|base)(?=[\\s/>]|$)[^>]*(?:>|$)", "gi");
+  var META_TAGS = new RegExp("<meta(?=[\\s/>]|$)[^>]*(?:>|$)", "gi");
+  var KEPT_WHOLE = new RegExp("(<" + "!--[\\s\\S]*?--" + ">|<scr" + "ipt\\b[\\s\\S]*?(?:<\\/scr" + "ipt>|$))", "i");
   function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];});}
   function fmt(t){t=Math.max(0,Math.floor(t||0));return Math.floor(t/60)+":"+(t%60<10?"0":"")+(t%60);}
   function clamp(n,a,b){return Math.max(a,Math.min(b,n));}
+  function r1(n){return Math.round(n*10)/10;}
   function emit(evt){ try{ if(window.trinity&&window.trinity.send) window.trinity.send(evt); }catch(e){} }
-  function externalSrc(html){
-    // Avoid a literal HTML comment opener in this script — parsers treat that as a script escape and truncate us.
-    var s=String(html||"").replace(/^\s+/, "");
-    while(s.charCodeAt(0)===60 && s.charCodeAt(1)===33){ // "<!"
-      var end=s.indexOf(">");
-      if(end<0) break;
-      s=s.slice(end+1).replace(/^\s+/, "");
-    }
-    var m=/^<iframe\b([^>]*)>/i.exec(s);
-    if(!m) return null;
-    var src=/\bsrc\s*=\s*["'](https?:\/\/[^"']+)["']/i.exec(m[1]||"");
-    return src?src[1]:null;
+  // JSON that can sit inside a script tag: no "<" (so no closing tag and no comment), no line separators.
+  function scriptJson(v){
+    var s; try{ s=JSON.stringify(v===undefined?null:v); }catch(e){ s="null"; }
+    return String(s||"null").replace(/</g,"\\u003c").replace(/>/g,"\\u003e").replace(/&/g,"\\u0026").replace(/\u2028/g,"\\u2028").replace(/\u2029/g,"\\u2029");
   }
-  function layoutOf(c){
-    var L=local[c.n];
-    if(!L) return c;
-    return {n:c.n,kind:c.kind,status:c.status,x:L.x,y:L.y,w:L.w,h:L.h,z:L.z,title:c.title,text:c.text,url:c.url,html:c.html,mw:c.mw,mh:c.mh,model:c.model,error:c.error};
+  function stateJson(c){ try{ return JSON.stringify(c.state===undefined?null:c.state)||"null"; }catch(e){ return "null"; } }
+  // A page without the tags that reach out of the sandbox or steer the frame: <link> and <base> wherever they are,
+  // <meta> outside comments and scripts. (The engine takes them out when a card is written; this is for a board saved before it did.)
+  function strip(html){
+    var s=String(html||"");
+    if(!HEAD_TAGS.test(s)) return s;
+    s=s.replace(LINK_TAGS," ");
+    var parts=s.split(KEPT_WHOLE);
+    for(var i=0;i<parts.length;i+=2) parts[i]=parts[i].replace(META_TAGS," ");
+    return parts.join("");
+  }
+  // A widget card's document: its own policy first, then the widget runtime (with what the card kept) and the card
+  // runtime, then the page. Always a srcdoc under its own opaque origin: a card never loads a web page of its own.
+  function widgetDoc(c, html){
+    return '<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="'+WIDGET_CSP+'"><meta charset="utf-8"><meta http-equiv="x-dns-prefetch-control" content="off">'+
+      OPEN+"window.__trinityBoot="+scriptJson({state:c.state===undefined?null:c.state})+";"+CLOSE+
+      OPEN+WIDGET_RT+CLOSE+
+      "<style>html,body{margin:0;height:100%;background:#0f0f18;color:#e9e9f2;font:14px/1.45 system-ui,sans-serif}img,video{max-width:100%}</style></head><body>"+strip(html)+"</body></html>";
+  }
+  function allow(id, what, max, ms){
+    var mine=noise[id]||(noise[id]=Object.create(null)), list=mine[what]||(mine[what]=[]), now=Date.now();
+    while(list.length&&now-list[0]>ms) list.shift();
+    if(list.length>=max) return false;
+    list.push(now);
+    return true;
   }
   function remember(c){
-    if(busy[c.n]) return;
-    local[c.n]={x:Number(c.x)||0,y:Number(c.y)||0,w:Number(c.w)||32,h:c.h!=null&&c.h!==""?Number(c.h):null,z:Number(c.z)||1};
-    if(local[c.n].z>zTop) zTop=local[c.n].z;
+    if(busy[c.id]) return;
+    local[c.id]={x:Number(c.x)||0,y:Number(c.y)||0,w:Number(c.w)||32,h:c.h!=null&&c.h!==""?Number(c.h):null,z:Number(c.z)||1};
+    if(local[c.id].z>zTop) zTop=local[c.id].z;
   }
   function applyBox(el, L){
     el.style.left=clamp(L.x,0,90)+"%";
@@ -499,12 +649,12 @@ ${CARD_LISTENER}`)};
     else { el.style.height=""; el.classList.remove("has-h"); }
     el.style.zIndex=String(L.z||1);
   }
-  function persist(n){
-    var L=local[n]; if(!L) return;
-    emit({__trinity:"board",op:"layout",n:n,x:Math.round(L.x*10)/10,y:Math.round(L.y*10)/10,w:Math.round(L.w*10)/10,h:L.h==null?null:Math.round(L.h*10)/10,z:L.z});
+  function persist(id){
+    var L=local[id], c=cardsById[id]; if(!L||!c) return;
+    emit({__trinity:"board",op:"layout",id:id,n:c.n,x:r1(L.x),y:r1(L.y),w:r1(L.w),h:L.h==null?null:r1(L.h),z:L.z});
   }
-  function refreshAudio(n){
-    var a=audioBy[n], root=board.querySelector('[data-n="'+n+'"]');
+  function refreshAudio(id){
+    var a=audioBy[id], root=els[id];
     if(!a||!root) return;
     var btn=root.querySelector(".btn"), fill=root.querySelector(".fill"), time=root.querySelector(".time");
     if(btn){btn.innerHTML=a.paused?PLAY:PAUSE;btn.setAttribute("aria-label",a.paused?"Play":"Pause");}
@@ -519,23 +669,34 @@ ${CARD_LISTENER}`)};
     if(c.kind==="widget") return "Building";
     return "Writing";
   }
-  function mediaBody(c){
-    if(c.html){
-      if(c.status==="error") return '<p class="cap err">'+esc(c.error||"Couldn't edit that")+"</p>";
-      return '<iframe sandbox="allow-scripts" allow="autoplay" title="'+esc(c.title||("Card "+c.n))+'"></iframe>';
+  // An engine-drawn card (a table, a chart, a document, code, a file): drawn here from its data by the kind's own
+  // renderer, and drawn again only when the data or what this window did to it (a sort) changed.
+  function kindBody(c){
+    var view=kindView[c.id]||null, key=(c.dv||0)+"|"+(view?JSON.stringify(view):"");
+    var hit=kindCache[c.id];
+    if(hit&&hit.key===key) return hit.html;
+    var html;
+    try{ html=String(kindFn(c.kind)(c, view, esc)); }
+    catch(e){ html='<p class="cap err">'+esc("This "+c.kind+" couldn't be drawn.")+"</p>"; }
+    kindCache[c.id]={key:key,html:html};
+    return html;
+  }
+  function bodyHtml(c){
+    // A secure form's placeholder: only ever this, whatever else the card record may carry.
+    if(c.kind==="form") return '<div class="formcard">'+LOCK+"<p>Waiting for you in the secure form</p></div>";
+    // (What went wrong is said once, under the card.)
+    if(c.status==="error") return '<div class="shim still'+(c.kind==="video"?" wide":c.kind==="image"?"":" tall")+'"></div>';
+    if(c.html) return '<iframe sandbox="allow-scripts allow-forms" allow="autoplay"></iframe>';
+    if(kindFn(c.kind)){
+      if(c.data!=null&&c.status==="ready") return kindBody(c);
+      return '<div class="shim tall"></div>';
     }
-    if(c.kind==="widget"){
-      if(c.status==="error") return '<p class="cap err">'+esc(c.error||"Couldn't build that")+"</p>";
-      return '<div class="shim tall'+(c.status==="error"?" still":"")+'"></div>';
-    }
-    if(c.kind==="text"){
-      if(c.status==="error") return '<p class="cap err">'+esc(c.error||"Couldn't add that text")+"</p>";
-      return '<p class="text-body">'+esc(c.text||"")+"</p>";
-    }
+    if(c.kind==="widget") return '<div class="shim tall"></div>';
+    if(c.kind==="text") return '<p class="text-body">'+esc(c.text||"")+"</p>";
     if(c.kind==="audio"){
       var ready=c.status==="ready"&&c.url;
-      var h='<div class="player"><button class="btn" type="button" data-play="'+c.n+'"'+(ready?"":" disabled")+' aria-label="Play">'+PLAY+"</button>";
-      h+='<div class="bar">'+(ready?'<div class="track" data-seek="'+c.n+'"><div class="fill"></div></div><div class="time"><span>0:00</span><span>0:00</span></div>':'<div class="shim'+(c.status==="error"?" still":"")+'" style="height:6px;aspect-ratio:auto"></div>')+"</div></div>";
+      var h='<div class="player"><button class="btn" type="button" data-play="1"'+(ready?"":" disabled")+' aria-label="Play">'+PLAY+"</button>";
+      h+='<div class="bar">'+(ready?'<div class="track" data-seek="1"><div class="fill"></div></div><div class="time"><span>0:00</span><span>0:00</span></div>':'<div class="shim" style="height:6px;aspect-ratio:auto"></div>')+"</div></div>";
       return h;
     }
     if(c.status==="ready"&&c.url){
@@ -545,114 +706,229 @@ ${CARD_LISTENER}`)};
       if(c.kind==="video") return '<video src="'+esc(c.url)+'" controls playsinline autoplay muted loop style="'+st+'"></video>';
       return '<img src="'+esc(c.url)+'" alt="'+esc(c.text)+'" decoding="async" draggable="false" style="'+st+'">';
     }
-    return '<div class="shim'+(c.kind==="video"?" wide":"")+(c.status==="error"?" still":"")+'"></div>';
+    return '<div class="shim'+(c.kind==="video"?" wide":"")+'"></div>';
+  }
+  function capsHtml(c){
+    if(c.kind==="form") return "";
+    if(c.status==="error") return '<p class="cap err">'+esc("Couldn't make this: "+(c.error||"unknown error"))+"</p>";
+    if(c.status==="pending") return '<p class="cap">'+esc(pendingLabel(c)+": "+(c.text||"\u2026"))+"</p>"+(c.model?'<p class="cap">'+esc(c.model)+"</p>":"");
+    // A ready card whose page threw: the page stays, and the card says so.
+    if(c.error){ var note=String(c.error); return '<p class="cap warn">'+esc(note.charAt(0).toUpperCase()+note.slice(1))+"</p>"; }
+    if((c.kind==="image"||c.kind==="video"||c.kind==="audio")&&c.text) return '<p class="cap">'+esc(c.text)+"</p>";
+    return "";
+  }
+  function postState(frame, c){
+    try{ if(frame.contentWindow) frame.contentWindow.postMessage({__trinity:"state",state:c.state===undefined?null:c.state},"*"); }catch(e){}
   }
   function syncWidget(el, c){
-    var frame=el.querySelector(".body iframe");
-    if(!frame){ delete widgetHtml[c.n]; return; }
-    var next=String(c.html||"");
-    if(widgetHtml[c.n]===next) return;
-    widgetHtml[c.n]=next;
-    var ext=externalSrc(next);
-    if(ext){
-      frame.removeAttribute("srcdoc");
-      frame.setAttribute("sandbox", BROWSE_SANDBOX);
-      if(frame.getAttribute("src")!==ext) frame.src=ext;
+    var frame=el._body.querySelector("iframe");
+    el._frame=frame||null;
+    if(!frame) return;
+    frame.title=c.title||("Card "+c.n);
+    var next=String(c.html||""), sj=stateJson(c), ready=c.status==="ready";
+    if(frame._key===next&&(frame._ready||!ready)){
+      // The same page: only what the card keeps (trinity.saveState) may have changed — in another window.
+      if(sj===frame._state) frame._sent=[];
+      else if(frame._sent.indexOf(sj)<0){ frame._state=sj; frame._sent=[]; if(frame._loaded) postState(frame, c); }
       return;
     }
+    frame._key=next; frame._ready=ready; frame._state=sj; frame._boot=sj; frame._sent=[]; frame._loaded=false; frame._card=c.id;
+    frame.onload=function(){
+      frame._loaded=true;
+      var now=cardsById[frame._card];
+      if(now&&frame._state!==frame._boot) postState(frame, now); // it changed while the page was loading
+    };
     frame.removeAttribute("src");
-    frame.setAttribute("sandbox","allow-scripts");
-    frame.srcdoc='<!DOCTYPE html><html><head><meta charset="utf-8">'+GUARD+'<style>html,body{margin:0;height:100%;background:#0f0f18;color:#e9e9f2;font:14px/1.45 system-ui,sans-serif}img,video,iframe{max-width:100%}iframe{width:100%;height:100%;min-height:240px;border:0;border-radius:8px;background:#fff}</style></head><body>'+next+"</body></html>";
+    frame.setAttribute("sandbox","allow-scripts allow-forms");
+    frame.srcdoc=widgetDoc(c, next);
   }
+  function setText(node, text){ if(node&&node.textContent!==text) node.textContent=text; }
   function ensureCard(c){
     remember(c);
-    var L=local[c.n];
-    var el=board.querySelector('[data-n="'+c.n+'"]');
+    var id=c.id, L=local[id], el=els[id];
     if(!el){
       el=document.createElement("article");
-      el.className="card";
-      el.setAttribute("data-n", String(c.n));
+      el.setAttribute("data-id", id);
+      el.innerHTML='<div class="chrome" data-drag="1"><span class="badge"></span><span class="kind"></span><h3 class="title"></h3></div><div class="body"></div><div class="caps"></div><div class="grip" data-resize="1" title="Resize"></div>';
+      el._badge=el.querySelector(".badge"); el._kind=el.querySelector(".kind"); el._title=el.querySelector(".title");
+      el._body=el.querySelector(".body"); el._caps=el.querySelector(".caps");
       board.appendChild(el);
+      els[id]=el;
+      if(sizeWatch) sizeWatch.observe(el);
     }
-    el.className="card"+(c.kind==="widget"?" widget":"")+(busy[c.n]==="drag"?" is-drag":"")+(busy[c.n]==="resize"?" is-resize":"");
+    el.setAttribute("data-n", String(c.n));
+    el.className="card k-"+String(c.kind).replace(/[^a-z]/g,"")+(c.kind==="widget"?" widget":"")+(c.kind==="form"?" form":"")+(busy[id]==="drag"?" is-drag":"")+(busy[id]==="resize"?" is-resize":"");
     applyBox(el, L);
-    var view=layoutOf(c);
-    var cap=c.status==="error"?("Couldn't make this: "+(c.error||"unknown error")):c.status==="pending"?(pendingLabel(c)+": "+(c.text||"…")):(c.kind==="widget"||externalSrc(c.html||"")?"":(c.text||""));
-    var body=mediaBody(c);
-    var html='<div class="chrome" data-drag="'+c.n+'"><span class="badge">'+c.n+'</span><span class="kind">'+esc(c.kind)+"</span>";
-    html+='<h3 class="title">'+esc(c.title||("Card "+c.n))+"</h3></div>";
-    html+='<div class="body">'+body+"</div>";
-    if(cap) html+='<p class="cap'+(c.status==="error"?" err":"")+'">'+esc(cap)+"</p>";
-    if(c.status==="pending"&&c.model) html+='<p class="cap">'+esc(c.model)+"</p>";
-    html+='<div class="grip" data-resize="'+c.n+'" title="Resize"></div>';
-    var keepFrame=!!c.html&&el.querySelector(".body iframe")&&widgetHtml[c.n]===String(c.html||"");
-    // Rebuilt only when what it shows changed: a move or a resize keeps a playing video, its sound and its place.
-    if(!keepFrame){ if(el._html!==html){ el.innerHTML=html; el._html=html; } }
-    else {
-      var title=el.querySelector(".title"); if(title) title.textContent=c.title||("Card "+c.n);
-      var kind=el.querySelector(".kind"); if(kind) kind.textContent=c.kind;
-      if(!el.querySelector(".grip")) el.insertAdjacentHTML("beforeend",'<div class="grip" data-resize="'+c.n+'" title="Resize"></div>');
-      if(!el.querySelector(".chrome")){
-        var chrome=document.createElement("div");
-        chrome.className="chrome"; chrome.setAttribute("data-drag", String(c.n));
-        var badge=el.querySelector(".badge"), kindEl=el.querySelector(".kind"), titleEl=el.querySelector(".title");
-        if(badge) chrome.appendChild(badge);
-        if(kindEl) chrome.appendChild(kindEl);
-        if(titleEl) chrome.appendChild(titleEl);
-        el.insertBefore(chrome, el.firstChild);
-      }
-    }
+    setText(el._badge, String(c.n)); setText(el._kind, String(c.kind)); setText(el._title, c.title||("Card "+c.n));
+    // Each part is drawn again only when what it shows changed: a move or a new title keeps a playing video, a widget's page and a table's scroll.
+    var body=bodyHtml(c), fresh=false;
+    if(el._bodyHtml!==body){ el._body.innerHTML=body; el._bodyHtml=body; fresh=true; }
+    var caps=capsHtml(c);
+    if(el._capsHtml!==caps){ el._caps.innerHTML=caps; el._capsHtml=caps; }
     syncWidget(el, c);
+    if(fresh){
+      var img=el._body.querySelector("img"), vid=el._body.querySelector("video");
+      if(img){ if(img.complete) img.classList.add("is-on"); else img.addEventListener("load",function(ev){ev.target.classList.add("is-on");}); }
+      if(vid){ if(vid.readyState>=2) vid.classList.add("is-on"); else vid.addEventListener("loadeddata",function(ev){ev.target.classList.add("is-on");}); }
+    }
     return el;
   }
-  function startPointer(mode, n, e){
+  function forget(id){
+    var el=els[id];
+    if(el){ if(sizeWatch){ try{ sizeWatch.unobserve(el); }catch(e){} } el.remove(); }
+    delete els[id];
+    if(audioBy[id]){ try{ audioBy[id].pause(); }catch(e){} delete audioBy[id]; }
+    delete local[id]; delete busy[id]; delete heights[id]; delete noise[id]; delete kindView[id]; delete kindCache[id];
+  }
+
+  // ── Heights: what each card really takes up, told to the engine (so "under" and "beside" don't overlap) ──
+  var measureTimer=0;
+  function measure(){
+    measureTimer=0;
+    var bh=board.getBoundingClientRect().height;
+    if(!bh) return;
+    var out=null;
+    for(var id in els){
+      if(busy[id]||!cardsById[id]) continue;
+      var h=r1(els[id].getBoundingClientRect().height/bh*100);
+      if(heights[id]===undefined||Math.abs(heights[id]-h)>=0.6){ heights[id]=h; (out=out||{})[id]=h; }
+    }
+    if(out) emit({__trinity:"board",op:"sizes",sizes:out});
+  }
+  function measureSoon(ms){ if(measureTimer) clearTimeout(measureTimer); measureTimer=setTimeout(measure, ms||600); }
+  var sizeWatch=null;
+  try{ sizeWatch=new ResizeObserver(function(){ measureSoon(300); }); }catch(e){ sizeWatch=null; }
+  window.addEventListener("resize", function(){ measureSoon(300); });
+
+  // ── Moving and sizing by hand ──
+  // The handle captures the pointer, and the frames stop taking it for as long as the drag lasts: a drag never
+  // stalls over a widget, and a release over one is still heard.
+  function startPointer(mode, id, e){
     if(e.button!=null&&e.button!==0) return;
+    var L=local[id], el=els[id];
+    if(!L||!el||busy[id]) return;
     e.preventDefault();
     e.stopPropagation();
-    var L=local[n]; if(!L) return;
-    var el=board.querySelector('[data-n="'+n+'"]'); if(!el) return;
-    zTop+=1; L.z=zTop; busy[n]=mode;
+    var handle=e.target&&e.target.closest?e.target.closest(mode==="drag"?"[data-drag]":"[data-resize]"):null;
+    var pid=e.pointerId, done=false;
+    zTop+=1; L.z=zTop; busy[id]=mode;
     el.classList.add(mode==="drag"?"is-drag":"is-resize");
+    board.classList.add("is-busy");
     el.style.zIndex=String(L.z);
     var br=board.getBoundingClientRect();
-    var startX=e.clientX, startY=e.clientY, ox=L.x, oy=L.y, ow=L.w, oh=L.h!=null?L.h:Math.max(16,(el.getBoundingClientRect().height/br.height)*100);
+    var startX=e.clientX, startY=e.clientY, ox=L.x, oy=L.y, ow=L.w, oh=L.h!=null?L.h:Math.max(14,(el.getBoundingClientRect().height/br.height)*100);
     function move(ev){
+      if(done||(pid!=null&&ev.pointerId!=null&&ev.pointerId!==pid)) return;
       var dx=((ev.clientX-startX)/br.width)*100, dy=((ev.clientY-startY)/br.height)*100;
       if(mode==="drag"){ L.x=clamp(ox+dx,0,90); L.y=clamp(oy+dy,0,90); }
       else { L.w=clamp(ow+dx,12,98); L.h=clamp(oh+dy,14,98); }
       applyBox(el, L);
     }
-    function up(){
-      busy[n]=null;
+    function up(ev){
+      if(done||(ev&&pid!=null&&ev.pointerId!=null&&ev.pointerId!==pid)) return;
+      done=true;
+      delete busy[id];
       el.classList.remove("is-drag","is-resize");
+      var others=false; for(var k in busy){ others=true; break; }
+      if(!others) board.classList.remove("is-busy");
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", up);
-      persist(n);
+      window.removeEventListener("blur", up);
+      if(handle){
+        handle.removeEventListener("lostpointercapture", up);
+        try{ if(pid!=null&&handle.hasPointerCapture&&handle.hasPointerCapture(pid)) handle.releasePointerCapture(pid); }catch(x){}
+      }
+      persist(id);
+      measureSoon(300);
     }
+    try{ if(handle&&pid!=null) handle.setPointerCapture(pid); }catch(x){}
+    // (With the pointer captured, its events go to the handle and bubble here, wherever the pointer is.)
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
     window.addEventListener("pointercancel", up);
+    window.addEventListener("blur", up);
+    if(handle) handle.addEventListener("lostpointercapture", up);
   }
+  function cardIdOf(node){ var el=node&&node.closest?node.closest("[data-id]"):null; return el?el.getAttribute("data-id"):null; }
   board.addEventListener("pointerdown", function(e){
     var t=e.target; if(!t||!t.closest) return;
     if(t.closest(".btn")||t.closest("[data-seek]")||t.closest(".body")) return;
-    var grip=t.closest("[data-resize]");
-    if(grip){ startPointer("resize", Number(grip.getAttribute("data-resize")), e); return; }
-    var drag=t.closest("[data-drag]");
-    if(drag){ startPointer("drag", Number(drag.getAttribute("data-drag")), e); return; }
+    var id=cardIdOf(t); if(!id||!els[id]) return;
+    if(t.closest("[data-resize]")){ startPointer("resize", id, e); return; }
+    if(t.closest("[data-drag]")){ startPointer("drag", id, e); return; }
   });
-  // A link clicked inside a widget card: its guard sends it here; the board's runtime hands it to the host to open.
+  board.addEventListener("click", function(e){
+    var t=e.target; if(!t||!t.closest) return;
+    var id=cardIdOf(t); if(!id) return;
+    if(t.closest("[data-play]")){
+      var aa=audioBy[id];
+      if(!aa) return;
+      if(aa.paused){ var q=aa.play(); if(q&&q.catch) q.catch(function(){}); } else aa.pause();
+      return;
+    }
+    var seek=t.closest("[data-seek]");
+    if(seek){
+      var a2=audioBy[id];
+      if(!a2||!isFinite(a2.duration)) return;
+      var r=seek.getBoundingClientRect();
+      a2.currentTime=a2.duration*Math.max(0,Math.min(1,(e.clientX-r.left)/r.width));
+      return;
+    }
+    // A click inside an engine-drawn card (a table header to sort by, …): its kind says what it changes here.
+    var c=cardsById[id];
+    var onClick=c?kindFn(c.kind+"Click"):null;
+    if(onClick){
+      var next=null;
+      try{ next=onClick(c, kindView[id]||null, t); }catch(x){ next=null; }
+      if(next){ kindView[id]=next; ensureCard(c); }
+    }
+  });
+
+  // ── What a widget says (only from one of this board's own card frames) ──
+  function frameCard(win){
+    for(var id in els){ var f=els[id]._frame; if(f&&f.contentWindow===win) return id; }
+    return null;
+  }
+  function jsonOf(v, max){
+    var j; try{ j=JSON.stringify(v===undefined?null:v); }catch(e){ return null; }
+    return typeof j==="string"&&j.length<=max?j:null;
+  }
   window.addEventListener("message", function(e){
-    var d=e.data; if(!d||d.__trinity!=="link"||typeof d.href!=="string") return;
-    var frames=board.querySelectorAll("iframe"), own=false;
-    for(var i=0;i<frames.length;i++) if(frames[i].contentWindow===e.source) own=true;
-    if(!own) return;
-    var h=d.href.trim(), l=h.toLowerCase();
-    if(l.indexOf("https://")===0||l.indexOf("http://")===0) window.open(h);
+    var d=e.data; if(!d||typeof d.__trinity!=="string") return;
+    var id=frameCard(e.source); if(!id) return;
+    var c=cardsById[id], el=els[id]; if(!c||!el) return;
+    var what=d.__trinity, j;
+    if(what==="link"){
+      // A link clicked in the card: handed to the window, which asks before it opens anything.
+      if(typeof d.href!=="string") return;
+      var h=d.href.trim(), l=h.toLowerCase();
+      if(l.indexOf("https://")===0||l.indexOf("http://")===0) window.open(h);
+    } else if(what==="cmd_result"){
+      // The answer to a command: only from the frame the command went to, only for a command still waiting.
+      var w=waiting[d.id]; if(!w||w.win!==e.source) return;
+      clearTimeout(w.timer); delete waiting[d.id];
+      answer(d.id, w.n, d);
+    } else if(what==="alert"){
+      if(allow(id,"alert",3,10000)) emit({__trinity:"alert",text:String(d.text==null?"":d.text).slice(0,300)});
+    } else if(what==="error"){
+      // A script error in the card's page. A page that is still streaming in is not finished: its errors don't count.
+      if(c.status!=="ready"||!allow(id,"error",3,60000)) return;
+      emit({__trinity:"board",op:"card_error",id:id,n:c.n,message:String(d.message==null?"":d.message).slice(0,300)});
+    } else if(what==="state"){
+      // trinity.saveState: kept with the card by the engine, and shown by every other window.
+      if(c.status!=="ready"||!(j=jsonOf(d.state,16384))||!allow(id,"state",60,60000)) return;
+      var f=el._frame; f._state=j; f._sent.push(j); if(f._sent.length>20) f._sent.shift();
+      emit({__trinity:"board",op:"card_state",id:id,n:c.n,state:JSON.parse(j)});
+    } else if(what==="emit"){
+      // trinity.emit: the user pressed something in the card that is meant for Trinity.
+      if(c.status!=="ready"||!(j=jsonOf(d.event,2048))||!allow(id,"emit",4,10000)) return;
+      emit({__trinity:"board",op:"card_event",id:id,n:c.n,event:JSON.parse(j)});
+    }
   });
-  // Commands from the engine (workspace/card-commands.ts): run on the card itself — its video or audio here, or inside
-  // a widget's frame (the card runtime there answers) — and report what happened.
+
+  // ── Commands from the engine (workspace/card-commands.ts): run on the card itself — its video or audio here, or
+  // inside a widget's frame (the card runtime there answers) — and report what happened. ──
   function answer(id, n, r){
     r = r || {};
     emit({__trinity:"board", op:"cmd_result", id:id, n:n, ok:!!r.ok, via:r.via, label:r.label, already:r.already, reason:r.reason, detail:r.detail, controls:r.controls, text:r.text, media:r.media});
@@ -660,20 +936,21 @@ ${CARD_LISTENER}`)};
   function onCommand(cmd){
     if(!cmd||typeof cmd!=="object") return;
     var id=String(cmd.id||""), n=Number(cmd.n), op=String(cmd.op||""), arg=cmd.arg;
-    var el=board.querySelector('[data-n="'+n+'"]'), c=cardsBy[n];
+    var c=cardsByN[n], el=c?els[c.id]:null;
     if(!el||!c) return answer(id,n,{ok:false,reason:"missing"});
+    // A secure form's placeholder is never read, pressed or typed into from here.
+    if(c.kind==="form") return answer(id,n,{ok:false,reason:"form"});
     if(c.status==="pending") return answer(id,n,{ok:false,reason:"pending"});
     if(!RT) return answer(id,n,{ok:false,reason:"error",detail:"no card runtime"});
     if(c.kind==="audio"&&!c.html){
-      var a=audioBy[n];
+      var a=audioBy[c.id];
       if(!a) return answer(id,n,{ok:false,reason:"no-media"});
       if(op==="read") return answer(id,n,{ok:true,via:"read",text:"audio "+RT.mediaText(a),media:RT.mediaState(a)});
       if(op==="controls") return answer(id,n,{ok:true,controls:["play","pause","restart","mute","louder","quieter","skip ahead","skip back","loop"]});
-      return RT.mediaOp(a,op,arg).then(function(r){ refreshAudio(n); answer(id,n,r); });
+      return RT.mediaOp(a,op,arg).then(function(r){ refreshAudio(c.id); answer(id,n,r); });
     }
-    var frame=el.querySelector(".body iframe");
+    var frame=el._body.querySelector("iframe");
     if(frame){
-      if(frame.hasAttribute("src")) return answer(id,n,{ok:false,reason:"external"});
       var win=frame.contentWindow;
       if(!win) return answer(id,n,{ok:false,reason:"no-answer"});
       waiting[id]={win:win,n:n,timer:setTimeout(function(){ delete waiting[id]; answer(id,n,{ok:false,reason:"no-answer"}); },1800)};
@@ -681,83 +958,54 @@ ${CARD_LISTENER}`)};
       catch(e){ clearTimeout(waiting[id].timer); delete waiting[id]; answer(id,n,{ok:false,reason:"error",detail:String(e)}); }
       return;
     }
-    var vid=el.querySelector(".body video");
+    var vid=el._body.querySelector("video");
     if(vid){
       if(op==="read") return answer(id,n,{ok:true,via:"read",text:"video "+RT.mediaText(vid),media:RT.mediaState(vid)});
       if(op==="controls") return answer(id,n,{ok:true,controls:["play","pause","restart","mute","unmute","louder","quieter","skip ahead","skip back","loop","faster","slower"]});
       return RT.mediaOp(vid,op,arg).then(function(r){ answer(id,n,r); });
     }
-    var body=el.querySelector(".text-body")||el.querySelector(".body")||el;
+    var body=el.querySelector(".text-body")||el._body||el;
     if(op==="read") return answer(id,n,{ok:true,via:"read",text:String(body.innerText||c.text||"").slice(0,4000)});
     if(op==="scroll_down"||op==="scroll_up"||op==="scroll_top") return answer(id,n,RT.scroll(el,op));
     if(op==="controls") return answer(id,n,{ok:true,controls:[]});
-    return answer(id,n,{ok:false,reason:c.kind==="image"||c.kind==="text"?"no-media":"no-control"});
+    return answer(id,n,{ok:false,reason:c.kind==="widget"?"no-control":"no-media"});
   }
   if(window.trinity) window.trinity.oncommand=onCommand;
-  // A widget frame's answer: only from the frame the command went to, only for a command still waiting.
-  window.addEventListener("message", function(e){
-    var d=e.data; if(!d||d.__trinity!=="cmd_result") return;
-    var w=waiting[d.id]; if(!w||w.win!==e.source) return;
-    clearTimeout(w.timer); delete waiting[d.id];
-    answer(d.id,w.n,d);
-  });
+
   window.render=function(state){
-    var cards=(state&&state.cards)||[];
-    cardsBy=Object.create(null);
-    for(var ci=0;ci<cards.length;ci++) cardsBy[cards[ci].n]=cards[ci];
-    var keep=Object.create(null);
-    for(var i=0;i<cards.length;i++) keep[cards[i].n]=true;
-    for(var k in audioBy){ if(!keep[k]){ try{audioBy[k].pause();}catch(e){} delete audioBy[k]; } }
-    for(k in widgetHtml){ if(!keep[k]) delete widgetHtml[k]; }
-    for(k in local){ if(!keep[k]) delete local[k]; }
-    var empty=board.querySelector(".empty");
-    if(!cards.length){
-      board.innerHTML='<div class="empty">Ask Trinity to add a picture, audio, video, note, or widget — drag the header to move, corner to resize</div>';
-      return;
+    var raw=(state&&state.cards)||[], cards=[], keep=Object.create(null), i, c, id;
+    cardsByN=Object.create(null);
+    cardsById=Object.create(null);
+    for(i=0;i<raw.length;i++){
+      c=raw[i];
+      if(!c||typeof c.n!=="number") continue;
+      // (A card from before cards had ids: its id follows from its number, as the engine's does.)
+      if(typeof c.id!=="string"||!c.id){ var copy={}; for(var k in c) copy[k]=c[k]; copy.id="n"+c.n; c=copy; }
+      if(keep[c.id]) continue;
+      keep[c.id]=true; cardsById[c.id]=c; cardsByN[c.n]=c; cards.push(c);
     }
-    if(empty) empty.remove();
-    for(i=0;i<board.children.length;i++){
-      var child=board.children[i];
-      var n=Number(child.getAttribute("data-n"));
-      if(!keep[n]){ child.remove(); i--; }
-    }
+    for(id in els){ if(!keep[id]) forget(id); }
+    emptyEl.hidden=cards.length>0;
     for(i=0;i<cards.length;i++){
-      var c=cards[i];
-      var el=ensureCard(c);
-      var img=el.querySelector("img"), vid=el.querySelector("video");
-      if(img){ if(img.complete) img.classList.add("is-on"); else img.addEventListener("load",function(ev){ev.target.classList.add("is-on");}); }
-      if(vid){ if(vid.readyState>=2) vid.classList.add("is-on"); else vid.addEventListener("loadeddata",function(ev){ev.target.classList.add("is-on");}); }
-      if(c.kind==="audio"&&c.status==="ready"&&c.url){
-        var a=audioBy[c.n];
+      c=cards[i];
+      ensureCard(c);
+      if(c.kind==="audio"&&c.status==="ready"&&c.url&&!c.html){
+        var a=audioBy[c.id];
         if(!a||a._src!==c.url){
           if(a) try{a.pause();}catch(e){}
-          a=new Audio(c.url); a._src=c.url; audioBy[c.n]=a;
-          a.addEventListener("timeupdate",function(nn){return function(){refreshAudio(nn);};}(c.n));
-          a.addEventListener("play",function(nn){return function(){refreshAudio(nn);};}(c.n));
-          a.addEventListener("pause",function(nn){return function(){refreshAudio(nn);};}(c.n));
-          a.addEventListener("ended",function(nn){return function(){audioBy[nn].currentTime=0;refreshAudio(nn);};}(c.n));
-          var p=a.play(); if(p&&p.catch) p.catch(function(){refreshAudio(c.n);});
+          a=new Audio(c.url); a._src=c.url; audioBy[c.id]=a;
+          (function(cid, au){
+            au.addEventListener("timeupdate",function(){refreshAudio(cid);});
+            au.addEventListener("play",function(){refreshAudio(cid);});
+            au.addEventListener("pause",function(){refreshAudio(cid);});
+            au.addEventListener("ended",function(){au.currentTime=0;refreshAudio(cid);});
+            var p=au.play(); if(p&&p.catch) p.catch(function(){refreshAudio(cid);});
+          })(c.id, a);
         }
-        refreshAudio(c.n);
-      }
+        refreshAudio(c.id);
+      } else if(audioBy[c.id]){ try{audioBy[c.id].pause();}catch(e){} delete audioBy[c.id]; }
     }
-    board.onclick=function(e){
-      var t=e.target; if(!t||!t.closest) return;
-      var play=t.closest("[data-play]");
-      if(play){
-        var pn=play.getAttribute("data-play"), aa=audioBy[pn];
-        if(!aa) return;
-        if(aa.paused){ var q=aa.play(); if(q&&q.catch) q.catch(function(){}); } else aa.pause();
-        return;
-      }
-      var seek=t.closest("[data-seek]");
-      if(seek){
-        var a2=audioBy[seek.getAttribute("data-seek")];
-        if(!a2||!isFinite(a2.duration)) return;
-        var r=seek.getBoundingClientRect();
-        a2.currentTime=a2.duration*Math.max(0,Math.min(1,(e.clientX-r.left)/r.width));
-      }
-    };
+    measureSoon(600);
   };
 })();
 </script>`,
@@ -767,54 +1015,143 @@ function emptyState(): BoardState {
   return { cards: [] };
 }
 
-const LEGACY_BOARD_IDS = new Set(["board@1", "board@2", "board@3", "board@4", "board@5", "board@6", BOARD_TEMPLATE.id]);
+/**
+ * Any id the engine's own board template has had ("board@1", "board@2", …). A saved board is recognised by the shape
+ * of its id, not by a hand-kept list, so a later bump can never orphan the cards saved under an earlier one.
+ */
+const BOARD_ID = /^board@\d+$/;
+const newCardId = customAlphabet("0123456789abcdefghijklmnopqrstuvwxyz", 10);
 
 function isBoard(): boolean {
-  const s = workspace.snapshot();
-  return s.mode === "app" && s.owner === BOARD_OWNER && Boolean(s.template?.id && LEGACY_BOARD_IDS.has(s.template.id));
+  return workspace.mode === "app" && workspace.owner === BOARD_OWNER && BOARD_ID.test(workspace.templateId ?? "");
+}
+
+/** The board on screen runs this build's template (its id and its source: a template edited without a new id still replaces the saved one). */
+function templateCurrent(): boolean {
+  const t = workspace.snapshot().template;
+  return t?.id === BOARD_TEMPLATE.id && t.source === BOARD_TEMPLATE.source;
+}
+
+/**
+ * The cards of a board state, each with its id. A card saved before cards had ids (or put there by hand) gets one that
+ * follows from its number, so it is the same every time the state is read; the next write keeps it.
+ */
+function cardsIn(raw: unknown): BoardCard[] {
+  const list = raw && typeof raw === "object" && Array.isArray((raw as BoardState).cards) ? (raw as BoardState).cards : [];
+  const out: BoardCard[] = [];
+  const seen = new Set<string>();
+  for (const c of list) {
+    if (!c || typeof c !== "object" || typeof c.n !== "number") continue;
+    let card = c;
+    if (typeof card.id !== "string" || !card.id || seen.has(card.id)) {
+      let id = `n${card.n}`;
+      for (let k = 2; seen.has(id); k++) id = `n${card.n}-${k}`;
+      card = { ...card, id };
+    }
+    seen.add(card.id);
+    out.push(card);
+  }
+  return out;
 }
 
 function read(): BoardState {
   if (!isBoard()) return emptyState();
   const raw = workspace.state as BoardState | null;
-  if (!raw || !Array.isArray(raw.cards)) return emptyState();
-  return { cards: raw.cards.filter((c) => c && typeof c.n === "number") };
+  const seq = raw && typeof raw.seq === "number" && Number.isFinite(raw.seq) ? raw.seq : 0;
+  return { cards: cardsIn(raw), seq };
 }
 
+/** Put the state on screen. Card objects are never changed after this: a change makes a new object (undo entries keep the old ones as they are). */
 function write(state: BoardState, title = "Workspace"): boolean {
-  if (!isBoard()) {
-    workspace.showApp(BOARD_TEMPLATE, state, title, BOARD_OWNER);
+  let seq = state.seq ?? 0;
+  for (const c of state.cards) if (c.n > seq) seq = c.n;
+  const next: BoardState = { cards: state.cards, seq };
+  // No board yet — or one saved under an older template: this one takes over, cards kept.
+  if (!isBoard() || !templateCurrent()) {
+    workspace.showApp(BOARD_TEMPLATE, next, title, BOARD_OWNER);
     return true;
   }
-  // Hot-upgrade an older board template (drag/resize, widget frames, hardened widget documents) without clearing cards.
-  if (workspace.snapshot().template?.id !== BOARD_TEMPLATE.id) {
-    workspace.showApp(BOARD_TEMPLATE, state, title, BOARD_OWNER);
-    return true;
-  }
-  return workspace.setState(state, BOARD_OWNER);
+  return workspace.setState(next, BOARD_OWNER);
 }
 
-function nextNumber(cards: BoardCard[]): number {
-  let max = 0;
-  for (const c of cards) if (c.n > max) max = c.n;
+/**
+ * The next card's number: one more than the highest ever handed out on this board — and than any card an undo could
+ * still bring back (after a clear), so a number never means two cards.
+ */
+function nextNumber(state: BoardState): number {
+  let max = state.seq ?? 0;
+  for (const c of state.cards) if (c.n > max) max = c.n;
+  for (const e of workspace.undoEntries()) {
+    if (e.owner !== BOARD_OWNER) continue;
+    const s = e.state as BoardState | null;
+    if (s && typeof s.seq === "number" && s.seq > max) max = s.seq;
+    for (const c of cardsIn(s)) if (c.n > max) max = c.n;
+  }
   return max + 1;
 }
 
-function slotFor(index: number): { x: number; y: number } {
-  const base = SLOT[index % SLOT.length]!;
-  const ring = Math.floor(index / SLOT.length);
-  return { x: Math.min(72, base.x + ring * 3), y: Math.min(70, base.y + ring * 3) };
+// ─── Sizes and limits ───────────────────────────────────────────────────────
+
+const jsonLength = (v: unknown): number => {
+  try {
+    return JSON.stringify(v)?.length ?? 0;
+  } catch {
+    return Infinity;
+  }
+};
+
+const cardSizes = new WeakMap<BoardCard, number>();
+
+/** Roughly what a card adds to the saved board, in characters (kept per card object: a card never changes in place). */
+function cardBytes(c: BoardCard): number {
+  let size = cardSizes.get(c);
+  if (size === undefined) {
+    size = 400 + String(c.title ?? "").length + String(c.text ?? "").length + (c.html?.length ?? 0) + (c.stash?.length ?? 0);
+    if (c.data !== undefined) size += jsonLength(c.data);
+    if (c.state !== undefined) size += jsonLength(c.state);
+    cardSizes.set(c, size);
+  }
+  return size;
 }
 
-/** Push the current board template over an older board template id without clearing cards. */
+/** What the whole board holds, in characters. */
+export function boardBytes(): number {
+  return read().cards.reduce((sum, c) => sum + cardBytes(c), 0);
+}
+
+function checkTotal(cards: BoardCard[]): void {
+  let total = 0;
+  for (const c of cards) total += cardBytes(c);
+  if (total > BOARD_LIMITS.total) throw new BoardLimitError("total", "The board is holding too much to take that as well. Remove a card or two first.");
+}
+
+/**
+ * Card HTML without the tags that reach out of the sandbox or steer the frame: <link> (a preconnect or dns-prefetch
+ * hint goes to its host the moment it is parsed, which no CSP covers), <base>, and <meta> (a refresh navigates the
+ * frame). A skill's page and a build's half-streamed page come through here like everything else. Comments and scripts
+ * are kept whole for <meta> (one written inside is inert or is the page's own code); links go wherever they are
+ * written. A space takes each tag's place, and only the whole tag name counts ("<link-card>" is the page's own).
+ * A page over the size a card may hold is refused.
+ */
+export function cleanCardHtml(html: string): string {
+  let s = String(html);
+  if (/<(?:link|meta|base)(?=[\s/>]|$)/i.test(s)) {
+    s = s
+      .replace(/<(?:link|base)(?=[\s/>]|$)[^>]*(?:>|$)/gi, " ")
+      .split(/(<!--[\s\S]*?-->|<script\b[\s\S]*?(?:<\/script>|$))/i)
+      .map((piece, i) => (i % 2 ? piece : piece.replace(/<meta(?=[\s/>]|$)[^>]*(?:>|$)/gi, " ")))
+      .join("");
+  }
+  if (s.length > BOARD_LIMITS.cardHtml)
+    throw new BoardLimitError("html", `That page is too big for one card: ${kb(s.length)}, and a card holds up to ${kb(BOARD_LIMITS.cardHtml)}.`);
+  return s;
+}
+
+/** Push the current board template over an older one (any earlier id, or the same id with other code) without clearing cards. */
 function upgradeBoardTemplate(): void {
-  const s = workspace.snapshot();
-  if (s.mode !== "app" || s.owner !== BOARD_OWNER) return;
-  if (!s.template?.id || !LEGACY_BOARD_IDS.has(s.template.id)) return;
-  if (s.template.id === BOARD_TEMPLATE.id) return;
-  const raw = s.state as BoardState | null;
-  const cards = raw && Array.isArray(raw.cards) ? raw.cards.filter((c) => c && typeof c.n === "number") : [];
-  workspace.showApp(BOARD_TEMPLATE, { cards }, s.title || "Workspace", BOARD_OWNER);
+  if (!isBoard() || templateCurrent()) return;
+  const state = read();
+  workspace.showApp(BOARD_TEMPLATE, { cards: state.cards, seq: state.seq }, workspace.snapshot().title || "Workspace", BOARD_OWNER);
 }
 
 export function boardActive(): boolean {
@@ -827,27 +1164,34 @@ export function listCards(): BoardCard[] {
   return read().cards.slice().sort((a, b) => a.n - b.n);
 }
 
+/** The card with this number now. (Work that outlives the moment holds the card's id: see cardById.) */
 export function getCard(n: number): BoardCard | null {
   return read().cards.find((c) => c.n === n) ?? null;
+}
+
+/** The card with this id, while it is on the board. */
+export function cardById(id: string): BoardCard | null {
+  return read().cards.find((c) => c.id === id) ?? null;
 }
 
 export function describeBoard(): string {
   const cards = listCards();
   if (!cards.length) return "The workspace board is empty.";
   const bits = cards.map((c) => {
-    const status = c.status === "pending" ? "still loading" : c.status === "error" ? "failed" : "ready";
+    const status = c.status === "pending" ? "still loading" : c.status === "error" ? (c.retry ? "failed, can be tried again" : "failed") : c.error ? "ready, with a script error" : "ready";
     const size =
       c.kind === "image" || c.kind === "video"
         ? `, media ${Math.round(c.mw ?? 100)}% wide` + (c.mh != null ? ` × ${Math.round(c.mh)}% tall` : "")
         : "";
     const htmlBits = c.html ? `, editable HTML (${summarizeHtml(c.html)})` : "";
+    const holds = isDataKindName(c.kind) && c.status === "ready" ? kindSummary(c) : null;
     const tags = (c.tags ?? []).length ? `, about: ${(c.tags ?? []).slice(0, 6).join(", ")}` : "";
     const cx = c.x + c.w / 2;
     const cy = c.y + (c.h ?? 40) / 2;
     const v = cy < 34 ? "top" : cy > 66 ? "bottom" : "";
     const h = cx < 34 ? "left" : cx > 66 ? "right" : "";
     const where = isMinimized(c) ? "minimized" : isMaximized(c) ? "full screen" : v && h ? `${v} ${h}` : v || h || "center";
-    return `card ${c.n} (${c.kind}, ${status}, ${where}${size}${htmlBits}${tags}): ${c.title}`;
+    return `card ${c.n} (${c.kind}, ${status}, ${where}${size}${htmlBits}${holds ? `, ${holds}` : ""}${tags}): ${c.title}`;
   });
   return `The workspace board has ${cards.length} card${cards.length === 1 ? "" : "s"}: ${bits.join("; ")}.`;
 }
@@ -893,21 +1237,124 @@ export function summarizeHtml(html: string): string {
   return interesting.length ? interesting.slice(0, 12).join(", ") : "markup";
 }
 
-/** Persist a user drag/resize from the board UI (percentages of the board). */
+// ─── Where cards are, and how tall ──────────────────────────────────────────
+
+/** Heights the windows measured, in % of the board, by card id: what a content-sized card really takes up. Not saved. */
+const measured = new Map<string, number>();
+/** Cards still where the engine first put them (nobody has moved or sized them): the only ones it may nudge back onto the board. */
+const autoPlaced = new Set<string>();
+
+/** A card's height in % of the board: the one it was given, else the one a window measured, else a guess for its kind. */
+export function cardHeight(c: BoardCard): number {
+  return c.h ?? measured.get(c.id) ?? GUESS_H[c.kind] ?? 40;
+}
+
+interface Box {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+function overlap(a: Box, b: Box): number {
+  const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+  const h = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+  return w > 0 && h > 0 ? w * h : 0;
+}
+
+/**
+ * Where a new card of this size goes: the first of the board's usual spots that is free, else the first free place
+ * found scanning left to right and top to bottom, else the place that covers the least of what is already there —
+ * always wholly on the board (x + w and y + h stay under 100), and never exactly on another card's corner.
+ */
+function freeSpot(cards: BoardCard[], w: number, h: number): { x: number; y: number } {
+  const maxX = round1(Math.max(0, 100 - w - 1));
+  const maxY = round1(Math.max(0, 100 - h - 1));
+  const taken: Box[] = cards.filter((c) => !isMaximized(c)).map((c) => ({ x: c.x, y: c.y, w: c.w, h: cardHeight(c) }));
+  const spots = SLOT.map((s) => ({ x: Math.min(s.x, maxX), y: Math.min(s.y, maxY) }));
+  const steps = (max: number): number[] => {
+    const out: number[] = [];
+    for (let v = 2; v < max; v += 6) out.push(v);
+    out.push(max);
+    return out;
+  };
+  for (const y of steps(maxY)) for (const x of steps(maxX)) spots.push({ x, y });
+  let best = spots[0]!;
+  let least = Infinity;
+  for (const p of spots) {
+    let cost = 0;
+    for (const t of taken) cost += overlap({ x: p.x, y: p.y, w, h }, t);
+    if (cost < least - 0.01) {
+      best = p;
+      least = cost;
+      if (cost === 0) break;
+    }
+  }
+  if (least > 0) {
+    let { x, y } = best;
+    for (let k = 0; k < 12 && taken.some((t) => Math.abs(t.x - x) < 2 && Math.abs(t.y - y) < 2); k++) {
+      x = Math.min(maxX, x + 3);
+      y = Math.min(maxY, y + 3);
+    }
+    best = { x: round1(x), y: round1(y) };
+  }
+  return best;
+}
+
+/**
+ * Heights the board measured in a window ({card id: % of the board}). They are kept for placing cards next to each
+ * other; and a card the engine placed itself that turns out to run off the bottom is moved up until it fits.
+ */
+export function noteCardHeights(sizes: Record<string, unknown>): void {
+  if (!isBoard()) return;
+  const state = read();
+  let moved = false;
+  for (const c of state.cards) {
+    const h = Number(sizes[c.id]);
+    if (!Number.isFinite(h) || h <= 0 || h > 400) continue;
+    measured.set(c.id, round1(h));
+  }
+  const cards = state.cards.map((c) => {
+    if (c.h != null || !autoPlaced.has(c.id) || isMinimized(c)) return c;
+    const h = measured.get(c.id);
+    if (h === undefined || c.y + h <= 100) return c;
+    const y = round1(Math.max(0, 100 - h - 1));
+    if (Math.abs(y - c.y) < 0.5) return c;
+    moved = true;
+    return { ...c, y };
+  });
+  const here = new Set(state.cards.map((c) => c.id));
+  for (const id of measured.keys()) if (!here.has(id)) measured.delete(id);
+  for (const id of autoPlaced) if (!here.has(id)) autoPlaced.delete(id);
+  if (moved) write({ ...state, cards });
+}
+
+/** Persist a user drag/resize from the board UI (percentages of the board). Undo puts the card back. */
 export function applyCardLayout(
-  n: number,
+  ref: number | string,
   layout: { x: number; y: number; w: number; h?: number | null; z?: number },
 ): BoardCard | null {
   const state = read();
-  const i = state.cards.findIndex((c) => c.n === n);
+  const i = state.cards.findIndex((c) => (typeof ref === "string" ? c.id === ref : c.n === ref));
   if (i < 0) return null;
-  const card = { ...state.cards[i]! };
+  const old = state.cards[i]!;
+  const card = { ...old };
   card.x = Math.max(0, Math.min(X_MAX, Number(layout.x) || 0));
   card.y = Math.max(0, Math.min(X_MAX, Number(layout.y) || 0));
   card.w = Math.max(W_MIN, Math.min(W_MAX, Number(layout.w) || card.w));
   if (layout.h === null || layout.h === undefined) delete card.h;
   else card.h = Math.max(H_MIN, Math.min(H_MAX, Number(layout.h)));
   if (typeof layout.z === "number" && Number.isFinite(layout.z)) card.z = layout.z;
+  // A drag or a resize by hand can be undone like one asked for by voice (a run of them on one card is one step);
+  // a click that only brings the card to the front is not worth an undo step.
+  const boxChanged = card.x !== old.x || card.y !== old.y || card.w !== old.w || card.h !== old.h;
+  if (boxChanged) {
+    const reason = `hand:${old.id}`;
+    const entries = workspace.undoEntries();
+    const top = entries[entries.length - 1];
+    if (!(top && top.reason === reason && Date.now() - top.at < 8_000)) workspace.pushUndo(reason, 1);
+    autoPlaced.delete(old.id);
+  }
   state.cards[i] = card;
   if (!write(state)) return null;
   return card;
@@ -927,6 +1374,10 @@ export interface AddCardInput {
   y?: number;
   w?: number;
   h?: number;
+  /** For the kinds the board draws itself: the data, already normalized (workspace/kinds). */
+  data?: unknown;
+  /** How to make the card again if it fails or is interrupted. */
+  retry?: CardRetry;
 }
 
 /**
@@ -938,7 +1389,14 @@ export function adoptLegacyHtml(): BoardCard | null {
   const s = workspace.snapshot();
   if (s.mode !== "html" || !s.html) return null;
   const title = s.title || pageTitle(s.html) || "Page";
+  let html: string;
+  try {
+    html = cleanCardHtml(s.html);
+  } catch {
+    return null; // too big to be a card: the next add starts a fresh board
+  }
   const card: BoardCard = {
+    id: newCardId(),
     n: 1,
     kind: "widget",
     status: "ready",
@@ -949,61 +1407,324 @@ export function adoptLegacyHtml(): BoardCard | null {
     title: title.slice(0, 80),
     text: title,
     url: null,
-    html: s.html,
+    html,
   };
   write({ cards: [card] }, "Workspace");
   return card;
 }
 
-/** Ensure the board is showing, add a numbered floating card, return it. */
+let reviveNext: string | null = null;
+
+/**
+ * The next addCard (of the same kind) fills this card again instead of making a new one — same number, place and
+ * size. For "try again" on a card that failed: set it, start the tool that made the card, and clear it (null) as soon
+ * as that call returns, so only a card added in the tool's first step can take it.
+ */
+export function reviveWithNext(id: string | null): void {
+  reviveNext = id;
+}
+
+/** Ensure the board is showing, add a numbered floating card, return it. Throws BoardLimitError when the board can't take it. */
 export function addCard(input: AddCardInput): BoardCard {
   adoptLegacyHtml();
   const state = read();
-  const n = nextNumber(state.cards);
-  const pos = slotFor(state.cards.length);
+  const html = input.html == null ? null : cleanCardHtml(input.html);
+  if (input.data !== undefined && isDataKindName(input.kind)) {
+    const data = normalizeKindData(input.kind, input.data);
+    if (data === null) throw new Error(`there is nothing in that to show as a ${input.kind}`);
+    input = { ...input, data };
+  }
+  if (input.data !== undefined && jsonLength(input.data) > BOARD_LIMITS.cardData)
+    throw new BoardLimitError("data", `That's too much for one card: it holds up to ${kb(BOARD_LIMITS.cardData)} of data.`);
   const tags = (input.tags?.length ? input.tags : tagsFromText(input.title, input.text)).slice(0, 12);
-  const card: BoardCard = {
-    n,
+  const content = {
     kind: input.kind,
     status: input.status ?? "pending",
-    x: input.x ?? pos.x,
-    y: input.y ?? pos.y,
-    w: input.w ?? CARD_W[input.kind],
-    h: input.h,
-    z: n,
     title: input.title.slice(0, 80),
     text: input.text.slice(0, 2000),
     tags,
     url: input.url ?? null,
-    html: input.html ?? null,
-    model: input.model,
-    error: input.error,
+    html,
+    ...(input.model !== undefined ? { model: input.model } : {}),
+    ...(input.error !== undefined ? { error: input.error } : {}),
+    ...(input.data !== undefined ? { data: input.data, dv: 1 } : {}),
+    ...(input.retry ? { retry: input.retry } : {}),
   };
+
+  // "Try again": the card that failed is filled again in place.
+  const reviving = reviveNext ? state.cards.findIndex((c) => c.id === reviveNext && c.kind === input.kind) : -1;
+  reviveNext = null;
+  if (reviving >= 0) {
+    const old = state.cards[reviving]!;
+    const card: BoardCard = { id: old.id, n: old.n, x: old.x, y: old.y, w: old.w, z: old.z, ...content };
+    if (old.h != null) card.h = old.h;
+    if (old.prev) card.prev = old.prev;
+    state.cards[reviving] = card;
+    checkTotal(state.cards);
+    write(state, "Workspace");
+    touchCards([card.n], true);
+    return card;
+  }
+
+  // A secure form's placeholder never counts: a form must be able to open on a full board.
+  if (input.kind !== "form" && state.cards.filter((c) => c.kind !== "form").length >= BOARD_LIMITS.cards)
+    throw new BoardLimitError("cards", `The board is full: it holds ${BOARD_LIMITS.cards} cards. Remove a few first.`);
+  const n = nextNumber(state);
+  const w = input.w ?? CARD_W[input.kind];
+  const h = input.h ?? CARD_H[input.kind];
+  const placed = input.x == null || input.y == null;
+  const spot = placed ? freeSpot(state.cards, w, h ?? GUESS_H[input.kind]) : { x: 0, y: 0 };
+  const card: BoardCard = {
+    id: newCardId(),
+    n,
+    x: input.x ?? spot.x,
+    y: input.y ?? spot.y,
+    w,
+    z: Math.max(n, topZ(state.cards) + 1),
+    ...content,
+  };
+  if (h != null) card.h = h;
   state.cards.push(card);
+  checkTotal(state.cards);
+  state.seq = n;
   write(state, "Workspace");
+  if (placed) autoPlaced.add(card.id);
   touchCards([n], true);
   return card;
 }
 
-/** Patch a card by number. Returns null if missing / board not active. */
-export function updateCard(n: number, patch: Partial<Omit<BoardCard, "n" | "kind">>): BoardCard | null {
-  const state = read();
-  const i = state.cards.findIndex((c) => c.n === n);
-  if (i < 0) return null;
-  const next = { ...state.cards[i]!, ...patch, n, kind: state.cards[i]!.kind };
+export type CardPatch = Partial<Omit<BoardCard, "id" | "n" | "kind">>;
+
+function patched(state: BoardState, i: number, patch: CardPatch): BoardCard | null {
+  const old = state.cards[i]!;
+  if (old.kind === "form") return null;
+  const next: BoardCard = { ...old, ...patch, id: old.id, n: old.n, kind: old.kind };
+  if (typeof patch.html === "string") next.html = cleanCardHtml(patch.html);
+  if ("data" in patch && patch.data !== undefined && patch.data !== old.data && isDataKindName(old.kind)) {
+    const data = normalizeKindData(old.kind, patch.data);
+    if (data === null) throw new Error(`there is nothing in that to show as a ${old.kind}`);
+    next.data = data;
+  }
+  if ("data" in patch && patch.data !== old.data) {
+    if (patch.data !== undefined && jsonLength(patch.data) > BOARD_LIMITS.cardData)
+      throw new BoardLimitError("data", `That's too much for one card: it holds up to ${kb(BOARD_LIMITS.cardData)} of data.`);
+    next.dv = (old.dv ?? 0) + 1;
+  }
+  // "undefined" takes a field off (it would not be saved anyway).
+  for (const key of Object.keys(next) as (keyof BoardCard)[]) if (next[key] === undefined) delete next[key];
   state.cards[i] = next;
+  if (cardBytes(next) > cardBytes(old)) checkTotal(state.cards);
   if (!write(state)) return null;
   return next;
+}
+
+/** Patch the card with this number. Returns null if missing / board not active — or a secure form's placeholder, which nothing edits. */
+export function updateCard(n: number, patch: CardPatch): BoardCard | null {
+  const state = read();
+  const i = state.cards.findIndex((c) => c.n === n);
+  return i < 0 ? null : patched(state, i, patch);
+}
+
+/**
+ * Patch the card with this id — what every job that finishes later uses: it reaches the card it was started for or
+ * nothing at all (null), never a newer card that happens to have the same number.
+ */
+export function patchCard(id: string, patch: CardPatch): BoardCard | null {
+  const state = read();
+  const i = state.cards.findIndex((c) => c.id === id);
+  return i < 0 ? null : patched(state, i, patch);
 }
 
 export function removeCard(n: number): BoardCard | null {
   const state = read();
   const i = state.cards.findIndex((c) => c.n === n);
   if (i < 0) return null;
-  workspace.pushUndo(`remove_card:${n}`);
+  workspace.pushUndo(`remove_card:${n}`, 1);
   const [removed] = state.cards.splice(i, 1);
   write(state);
   return removed ?? null;
+}
+
+/** Take a card off without an undo entry: a placeholder whose job gave up before there was anything to keep. */
+export function dropCard(id: string): BoardCard | null {
+  const state = read();
+  const i = state.cards.findIndex((c) => c.id === id && c.kind !== "form");
+  if (i < 0) return null;
+  const [removed] = state.cards.splice(i, 1);
+  write(state);
+  return removed ?? null;
+}
+
+// ─── Nothing loads forever ──────────────────────────────────────────────────
+
+const INTERRUPTED = "it was interrupted before it finished — say “try again” and I'll make it again";
+
+/**
+ * Cards that say they are loading while no job is behind them (the engine restarted mid-build, or an undo brought an
+ * old screen back) would load forever: each becomes a card that says it was interrupted and can be asked for again —
+ * or, where an edit was streaming in, the page as it was before the edit. Returns how many it settled.
+ */
+export function settleBoard(): number {
+  if (!isBoard()) return 0;
+  const state = read();
+  let settled = 0;
+  const cards = state.cards.map((c): BoardCard => {
+    if (c.kind === "form") return c;
+    if (c.status !== "pending") {
+      // (A stash left on a card that is not loading belongs to no job any more.)
+      if (c.stash === undefined || cardHeld(c.id)) return c;
+      settled++;
+      const { stash: _stash, ...rest } = c;
+      return rest;
+    }
+    if (cardHeld(c.id)) return c;
+    settled++;
+    const { stash, model: _model, ...rest } = c;
+    if (stash !== undefined) return { ...rest, status: "ready", html: stash, error: undefined } as BoardCard;
+    // What was streamed so far is half a page: it goes, the card stays to be tried again.
+    return { ...rest, status: "error", error: INTERRUPTED, html: c.kind === "widget" ? null : (c.html ?? null) };
+  });
+  if (settled) write({ ...state, cards: cards.map(withoutUndefined) });
+  return settled;
+}
+
+function withoutUndefined(c: BoardCard): BoardCard {
+  let out: BoardCard | null = null;
+  for (const key of Object.keys(c) as (keyof BoardCard)[]) {
+    if (c[key] !== undefined) continue;
+    out ??= { ...c };
+    delete out[key];
+  }
+  return out ?? c;
+}
+
+// ─── Undo: take back one change, by card ─────────────────────────────────────
+
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return false;
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Undo one change to the board. An undo entry holds the cards as they were before the change and as the change left
+ * them; the difference is what the change did, and only that is taken back, card by card (by id):
+ * a card it removed comes back, a card it added goes, a field it changed gets its old value. Everything else on the
+ * board now stays — cards made since, pictures that finished painting since. A card that was still loading when it
+ * was removed comes back only while its job is still running: undo never puts up a loader nothing will finish, and
+ * never a secure form's placeholder.
+ */
+function mergeUndo(entry: WorkspaceUndoEntry, now: { mode: string; owner: string | null; state: unknown | null }): UndoMerge | "nothing" | null {
+  if (entry.owner !== BOARD_OWNER || entry.mode !== "app") return null; // a page or a game: the whole screen comes back
+  const nowIsBoard = now.mode === "app" && now.owner === BOARD_OWNER;
+  if (!nowIsBoard && now.mode !== "empty") return null; // something else has the window: the old board comes back whole (then settled)
+  if (!entry.after) return "nothing"; // nothing was written after the entry was made
+  const before = cardsIn(entry.state);
+  const after = entry.after.mode === "app" && entry.after.owner === BOARD_OWNER ? cardsIn(entry.after.state) : [];
+  const current: (BoardCard | null)[] = nowIsBoard ? cardsIn(now.state) : [];
+  const beforeIds = new Set(before.map((c) => c.id));
+  const afterBy = new Map(after.map((c) => [c.id, c]));
+  const at = new Map<string, number>();
+  current.forEach((c, i) => at.set(c!.id, i));
+
+  const gone: BoardCard[] = [];
+  const changed: BoardCard[] = [];
+  const back: BoardCard[] = [];
+  // Cards the change added go.
+  for (const a of after) {
+    if (beforeIds.has(a.id)) continue;
+    const i = at.get(a.id);
+    if (i === undefined || !current[i]) continue;
+    gone.push(current[i]!);
+    current[i] = null;
+  }
+  // Fields the change set get their old values (on cards that are still there).
+  for (const b of before) {
+    const a = afterBy.get(b.id);
+    if (!a || a === b) continue;
+    const i = at.get(b.id);
+    const live = i === undefined ? null : current[i];
+    if (!live) continue;
+    let next: Record<string, unknown> | null = null;
+    for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
+      if (key === "id" || key === "n" || key === "kind") continue;
+      const was = (b as unknown as Record<string, unknown>)[key];
+      if (sameValue((a as unknown as Record<string, unknown>)[key], was) || sameValue((live as unknown as Record<string, unknown>)[key], was)) continue;
+      next ??= { ...live };
+      if (was === undefined) delete next[key];
+      else next[key] = was;
+    }
+    if (next) {
+      current[i!] = next as unknown as BoardCard;
+      changed.push(current[i!]!);
+    }
+  }
+  // Cards the change removed come back.
+  for (const b of before) {
+    if (afterBy.has(b.id) || at.has(b.id)) continue;
+    if (b.kind === "form") continue;
+    if (b.status === "pending" && !cardHeld(b.id)) continue;
+    back.push(b);
+  }
+  if (!gone.length && !changed.length && !back.length) return "nothing";
+
+  const cards = current.filter((c): c is BoardCard => c !== null);
+  // (Numbers are not handed out twice while an undo could bring a card back; should two ever meet, the newer card moves on.)
+  let top = Math.max(0, ...cards.map((c) => c.n), ...back.map((c) => c.n));
+  for (const b of back) {
+    const clash = cards.findIndex((c) => c.n === b.n);
+    if (clash >= 0) cards[clash] = { ...cards[clash]!, n: ++top };
+  }
+  for (const c of [...back, ...changed]) autoPlaced.delete(c.id);
+  const rawNow = nowIsBoard ? (now.state as BoardState | null) : null;
+  const rawBefore = entry.state as BoardState | null;
+  const seq = Math.max(top, Number(rawNow?.seq) || 0, Number(rawBefore?.seq) || 0);
+  const parts: string[] = [];
+  if (back.length) parts.push(back.length === 1 ? `brought back card ${back[0]!.n}` : `brought back ${back.length} cards`);
+  if (gone.length) parts.push(gone.length === 1 ? `took card ${gone[0]!.n} off again` : `took ${gone.length} cards off again`);
+  if (changed.length) parts.push(changed.length === 1 ? `put card ${changed[0]!.n} back the way it was` : `put ${changed.length} cards back the way they were`);
+  const said = parts.join(", and ");
+  return { template: BOARD_TEMPLATE, state: { cards: [...cards, ...back], seq } satisfies BoardState, title: "Workspace", say: `${said.charAt(0).toUpperCase()}${said.slice(1)}.` };
+}
+
+// ─── Secure-form placeholders ───────────────────────────────────────────────
+
+export const isFormCard = (c: Pick<BoardCard, "kind">): boolean => c.kind === "form";
+
+/** The placeholder card that stands for an open secure form (the form itself is drawn by the window's own page). */
+export function addFormCard(title: string): BoardCard {
+  return addCard({ kind: "form", status: "ready", title, text: "Waiting for you in the secure form.", tags: ["secure", "form"] });
+}
+
+/** Take a form's placeholder off the board when its form ends. No undo entry: there is nothing to bring back. */
+export function removeFormCard(n: number): boolean {
+  const state = read();
+  const i = state.cards.findIndex((c) => c.n === n && c.kind === "form");
+  if (i < 0) return false;
+  state.cards.splice(i, 1);
+  write(state);
+  return true;
+}
+
+/**
+ * Drop every form placeholder that stands for no open form — left by the last run (forms don't survive a restart), or
+ * brought back by an undo. `live`: the card numbers of the forms open now. Returns the form cards that stayed.
+ */
+export function sweepFormCards(live: ReadonlySet<number> = new Set()): Set<number> {
+  const kept = new Set<number>();
+  if (!isBoard()) return kept;
+  const state = read();
+  const cards = state.cards.filter((c) => {
+    if (c.kind !== "form") return true;
+    if (live.has(c.n)) kept.add(c.n);
+    return live.has(c.n);
+  });
+  if (cards.length !== state.cards.length) write({ ...state, cards });
+  return kept;
 }
 
 export type MovePlace =
@@ -1126,6 +1847,8 @@ export function moveCard(n: number, place: MovePlace): BoardCard | null {
   const state = read();
   const i = state.cards.findIndex((c) => c.n === n);
   if (i < 0) return null;
+  workspace.pushUndo(`move_card:${n}`, 1);
+  autoPlaced.delete(state.cards[i]!.id);
   const card = { ...state.cards[i]! };
   if (place === "front") {
     const maxZ = state.cards.reduce((m, c) => Math.max(m, c.z), 0);
@@ -1144,38 +1867,50 @@ export function moveCard(n: number, place: MovePlace): BoardCard | null {
     const minZ = state.cards.reduce((m, c) => Math.min(m, c.z), card.z);
     card.z = minZ - 1;
   } else {
+    // A named place keeps the whole card on the board, whatever its size.
     const p = PLACES[place];
-    card.x = p.x;
-    card.y = p.y;
+    card.x = round1(Math.max(0, Math.min(p.x, 100 - card.w - 1)));
+    card.y = round1(Math.max(0, Math.min(p.y, 100 - cardHeight(card) - 1)));
   }
   state.cards[i] = card;
   if (!write(state)) return null;
   return card;
 }
 
-/** Place card `n` relative to another card (under / above / beside / left-of / right-of). */
+/**
+ * Place card `n` relative to another card (under / above / beside / left-of / right-of), by the heights the cards
+ * really have (given, or measured in a window): the two never overlap while there is room for both, and the moved
+ * card stays wholly on the board — where there is no room on the side asked for, it goes as far as the edge allows.
+ */
 export function moveCardRelative(n: number, relative: RelativePlace, anchorN: number): BoardCard | null {
   const state = read();
   const i = state.cards.findIndex((c) => c.n === n);
   const anchor = state.cards.find((c) => c.n === anchorN);
   if (i < 0 || !anchor) return null;
+  workspace.pushUndo(`move_card:${n}`, 1);
+  autoPlaced.delete(state.cards[i]!.id);
   const card = { ...state.cards[i]! };
-  const ah = anchor.h ?? 28;
+  const ah = cardHeight(anchor);
+  const ch = cardHeight(card);
   const gap = 2;
+  const maxX = Math.max(0, 100 - card.w);
+  const maxY = Math.max(0, 100 - ch);
   if (relative === "under") {
-    card.x = anchor.x;
-    card.y = Math.min(86, anchor.y + ah + gap);
+    card.x = Math.min(anchor.x, maxX);
+    card.y = Math.min(maxY, anchor.y + ah + gap);
   } else if (relative === "above") {
-    card.x = anchor.x;
-    card.y = Math.max(0, anchor.y - (card.h ?? 28) - gap);
+    card.x = Math.min(anchor.x, maxX);
+    card.y = Math.max(0, anchor.y - ch - gap);
   } else if (relative === "left-of") {
     card.x = Math.max(0, anchor.x - card.w - gap);
-    card.y = anchor.y;
+    card.y = Math.min(anchor.y, maxY);
   } else {
     // beside / right-of
-    card.x = Math.min(86, anchor.x + anchor.w + gap);
-    card.y = anchor.y;
+    card.x = Math.min(maxX, anchor.x + anchor.w + gap);
+    card.y = Math.min(anchor.y, maxY);
   }
+  card.x = round1(card.x);
+  card.y = round1(card.y);
   card.z = Math.max(card.z, anchor.z + 1);
   state.cards[i] = card;
   if (!write(state)) return null;
@@ -1207,12 +1942,15 @@ export function layerCard(n: number, place: LayerPlace, anchorN?: number): Board
   const card = cards.find((c) => c.n === n)!;
   const order = cards.slice().sort((a, b) => a.z - b.z);
   const at = order.indexOf(card);
+  if (place !== "forward" && place !== "backward" && !cards.some((c) => c.n === anchorN && c.n !== n)) return null;
+  workspace.pushUndo(`layer_card:${n}`, 1);
   if (place === "forward" || place === "backward") {
     const j = place === "forward" ? at + 1 : at - 1;
     if (j >= 0 && j < order.length) [order[at], order[j]] = [order[j]!, order[at]!];
   } else {
     const anchor = cards.find((c) => c.n === anchorN);
     if (!anchor || anchor.n === n) return null;
+    autoPlaced.delete(card.id);
     order.splice(at, 1);
     const ai = order.indexOf(anchor);
     order.splice(place === "behind" ? ai : ai + 1, 0, card);
@@ -1246,6 +1984,7 @@ export function resizeCard(n: number, how: ResizeHow, amount: ResizeAmount = "no
   const state = read();
   const i = state.cards.findIndex((c) => c.n === n);
   if (i < 0) return null;
+  autoPlaced.delete(state.cards[i]!.id);
   const card = { ...state.cards[i]! };
   const keep = () => {
     if (!card.prev && !isMaximized(card) && !isMinimized(card)) card.prev = { x: card.x, y: card.y, w: card.w, h: card.h, z: card.z };
@@ -1334,6 +2073,11 @@ export function touchCards(ns: number[], adding = false): void {
   else touched = { ns: [...ns].slice(-12), at: now, adding };
 }
 
+/** When a card was last made or acted on (0: never). */
+export function lastTouchedAt(): number {
+  return touched.at;
+}
+
 /** The cards last made or acted on that are still on the board (within the last quarter hour), oldest first. */
 export function lastTouched(): number[] {
   if (Date.now() - touched.at > 15 * 60_000) return [];
@@ -1348,7 +2092,7 @@ export function removeCards(ns: number[]): BoardCard[] {
   const state = read();
   const gone = state.cards.filter((c) => ns.includes(c.n));
   if (!gone.length) return [];
-  workspace.pushUndo(`remove_cards:${gone.map((c) => c.n).join(",")}`);
+  workspace.pushUndo(`remove_cards:${gone.map((c) => c.n).join(",")}`, 1);
   state.cards = state.cards.filter((c) => !ns.includes(c.n));
   write(state);
   return gone;
@@ -1362,6 +2106,7 @@ export function resizeCards(ns: number[], how: ResizeHow, amount: ResizeAmount =
     const c = resizeCard(n, how, amount);
     if (c) out.push(c);
   }
+  workspace.sealUndo();
   return out;
 }
 
@@ -1378,7 +2123,7 @@ export function swapCards(a: number, b: number): [BoardCard, BoardCard] | null {
   const A = state.cards.find((c) => c.n === a);
   const B = state.cards.find((c) => c.n === b);
   if (!A || !B || a === b) return null;
-  workspace.pushUndo(`swap_cards:${a},${b}`);
+  workspace.pushUndo(`swap_cards:${a},${b}`, 1);
   const boxA = { x: A.x, y: A.y, w: A.w, h: A.h, z: A.z };
   const boxB = { x: B.x, y: B.y, w: B.w, h: B.h, z: B.z };
   const nextA = withBox(A, boxB);
@@ -1393,7 +2138,7 @@ export function nudgeCard(n: number, dx: number, dy: number): BoardCard | null {
   const state = read();
   const i = state.cards.findIndex((c) => c.n === n);
   if (i < 0) return null;
-  workspace.pushUndo(`nudge_card:${n}`);
+  workspace.pushUndo(`nudge_card:${n}`, 1);
   const card = { ...state.cards[i]! };
   card.x = Math.round(Math.max(0, Math.min(Math.min(X_MAX, 100 - card.w), card.x + dx)) * 10) / 10;
   card.y = Math.round(Math.max(0, Math.min(X_MAX, card.y + dy)) * 10) / 10;
@@ -1407,7 +2152,7 @@ export function lineUpCards(ns: number[], side: "left" | "right" | "top" | "bott
   const state = read();
   const picked = state.cards.filter((c) => ns.includes(c.n)).sort((a, b) => a.n - b.n);
   if (!picked.length) return [];
-  workspace.pushUndo(`line_up:${side}`);
+  workspace.pushUndo(`line_up:${side}`, 1);
   const k = picked.length;
   const gap = 2;
   const vertical = side === "left" || side === "right";
@@ -1428,31 +2173,41 @@ export function lineUpCards(ns: number[], side: "left" | "right" | "top" | "bott
 /** A copy of a ready card (same picture, note, clip or widget), a little down and to the right; next number. */
 export function duplicateCard(n: number): BoardCard | null {
   const src = read().cards.find((c) => c.n === n);
-  if (!src || src.status !== "ready") return null;
-  workspace.pushUndo(`duplicate_card:${n}`);
-  const copy = addCard({
-    kind: src.kind,
-    title: `${src.title} (copy)`.slice(0, 80),
-    text: src.text,
-    tags: src.tags,
-    status: "ready",
-    url: src.url,
-    html: src.html ?? null,
-    model: src.model,
-    x: Math.min(X_MAX, src.x + 4),
-    y: Math.min(X_MAX, src.y + 4),
-    w: src.w,
-    h: src.h,
-  });
-  if (src.mw != null || src.mh != null) return updateCard(copy.n, { mw: src.mw, mh: src.mh }) ?? copy;
-  return copy;
+  if (!src || src.status !== "ready" || src.kind === "form") return null;
+  const reason = `duplicate_card:${n}`;
+  workspace.pushUndo(reason);
+  let copy: BoardCard;
+  try {
+    copy = addCard({
+      kind: src.kind,
+      title: `${src.title} (copy)`.slice(0, 80),
+      text: src.text,
+      tags: src.tags,
+      status: "ready",
+      url: src.url,
+      html: src.html ?? null,
+      model: src.model,
+      x: Math.min(X_MAX, src.x + 4),
+      y: Math.min(X_MAX, src.y + 4),
+      w: src.w,
+      h: src.h,
+      data: src.data,
+      retry: src.retry,
+    });
+  } catch (err) {
+    workspace.dropUndo(reason); // nothing was added: nothing to undo
+    throw err;
+  }
+  const done = src.mw != null || src.mh != null || src.state !== undefined ? (updateCard(copy.n, { mw: src.mw, mh: src.mh, state: src.state }) ?? copy) : copy;
+  workspace.sealUndo();
+  return done;
 }
 
 /** A new title (and its words as tags, so the card can be named by it). */
 export function renameCard(n: number, title: string): BoardCard | null {
   const card = read().cards.find((c) => c.n === n);
-  if (!card) return null;
-  workspace.pushUndo(`rename_card:${n}`);
+  if (!card || card.kind === "form") return null;
+  workspace.pushUndo(`rename_card:${n}`, 1);
   const tags = [...new Set([...tagsFromText(title), ...(card.tags ?? [])])].slice(0, 12);
   return updateCard(n, { title: title.slice(0, 80), tags });
 }
@@ -1461,7 +2216,7 @@ export function renameCard(n: number, title: string): BoardCard | null {
 export function setNoteText(n: number, text: string): BoardCard | null {
   const card = read().cards.find((c) => c.n === n);
   if (!card || card.kind !== "text") return null;
-  workspace.pushUndo(`edit_note:${n}`);
+  workspace.pushUndo(`edit_note:${n}`, 1);
   const words = text.replace(/\s+/g, " ").trim();
   const caption = words.length > 60 ? `${words.slice(0, 59).replace(/\s+\S*$/, "")}…` : words || "empty";
   const tags = tagsFromText(text);
@@ -1472,7 +2227,7 @@ export function setNoteText(n: number, text: string): BoardCard | null {
 
 export type ArrangeLayout = "grid" | "stack" | "row" | "column" | "shuffle" | "scatter" | "by_kind" | "newest_first";
 
-const KIND_RANK: Record<CardKind, number> = { image: 0, video: 1, widget: 2, text: 3, audio: 4 };
+const KIND_RANK: Record<CardKind, number> = { image: 0, video: 1, widget: 2, chart: 3, table: 4, document: 5, code: 6, file: 7, text: 8, audio: 9, form: 10 };
 
 function shuffled<T>(xs: T[]): T[] {
   const out = xs.slice();
@@ -1524,7 +2279,7 @@ export function gridFor(count: number): CardGrid {
 export function arrangeCards(layout: ArrangeLayout = "grid"): { count: number; cols: number; rows: number; layout: ArrangeLayout } | null {
   const state = read();
   if (!state.cards.length) return null;
-  workspace.pushUndo("arrange_cards");
+  workspace.pushUndo("arrange_cards", 1);
   let cards = state.cards.slice().sort((a, b) => a.n - b.n);
   const n = cards.length;
   if (layout === "scatter") {
@@ -1610,7 +2365,8 @@ export function findWidgetToEdit(request: string): BoardCard | null {
  * title match, else the latest ready card.
  */
 export function findCardToEdit(request: string): BoardCard | null {
-  const cards = listCards().filter((c) => c.status === "ready" || c.html || c.status === "pending");
+  // (Never a secure form's placeholder: there is nothing in it to edit.)
+  const cards = listCards().filter((c) => c.kind !== "form" && (c.status === "ready" || c.html || c.status === "pending"));
   if (!cards.length) return null;
   const byMeta = resolveCard(request, request);
   if (byMeta && cards.some((c) => c.n === byMeta.n)) return byMeta;
@@ -1650,21 +2406,33 @@ export function findCardToEdit(request: string): BoardCard | null {
 
 /** HTML the HTML skill can edit for this card (materializes a simple img/video wrapper when needed). */
 export function cardEditableHtml(card: BoardCard): string | null {
+  if (card.kind === "form") return null;
   if (card.html) return card.html;
+  // The title goes into an HTML comment: a title that came from a web page could otherwise end the comment and start markup of its own.
+  const title = commentSafe(card.title);
   if ((card.kind === "image" || card.kind === "video") && card.url) {
     const mw = Math.max(10, Math.min(100, Math.round(card.mw ?? 100)));
     const mh = card.mh != null ? Math.max(10, Math.min(100, Math.round(card.mh))) : null;
     const size = `width:${mw}%;${mh != null ? `height:${mh}%;` : "height:auto;"}max-width:100%;display:block;margin:0 auto;object-fit:contain;`;
     const alt = (card.text || card.title || "").replace(/"/g, "&quot;");
     if (card.kind === "video") {
-      return `<!-- title: ${card.title} -->\n<video src="${card.url}" controls playsinline style="${size}"></video>`;
+      return `<!-- title: ${title} -->\n<video src="${card.url}" controls playsinline style="${size}"></video>`;
     }
-    return `<!-- title: ${card.title} -->\n<img src="${card.url}" alt="${alt}" style="${size}">`;
+    return `<!-- title: ${title} -->\n<img src="${card.url}" alt="${alt}" style="${size}">`;
   }
   if (card.kind === "text" && card.text) {
-    return `<!-- title: ${card.title} -->\n<p style="margin:0;padding:8px;color:#e8e8ef;font:14px/1.55 system-ui,sans-serif;white-space:pre-wrap">${escapeText(card.text)}</p>`;
+    return `<!-- title: ${title} -->\n<p style="margin:0;padding:8px;color:#e8e8ef;font:14px/1.55 system-ui,sans-serif;white-space:pre-wrap">${escapeText(card.text)}</p>`;
   }
   return null;
+}
+
+/** Text that is safe inside an HTML comment: one line, no "--" (which could end the comment) and no angle brackets. */
+export function commentSafe(s: string): string {
+  return s
+    .replace(/[\r\n]+/g, " ")
+    .replace(/-{2,}/g, "—")
+    .replace(/[<>]/g, "")
+    .trim();
 }
 
 function escapeText(s: string): string {
@@ -1718,3 +2486,23 @@ export function rewriteMediaPercent(html: string, mw: number, mh: number | null)
     return `<${tag}${next}${slash ? " /" : ""}>`;
   });
 }
+
+// ─── The board and the bus ──────────────────────────────────────────────────
+
+// Card objects are never changed in place, so an undo entry keeps the board's state as it is (no copy)…
+workspace.freezeOwner(BOARD_OWNER);
+// …and an undo takes back one change, card by card, instead of putting a whole old board up.
+workspace.setUndoMerger(mergeUndo);
+// A whole screen that did come back (the board, after a game or a page had the window) may hold loaders nothing will finish.
+workspace.onUndo(() => {
+  settleBoard();
+});
+// A page nobody owns (a skill's output, the test route) is one more card, not the whole window — unless a game has it.
+workspace.setHtmlAdopter((html, title) => {
+  if (boardBlocked()) return false;
+  const name = (title || pageTitle(html) || "Page").trim();
+  addCard({ kind: "widget", title: name.charAt(0).toUpperCase() + name.slice(1), text: name, status: "ready", html, w: 40, h: 60 });
+  return true;
+});
+// The board as the last run left it: whatever was still loading then has no job behind it now.
+settleBoard();

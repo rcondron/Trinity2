@@ -1,0 +1,12 @@
+{
+  "about": "Gmail's unread search when nothing is unread.",
+  "url": "https://mail.google.com/mail/u/0/#search/is%3Aunread+in%3Ainbox",
+  "title": "Search results - ryan@example.com - Gmail",
+  "text": "No messages matched your search. Try using search options such as sender, date, size and more. Terms · Privacy · Program Policies",
+  "controls": [
+    { "ref": 1, "role": "button", "name": "Main menu" },
+    { "ref": 2, "role": "textbox", "name": "Search mail", "editable": true },
+    { "ref": 3, "role": "button", "name": "Compose" },
+    { "ref": 4, "role": "link", "name": "Inbox", "href": "https://mail.google.com/mail/u/0/#inbox" }
+  ]
+}

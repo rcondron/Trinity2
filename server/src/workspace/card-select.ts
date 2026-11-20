@@ -121,6 +121,11 @@ const KINDS: { kind: CardKind; one: RegExp; many: RegExp }[] = [
   { kind: "audio", one: /\b(?:audio|recording|sound clip|song|voice note|track)\b/, many: /\b(?:audios|recordings|sound clips|songs|voice notes|tracks)\b/ },
   { kind: "text", one: /\b(?:note|sticky|sticky note|text card|memo)\b/, many: /\b(?:notes|stickies|sticky notes|text cards|memos)\b/ },
   { kind: "widget", one: /\b(?:widget|app)\b/, many: /\b(?:widgets|apps)\b/ },
+  { kind: "table", one: /\b(?:table|spreadsheet)\b/, many: /\b(?:tables|spreadsheets)\b/ },
+  { kind: "chart", one: /\b(?:chart|graph|plot|pie chart|bar chart|line chart)\b/, many: /\b(?:charts|graphs|plots)\b/ },
+  { kind: "document", one: /\b(?:document|doc|write-?up|readme)\b/, many: /\b(?:documents|docs)\b/ },
+  { kind: "code", one: /\b(?:code|snippet|source code)\b/, many: /\b(?:snippets)\b/ },
+  { kind: "file", one: /\b(?:file|pdf|download)\b/, many: /\b(?:files|pdfs|downloads)\b/ },
 ];
 
 function kindIn(t: string): { kind: CardKind; plural: boolean } | null {

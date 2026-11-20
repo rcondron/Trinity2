@@ -1,10 +1,11 @@
 node_modules/
 dist/
 .env
-.env.local
+.env.*
+!.env.example
 *.log
 
-# Trinity runtime data
+# Trinity runtime data (DB, auth keys, vault, workspace, media)
 data/
 !data/.gitkeep
 
@@ -13,6 +14,22 @@ server/skills/pending/
 
 # Local template preview harnesses (generated; large sample art)
 web/dev/
+
+# Browser profiles made while testing the extension (cookies, history: never commit one)
+profile-*/
+
+# Local AI / editor state
+.claude/
+.cursor/
+*.pem
+*.p12
+*.key
+!server/skills/**/*.key
+
+# PersonaPlex pod secrets (created by pod/setup.sh)
+pod/admin_token
+pod/.venv/
+pod/__pycache__/
 
 # OS
 .DS_Store

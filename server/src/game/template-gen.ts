@@ -3,9 +3,9 @@ import { coderModel, live } from "../settings.js";
 import { workspace } from "../workspace/bus.js";
 import { textChatDetailed } from "./generate.js";
 import { isGameOnScreen, presentGame, setBusy } from "./present.js";
-import { getGame, setCustomTemplate } from "./store.js";
-import type { Game, GameView, ImageRef } from "./types.js";
-import { toView } from "./view.js";
+import { blankPlayer, getGame, setCustomTemplate } from "./store.js";
+import type { Game, GameView, ImageRef, NpcView, PlayerView } from "./types.js";
+import { missingViewParts, toView } from "./view.js";
 
 /**
  * Bespoke game screens: the coding skill's stronger coder (Kimi, see settings.coderModel) designs a
@@ -13,16 +13,17 @@ import { toView } from "./view.js";
  * starship crew. Slow (15–90s), so it always runs in the background: the default screen
  * shows instantly and the custom one swaps in when it's ready and validated. A custom screen
  * that throws in the browser is dropped automatically (present.ts) and regenerated once with
- * the error as feedback.
+ * the error as feedback. A screen that leaves out a required part of the game (the initiative
+ * order, the roll being waited for, the quests…) is never used: the default table is shown instead.
  */
 
 const MAX_BYTES = 90_000;
 const MAX_ATTEMPTS_PER_GAME = 3;
-/** Dense CSS/JS runs ~2.2 chars/token, so a ~25 KB screen needs ~12k tokens; leave headroom. */
+/** Dense CSS/JS runs ~2.2 chars/token, so a ~28 KB screen needs ~13k tokens; leave headroom. */
 const MAX_TOKENS = 16_000;
 const TRUNCATED = "was too long and got cut off before the end";
 
-const CONTRACT = `TEMPLATE CONTRACT v1 (follow exactly):
+const CONTRACT = `TEMPLATE CONTRACT v2 (follow exactly):
 - A template is an HTML fragment (no <html>, <head> or <body>): an optional <style>, markup with <div id="app"></div>, and <script> blocks.
 - It MUST define window.render = function (state, prev) { ... }. It is called after load with the first state and on EVERY state change (prev = the previous state or null). It must be idempotent and fast (a full re-render via innerHTML is OK; diff prev by id to add "is-new" animation classes). It must never throw on missing or empty fields.
 - Runtime helpers are defined BEFORE your script runs: window.trinity.esc(s) HTML-escapes any value to a string; window.trinity.send(evt) is reserved (do not use it).
@@ -32,11 +33,22 @@ const CONTRACT = `TEMPLATE CONTRACT v1 (follow exactly):
 const VIEW_TS = `type ImageStatus = "none" | "pending" | "ready" | "error";
 interface ImageRef { url: string | null; status: ImageStatus }   // show an <img> only when status === "ready" && url
 interface Stats { str: number; dex: number; con: number; int: number; wis: number; cha: number }   // modifier = Math.floor((score - 10) / 2)
+interface ConditionView { name: string; rounds: number | null }   // rounds left, null = until removed
 interface PlayerView {
-  id: string; name: string; race: string; className: string; level: number;
-  hp: number; maxHp: number; ac: number; speed: number; stats: Stats;
-  background: string; traits: string[]; conditions: string[]; gold: number; xp: number;
+  id: string; name: string;
+  playerName: string;           // the person at the table who plays this hero ("" if unknown)
+  race: string; className: string; level: number;
+  hp: number; maxHp: number; tempHp: number; ac: number; speed: number; stats: Stats;
+  background: string; traits: string[];
+  conditions: string[]; conditionInfo: ConditionView[];   // show conditionInfo: the name and, when rounds is a number, the rounds left
+  exhaustion: number;           // 0-6
+  gold: number; xp: number;
   inventory: string[];          // item ids — look them up in state.items
+  slots: { level: number; max: number; used: number }[];   // spell slots by spell level (empty for non-casters): draw one pip per slot, used ones dimmed
+  concentration: string | null; inspiration: boolean;
+  deathSaves: { successes: number; failures: number };   // draw 3 + 3 pips while hp === 0 and not stable/dead
+  stable: boolean; dead: boolean;
+  isTurn: boolean;              // this hero is acting now (their turn in a fight, or the spotlight while exploring)
   notes: string; portrait: ImageRef;
   pending?: boolean;            // true = placeholder card while the character sheet is being generated
 }
@@ -44,11 +56,19 @@ interface ItemView {
   id: string; name: string;
   type: "weapon" | "armor" | "potion" | "scroll" | "wondrous" | "gear" | "treasure" | "quest";
   rarity: "common" | "uncommon" | "rare" | "very rare" | "legendary" | "artifact";
-  description: string; properties: string[];
+  description: string; properties: string[]; quantity: number;
   ownerId: string | null;       // a player id, or null = the party's shared loot
+  equipped: boolean;            // held or worn by its owner
   icon: ImageRef;
 }
-interface NpcView { id: string; name: string; role: string; description: string; attitude: "friendly" | "neutral" | "hostile" | "unknown"; portrait: ImageRef }
+interface NpcView {
+  id: string; name: string; role: string; description: string;
+  attitude: "friendly" | "neutral" | "hostile" | "unknown";
+  status: "alive" | "defeated" | "fled";        // defeated / fled: draw it struck through or dimmed
+  health: "healthy" | "bloodied" | "near death" | "down" | null;   // how hurt it LOOKS: a band, never numbers (null = a bystander)
+  conditionInfo: ConditionView[]; inCombat: boolean; isTurn: boolean;
+  portrait: ImageRef;
+}
 interface LocationView {
   id: string; name: string; description: string;
   x: number; y: number;         // normalized map position, 0..1
@@ -56,7 +76,14 @@ interface LocationView {
   visited: boolean; image: ImageRef;
 }
 interface LogEntry { id: string; ts: number; kind: "narration" | "roll" | "combat" | "loot" | "party" | "system"; text: string }
-interface Roll { id: string; who: string | null; notation: string; rolls: number[]; modifier: number; total: number; label: string | null; ts: number }
+interface Roll {
+  id: string; who: string | null; notation: string; rolls: number[]; modifier: number; total: number; label: string | null; ts: number;
+  adv: "adv" | "dis" | null;    // rolled with advantage / disadvantage: rolls holds both d20s
+  kept: number | null;          // the d20 that counted
+  natural: number | null;       // the d20 that counted: 20 = natural 20, 1 = natural 1 (use THIS for the crit ribbon, not rolls.length)
+  dc: number | null;            // what it was rolled against (a DC or an armor class)
+  outcome: "success" | "failure" | "hit" | "miss" | "crit" | "fumble" | null;
+}
 interface GameTheme {
   palette: { bg: string; panel: string; ink: string; muted: string; accent: string; accent2: string; danger: string; good: string };  // CSS hex colors
   font: "serif" | "sans" | "mono" | "display";
@@ -66,9 +93,17 @@ interface GameTheme {
 }
 interface GameView {
   kind: "game"; id: string; title: string; genre: string; tone: string; setting: string; theme: GameTheme;
-  phase: "setup" | "playing";
-  setup: { steps: { key: "adventure" | "party" | "begin"; label: string; done: boolean }[]; next: string | null };
-  round: number; activePlayerId: string | null; titleImage: ImageRef;
+  phase: "setup" | "playing" | "paused" | "ended";
+  mode: "explore" | "combat" | "paused";
+  setup: { steps: { key: string; label: string; done: boolean }[]; next: string | null };
+  round: number;                // the combat round, 0 outside a fight — show "Round N" ONLY while combat is not null
+  turn: { kind: "turn" | "spotlight"; id: string; name: string; playerName: string; isHero: boolean } | null;   // who is acting now
+  combat: { round: number; order: { id: string; kind: "hero" | "npc"; name: string; init: number; current: boolean; down: boolean }[] } | null;   // the initiative order
+  pendingCheck: { heroId: string; hero: string; label: string; dc: number; adv: "adv" | "dis" | null; text: string } | null;   // a roll the Game Master is waiting for: text = "Mira: Dexterity save, DC 13"
+  pendingQuestion: string | null;   // a yes/no or "who?" question waiting for an answer
+  quests: { id: string; title: string; detail: string; status: "open" | "done" | "failed" }[];
+  storyTurn: number; partyGold: number;
+  activePlayerId: string | null; spotlightId: string | null; titleImage: ImageRef;
   scene: { title: string; description: string; image: ImageRef } | null;
   players: PlayerView[]; npcs: NpcView[]; items: ItemView[]; locations: LocationView[];
   currentLocationId: string | null;
@@ -84,7 +119,16 @@ const img = (name: string, status: ImageRef["status"] = "ready"): ImageRef => ({
   status,
 });
 
-/** The game's real view, padded with example entities so the model designs for a full table. */
+function samplePlayer(over: Partial<PlayerView> & { id: string; name: string }): PlayerView {
+  const { portrait: _p, appearance: _a, ...sheet } = blankPlayer(over.id, over.name);
+  return { ...sheet, portrait: img("", "none"), conditionInfo: [], slots: [], isTurn: false, ...over };
+}
+
+function sampleNpc(over: Partial<NpcView> & { id: string; name: string }): NpcView {
+  return { role: "", description: "", attitude: "unknown", portrait: img("", "none"), status: "alive", health: null, conditionInfo: [], inCombat: false, isTurn: false, ...over };
+}
+
+/** The game's real view, padded with example entities so the model designs for a full table in the middle of a fight. */
 function sampleState(game: Game): GameView {
   const v = toView(game, ["Painting the scene…"]);
   const abs = (r: ImageRef): ImageRef => (r.url ? { ...r, url: `${ORIGIN}${r.url}` } : r);
@@ -92,42 +136,63 @@ function sampleState(game: Game): GameView {
   const now = Date.now();
   if (!v.players.some((p) => !p.pending)) {
     v.players = [
-      {
-        id: "p1", name: "Aria Vance", race: "Human", className: "Ranger", level: 2, hp: 14, maxHp: 18, ac: 15, speed: 30,
-        stats: { str: 12, dex: 16, con: 13, int: 10, wis: 14, cha: 8 }, background: "Exiled scout",
-        traits: ["Hums when nervous", "Never leaves a debt unpaid"], conditions: [], gold: 24, xp: 350,
-        inventory: ["i1", "i2"], notes: "", portrait: img("example-portrait-1"),
-      },
-      {
-        id: "p2", name: "Bram Holt", race: "Dwarf", className: "Cleric", level: 2, hp: 4, maxHp: 19, ac: 18, speed: 25,
-        stats: { str: 14, dex: 8, con: 16, int: 10, wis: 16, cha: 12 }, background: "Temple smith",
-        traits: ["Speaks to his hammer"], conditions: ["poisoned"], gold: 7, xp: 350,
-        inventory: [], notes: "", portrait: img("", "pending"),
-      },
-      {
-        id: "p3", name: "New hero", race: "", className: "", level: 1, hp: 1, maxHp: 1, ac: 10, speed: 30,
-        stats: { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 }, background: "", traits: [], conditions: [],
-        gold: 0, xp: 0, inventory: [], notes: "", portrait: img("", "pending"), pending: true,
-      },
+      samplePlayer({
+        id: "p1", name: "Aria Vance", playerName: "Sam", race: "Human", className: "Ranger", level: 2, hp: 14, maxHp: 18, ac: 15,
+        stats: { str: 12, dex: 16, con: 13, int: 10, wis: 14, cha: 8 }, background: "Exiled scout", traits: ["Hums when nervous"],
+        gold: 24, xp: 350, inventory: ["i1", "i2"], portrait: img("example-portrait-1"), isTurn: true, inspiration: true,
+        slots: [{ level: 1, max: 2, used: 1 }],
+      }),
+      samplePlayer({
+        id: "p2", name: "Bram Holt", playerName: "Ana", race: "Dwarf", className: "Cleric", level: 2, hp: 0, maxHp: 19, ac: 18, speed: 25,
+        stats: { str: 14, dex: 8, con: 16, int: 10, wis: 16, cha: 12 }, background: "Temple smith", traits: ["Speaks to his hammer"],
+        conditions: ["unconscious", "poisoned"], conditionInfo: [{ name: "unconscious", rounds: null }, { name: "poisoned", rounds: 2 }],
+        deathSaves: { successes: 1, failures: 2 }, gold: 7, xp: 350, portrait: img("", "pending"), slots: [{ level: 1, max: 3, used: 3 }],
+      }),
+      samplePlayer({ id: "p3", name: "New hero", portrait: img("", "pending"), pending: true }),
     ];
     v.activePlayerId = "p1";
+    v.spotlightId = "p1";
+    v.turn = { kind: "turn", id: "p1", name: "Aria Vance", playerName: "Sam", isHero: true };
   } else {
     v.players = v.players.map((p) => ({ ...p, portrait: abs(p.portrait) }));
   }
   const firstId = v.players[0]?.id ?? null;
   if (!v.items.length) {
     v.items = [
-      { id: "i1", name: "Moonlit Longbow", type: "weapon", rarity: "rare", description: "Arrows loosed under starlight never miss their first mark.", properties: ["+1 to hit", "1d8 piercing"], ownerId: firstId, icon: img("example-icon-1") },
-      { id: "i2", name: "Healing Draught", type: "potion", rarity: "common", description: "Tastes of mint and copper.", properties: ["heals 2d4+2"], ownerId: firstId, icon: img("", "none") },
-      { id: "i3", name: "Sealed Letter", type: "quest", rarity: "uncommon", description: "Wax seal of a house that no longer exists.", properties: [], ownerId: null, icon: img("", "pending") },
+      { id: "i1", name: "Moonlit Longbow", type: "weapon", rarity: "rare", description: "Arrows loosed under starlight never miss their first mark.", properties: ["+1 to hit", "1d8 piercing"], ownerId: firstId, icon: img("example-icon-1"), quantity: 1, value: 500, equipped: true },
+      { id: "i2", name: "Potion of Healing", type: "potion", rarity: "common", description: "Tastes of mint and copper.", properties: ["heals 2d4+2"], ownerId: firstId, icon: img("", "none"), quantity: 2, value: 50, equipped: false },
+      { id: "i3", name: "Sealed Letter", type: "quest", rarity: "uncommon", description: "Wax seal of a house that no longer exists.", properties: [], ownerId: null, icon: img("", "pending"), quantity: 1, value: 0, equipped: false },
     ];
   } else v.items = v.items.map((it) => ({ ...it, icon: abs(it.icon) }));
   if (!v.npcs.length) {
     v.npcs = [
-      { id: "n1", name: "Mother Ilse", role: "innkeeper", description: "Knows every secret in town and sells them by the cup.", attitude: "friendly", portrait: img("example-npc-1") },
-      { id: "n2", name: "The Grey Warden", role: "hunter", description: "Has been following the party since the crossroads.", attitude: "hostile", portrait: img("", "error") },
+      sampleNpc({ id: "n1", name: "Mother Ilse", role: "innkeeper", description: "Knows every secret in town and sells them by the cup.", attitude: "friendly", portrait: img("example-npc-1") }),
+      sampleNpc({ id: "n2", name: "Ghoul 1", role: "ghoul", description: "A ghoul, ready to fight.", attitude: "hostile", portrait: img("", "error"), health: "bloodied", inCombat: true, conditionInfo: [{ name: "prone", rounds: null }] }),
+      sampleNpc({ id: "n3", name: "Ghoul 2", role: "ghoul", description: "A ghoul, ready to fight.", attitude: "hostile", status: "defeated", health: "down" }),
     ];
   } else v.npcs = v.npcs.map((n) => ({ ...n, portrait: abs(n.portrait) }));
+  if (!v.combat) {
+    const hero = v.players.find((p) => !p.pending);
+    const foe = v.npcs.find((n) => n.status === "alive" && n.attitude === "hostile");
+    v.mode = "combat";
+    v.round = 2;
+    v.combat = {
+      round: 2,
+      order: [
+        ...(hero ? [{ id: hero.id, kind: "hero" as const, name: hero.name, init: 17, current: true, down: false }] : []),
+        ...(foe ? [{ id: foe.id, kind: "npc" as const, name: foe.name, init: 12, current: false, down: false }] : []),
+        ...v.players.filter((p) => !p.pending && p !== hero).map((p) => ({ id: p.id, kind: "hero" as const, name: p.name, init: 8, current: false, down: p.hp <= 0 })),
+      ],
+    };
+  }
+  const second = v.players.filter((p) => !p.pending)[1];
+  v.pendingCheck ??= second ? { heroId: second.id, hero: second.name, label: "Death save", dc: 10, adv: null, text: `${second.name}: Death save, DC 10` } : null;
+  if (!v.quests.length) {
+    v.quests = [
+      { id: "q1", title: "Find the missing miller", detail: "He was last seen going down to the cellar.", status: "open" },
+      { id: "q2", title: "Reach Harrow's Rest", detail: "", status: "done" },
+    ];
+  }
   if (!v.locations.length) {
     v.locations = [
       { id: "l1", name: "Harrow's Rest", description: "A sleepy village", x: 0.28, y: 0.62, connections: ["l2"], visited: true, image: img("", "none") },
@@ -146,13 +211,13 @@ function sampleState(game: Game): GameView {
   if (v.log.length < 3) {
     v.log = [
       ...v.log,
-      { id: "g1", ts: now - 60_000, kind: "party", text: "Aria Vance, a human ranger, joins the party." },
+      { id: "g1", ts: now - 60_000, kind: "party", text: "Aria Vance, a human ranger, joins the party, played by Sam." },
       { id: "g2", ts: now - 40_000, kind: "narration", text: "The Old Mill: Rain hammers the sagging roof as the great wheel groans in the dark." },
-      { id: "g3", ts: now - 20_000, kind: "combat", text: "Bram Holt takes 6 damage from the ghoul's claws (4/19 HP)" },
-      { id: "g4", ts: now - 5_000, kind: "roll", text: "Aria Vance rolls Perception check: 20 (1d20+3: 17)" },
+      { id: "g3", ts: now - 20_000, kind: "combat", text: "Ghoul 1 hits Bram Holt with claws for 6 slashing damage (0/19 HP)." },
+      { id: "g4", ts: now - 5_000, kind: "roll", text: "Aria Vance — Perception check: 20 vs DC 15, success" },
     ];
   }
-  v.lastRoll ??= { id: "r1", who: "Aria Vance", notation: "1d20+3", rolls: [17], modifier: 3, total: 20, label: "Perception check", ts: now - 5_000 };
+  v.lastRoll ??= { id: "r1", who: "Aria Vance", notation: "1d20+5", rolls: [20, 7], modifier: 5, total: 25, label: "Attack with longbow", ts: now - 5_000, adv: "adv", kept: 20, natural: 20, dc: 12, outcome: "crit" };
   return v;
 }
 
@@ -208,19 +273,22 @@ ${VIEW_TS}
 EXAMPLE STATE (real values will differ — never hard-code names, text, colors or counts from it):
 ${JSON.stringify(sample)}
 
-REQUIRED SECTIONS AND BEHAVIOR
-1. Header bar: the title (large, display treatment, with the ornament), genre and tone chips, a phase badge (SETUP / PLAYING) plus "Round N" while playing, the title art (state.titleImage) as a thumbnail or banner, and state.busy as small pills with a spinner.
-2. Setup card, ONLY while state.phase === "setup": a prominent "Setting up your adventure" card with the checklist from state.setup.steps (✓ done, ○ to do) and a highlighted "Next:" line with state.setup.next. Hidden while playing.
-3. Party (title = state.theme.labels.party): one card per player — portrait (<img> when ready, shimmer skeleton when pending, initials monogram otherwise), name, race · class · level, an HP bar (width = hp / maxHp, color shifting good → accent → danger as it falls, animated), an AC badge, six stat chips with modifiers (+2 / −1), conditions as tags, gold and XP, inventory chips (item names from state.items, colored by rarity). Highlight state.activePlayerId. A player with pending: true is a placeholder card ("A new hero approaches…" with shimmer).
-4. Scene (labels.scene): scene art in a FIXED-HEIGHT frame — e.g. height:clamp(140px,26vh,240px); width:100%; object-fit:cover (shimmer while pending). NEVER use unconstrained aspect-ratio:16/9 on a full-width image: it grows with the column and pushes the log off-screen. Then the scene title and description as read-aloud italic text. A graceful empty state when scene is null.
-5. Log (labels.log): newest first, the latest ~40 entries, an icon per kind (🎲 roll — emphasize the numbers, ⚔ combat, 💰 loot, 🧝 party, 📜 narration, ⚙ system).
-6. Last roll: a big total that animates (pop / tumble) when lastRoll.id differs from prev?.lastRoll?.id; notation, the individual dice, modifier, label and who rolled; celebrate a natural 20 and mourn a natural 1 on single d20 rolls.
-7. NPCs (labels.npcs): portrait thumb, name, role, attitude color (friendly = good, hostile = danger, neutral = muted, unknown = accent2).
-8. Items (labels.items): icon with a rarity-colored border (shimmer while pending, a type glyph otherwise), name, rarity, and the owner's name or "Party".
-9. Map (labels.map): a <canvas> sized to its container × devicePixelRatio; draw the connection lines, the nodes (visited = filled, unvisited = hollow and dim), a glowing current location (state.currentLocationId) and the labels; redraw on every render and on resize. An empty-state message when there are no locations.
+REQUIRED SECTIONS AND BEHAVIOR (a screen that leaves one out is discarded)
+1. Header bar: the title (large, display treatment, with the ornament), genre and tone chips, a phase badge (SETUP / PLAYING / PAUSED / ENDED), "Round N" ONLY while state.combat is not null (N = state.combat.round), the title art (state.titleImage) as a thumbnail or banner, and state.busy as small pills with a spinner.
+2. Setup card, ONLY while state.phase === "setup": a prominent "Setting up your adventure" card with the checklist from state.setup.steps (✓ done, ○ to do) and a highlighted "Next:" line with state.setup.next. Hidden otherwise.
+3. Initiative strip, ONLY while state.combat is not null: state.combat.order in order as chips (name and initiative), the one with current === true highlighted, heroes with down === true dimmed, and the round number.
+4. Pending-roll banner, ONLY while state.pendingCheck is not null: a highlighted banner showing state.pendingCheck.text (e.g. "Mira: Dexterity save, DC 13"). Also show state.pendingQuestion when it is not null.
+5. Party (title = state.theme.labels.party): one card per player — portrait (<img> when ready, shimmer skeleton when pending, initials monogram otherwise), name, playerName when set, race · class · level, an HP bar (width = hp / maxHp, color shifting good → accent → danger as it falls, animated) with tempHp noted, an AC badge, six stat chips with modifiers (+2 / −1), conditions from conditionInfo as tags (with the rounds left when not null), death-save pips (deathSaves) while hp is 0, spell-slot pips (slots), gold and XP, inventory chips (item names from state.items, colored by rarity). The player with isTurn === true is highlighted and badged "Turn" in a fight (state.combat) or "Spotlight" otherwise. A player with pending: true is a placeholder card ("A new hero approaches…" with shimmer). dead === true is shown as fallen.
+6. Scene (labels.scene): scene art in a FIXED-HEIGHT frame — e.g. height:clamp(140px,26vh,240px); width:100%; object-fit:cover (shimmer while pending). NEVER use unconstrained aspect-ratio:16/9 on a full-width image: it grows with the column and pushes the log off-screen. Then the scene title and description as read-aloud italic text. A graceful empty state when scene is null.
+7. Quests: state.quests with their status (open / done / failed).
+8. Log (labels.log): newest first, the latest ~40 entries, an icon per kind (🎲 roll — emphasize the numbers, ⚔ combat, 💰 loot, 🧝 party, 📜 narration, ⚙ system).
+9. Last roll: a big total that animates (pop / tumble) when lastRoll.id differs from prev?.lastRoll?.id; notation, the individual dice (both d20s when lastRoll.adv is set, the kept one emphasized, with "Advantage" / "Disadvantage"), modifier, label, who rolled, and the outcome against lastRoll.dc; celebrate lastRoll.natural === 20 and mourn lastRoll.natural === 1.
+10. NPCs (labels.npcs): portrait thumb, name, role, attitude color (friendly = good, hostile = danger, neutral = muted, unknown = accent2); for creatures with health not null a health band (healthy / bloodied / near death) drawn as a bar WITHOUT numbers; conditions from conditionInfo; status defeated or fled struck through and dimmed; the one with isTurn highlighted.
+11. Items (labels.items): icon with a rarity-colored border (shimmer while pending, a type glyph otherwise), name (×quantity when above 1), rarity, the owner's name or "Party", and an "in use" mark when equipped.
+12. Map (labels.map): a <canvas> sized to its container × devicePixelRatio; draw the connection lines, the nodes (visited = filled, unvisited = hollow and dim), a glowing current location (state.currentLocationId) and the labels; redraw on every render and on resize. An empty-state message when there are no locations.
 
 LAYOUT AND LOOK
-- Target a 1280×860 window and degrade gracefully down to ~700px wide (stack the columns) without horizontal overflow. Suggested: the header across the top, then three columns — party on the left, scene + log in the center (widest), last roll / NPCs / items / map on the right. Let columns scroll on their own when content is long; at 1280×860 the page itself shouldn't need to scroll. Keep #app height-bound to the viewport (height:100%; overflow:hidden; flex column with min-height:0 on columns) so images never expand the page.
+- Target a 1280×860 window and degrade gracefully down to ~700px wide (stack the columns) without horizontal overflow. Suggested: the header across the top, the initiative strip and pending banner under it, then three columns — party on the left, scene + quests + log in the center (widest), last roll / NPCs / items / map on the right. Let columns scroll on their own when content is long; at 1280×860 the page itself shouldn't need to scroll. Keep #app height-bound to the viewport (height:100%; overflow:hidden; flex column with min-height:0 on columns) so images never expand the page.
 - Make it unmistakably "${genre}": use the "${t.texture}" texture as a CSS-only background (gradients and patterns, no images), the theme's font stack, the ornament in section headers, and genre details — e.g. parchment edges and wax-seal badges for fantasy, HUD corner brackets and scanlines for sci-fi, neon glow for cyberpunk, wood grain and brass for westerns or pirates, grain and vignette for horror.
 - Readable from across a table: clear hierarchy, generous spacing, strong contrast, a consistent card system with subtle depth. Tasteful motion: fade/slide-in for new entities (diff ids against prev to add an "is-new" class) and smooth HP bars; put animations inside @media (prefers-reduced-motion: no-preference).
 - Long names and text wrap or ellipsize. Handle 0–8 players, 0–30 items, 0–15 NPCs, 0–20 locations and up to 200 log entries.
@@ -235,7 +303,7 @@ ${SKELETON}
 - Apply the theme on every render: document.documentElement.style.setProperty("--bg", palette.bg) and so on for every palette color. Use only CSS variables you define; for tints use color-mix(in srgb, var(--accent) 20%, transparent).
 - Font stacks: serif → Georgia, 'Iowan Old Style', 'Palatino Linotype', serif; sans → system-ui, 'Segoe UI', Roboto, sans-serif; mono → ui-monospace, Consolas, monospace; display → 'Trebuchet MS', Impact, sans-serif.
 - No external resources of any kind, no localStorage, no alert(), no never-ending timers (one requestAnimationFrame loop for the map glow is fine).
-- Keep the WHOLE template under 24 KB: compact CSS (shared classes, no repeated declarations), no comments, no dead code — an unfinished template is useless, so finish it.
+- Keep the WHOLE template under 28 KB: compact CSS (shared classes, no repeated declarations), no comments, no dead code — an unfinished template is useless, so finish it.
 ${feedback ? `\nIMPORTANT — a previous version of this screen failed: ${JSON.stringify(feedback.slice(0, 400))}. Make sure that cannot happen again.\n` : ""}
 Return ONLY the template: <style>…</style>, the markup (including <div id="app"></div>) and <script>…</script>. No markdown fences, no explanations.`;
 }
@@ -279,14 +347,15 @@ const BANNED: [RegExp, string][] = [
 
 export type TemplateCheck = { ok: true } | { ok: false; reason: string };
 
-/** Structural safety + sanity checks for a generated template (every script must compile). */
+/** Structural safety + sanity checks for a generated template (every script must compile, every required part must be drawn). */
 export function validateTemplate(src: string): TemplateCheck {
   if (src.length < 1500) return { ok: false, reason: `too short (${src.length} chars)` };
   if (Buffer.byteLength(src, "utf8") > MAX_BYTES) return { ok: false, reason: `too large (${Math.round(src.length / 1024)} KB)` };
   if (!src.includes("window.render")) return { ok: false, reason: "missing window.render" };
   for (const [re, what] of BANNED) if (re.test(src)) return { ok: false, reason: `uses ${what}` };
   if (!/trinity\.esc|\besc\s*\(/.test(src)) return { ok: false, reason: "doesn't escape state text with trinity.esc" };
-  if (!/\.players\b|\[["']players["']\]/.test(src)) return { ok: false, reason: "doesn't render state.players" };
+  const missing = missingViewParts(src);
+  if (missing.length) return { ok: false, reason: `doesn't draw state.${missing.join(", state.")}` };
   // Full-width 16:9 scene art expands with the column and shoves the rest of the board off-screen.
   if (/\.(?:scene-art|art)\s*\{[^}]*aspect-ratio\s*:\s*16\s*\/\s*9/i.test(src)) {
     return { ok: false, reason: "scene art uses unconstrained aspect-ratio:16/9 (must use a fixed max-height frame)" };

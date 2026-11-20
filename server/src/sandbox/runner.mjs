@@ -5,162 +5,358 @@
  *
  * The host starts it under Node's permission model (it may read only this file and the
  * skill file: no fs writes, child processes, workers, addons, WASI or inspector), with a
- * clean environment (no API keys), a 128 MB heap and a hard timeout. Before the skill
- * loads, this file closes what the permission model leaves open (verified on Node 24):
- *  - imports: a skill may import NOTHING — no node:* builtins (node:sqlite writes files and
- *    node:os can reprioritize other processes even under --permission), no packages, no
- *    data: URLs. Everything a skill needs is a global (fetch, URL, Intl, crypto, Buffer…).
- *  - network: fetch/WebSocket stay open for public web APIs, but connections to this
- *    machine or the local network (the engine's own API, router pages, cloud metadata) and
- *    local sockets/pipes are refused, checked on the resolved address (no DNS rebinding).
- *  - process: no signals to other processes, no diagnostic reports.
+ * clean environment (no API keys), a 128 MB heap, no code from strings and a hard timeout.
  *
- * Protocol: stdin = one JSON request {op: "describe"} | {op: "run", args}; stdout = one line
- * MARK + {status: "ok", value} | {status: "error", stage, error, stack}. What the skill logs
- * goes to stderr. Plain JavaScript on purpose: the child runs without a TypeScript loader.
+ * A skill shares this realm, so nothing here trusts a built-in the skill could replace:
+ *  - the built-ins are frozen (--frozen-intrinsics): Array.prototype.some, RegExp.prototype.test,
+ *    Function.prototype.call and the rest can't be reassigned at all. (Node's own stream and
+ *    event code calls listeners through .call / .apply; a replaced one would be handed the
+ *    stdio streams as `this`.) And what this file needs is taken ("primordials") before the
+ *    skill loads and called without going through a prototype, so it holds without the flag too;
+ *  - this process has NO network. Every socket connection is refused outright (there is no
+ *    address check to talk round), and `fetch` is a message to the host, which makes the
+ *    request in its own process: it resolves the name, refuses loopback, link-local, private
+ *    and unique-local addresses on every hop, and caps size and time (services/safe-fetch.ts).
+ *    Overriding Array.prototype.some, RegExp.prototype.test or Function.prototype.call in
+ *    here changes nothing there;
+ *  - `process` is gone from the skill's globals (with it: stdio streams and their raw
+ *    handles, _getActiveHandles/_getActiveRequests, binding, kill, env), the console is a
+ *    plain object, and the globals that hand out sockets, ports or the HTTP dispatcher
+ *    (WebSocket, EventSource, MessageChannel, BroadcastChannel, undici's global dispatcher)
+ *    are removed;
+ *  - imports: a skill may import NOTHING — no node:* builtins, no packages, no data: URLs.
+ *
+ * Protocol. stdin: one JSON request line {op: "describe"} | {op: "run", args}, then one line
+ * per answered fetch. stdout: RPC + {id, op: "fetch", …} for each request the skill makes,
+ * and at the end MARK + {status: "ok", value} | {status: "error", stage, error, stack}. What
+ * the skill logs goes to stderr. Plain JavaScript on purpose: the child runs without a
+ * TypeScript loader.
  */
-import { Console } from "node:console";
 import dns from "node:dns";
 import { registerHooks } from "node:module";
 import net from "node:net";
+import process from "node:process";
 import { pathToFileURL } from "node:url";
+import { format } from "node:util";
+
+// ── primordials: captured before any skill code exists, called without prototype lookups ──
+const ReflectApply = Reflect.apply;
+const uncurry =
+  (fn) =>
+  (self, ...args) =>
+    ReflectApply(fn, self, args);
+const ObjectDefineProperty = Object.defineProperty;
+const ObjectFreeze = Object.freeze;
+const ObjectAssign = Object.assign;
+const JSONStringify = JSON.stringify;
+const JSONParse = JSON.parse;
+const ErrorCtor = Error;
+const TypeErrorCtor = TypeError;
+const PromiseCtor = Promise;
+const PromiseThen = uncurry(Promise.prototype.then);
+const MapCtor = Map;
+const MapGet = uncurry(Map.prototype.get);
+const MapSet = uncurry(Map.prototype.set);
+const MapDelete = uncurry(Map.prototype.delete);
+const MapForEach = uncurry(Map.prototype.forEach);
+const WeakSetCtor = WeakSet;
+const WeakSetHas = uncurry(WeakSet.prototype.has);
+const WeakSetAdd = uncurry(WeakSet.prototype.add);
+const StringIndexOf = uncurry(String.prototype.indexOf);
+const StringSlice = uncurry(String.prototype.slice);
+const StringSplit = uncurry(String.prototype.split);
+const StringReplaceAll = uncurry(String.prototype.replaceAll);
+const StringIncludes = uncurry(String.prototype.includes);
+const StringTrim = uncurry(String.prototype.trim);
+const ArrayPush = uncurry(Array.prototype.push);
+const ArrayJoin = uncurry(Array.prototype.join);
+const BufferFrom = Buffer.from;
+const BufferToString = uncurry(Buffer.prototype.toString);
+const setTimer = setTimeout;
+const RequestCtor = Request; // (touching these loads Node's HTTP client, whose dispatcher is put out of reach below)
+const ResponseCtor = Response;
+const RequestArrayBuffer = uncurry(Request.prototype.arrayBuffer);
+const HeadersForEach = uncurry(Headers.prototype.forEach);
+const SignalAddListener = uncurry(EventTarget.prototype.addEventListener);
+const SignalRemoveListener = uncurry(EventTarget.prototype.removeEventListener);
+// (Bound functions keep their target: a later Function.prototype.call or .bind makes no difference to them.)
+const writeOut = process.stdout.write.bind(process.stdout);
+const writeErr = process.stderr.write.bind(process.stderr);
+const exit = process.exit.bind(process);
+const stdin = process.stdin;
 
 const MARK = "\u0001trinity-sandbox ";
+const RPC = "\u0001trinity-rpc ";
+const MAX_REQUEST_BODY = 1024 * 1024;
 const skillFile = process.argv[2] ?? "";
 const skillUrl = pathToFileURL(skillFile).href;
-const writeOut = process.stdout.write.bind(process.stdout);
-const exit = process.exit.bind(process);
 let answered = false;
 
 function denied(what) {
-  return Object.assign(new Error(`Skills can't use ${what} (sandbox)`), { code: "ERR_ACCESS_DENIED" });
+  return ObjectAssign(new ErrorCtor(`Skills can't use ${what} (sandbox)`), { code: "ERR_ACCESS_DENIED" });
 }
-
-// ── stdout is the result channel: the skill's console output goes to stderr ─────────────
-globalThis.console = new Console({ stdout: process.stderr, stderr: process.stderr });
 
 // ── imports: only the skill module itself loads ──────────────────────────────────────────
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === skillUrl) return nextResolve(specifier, context);
-    throw Object.assign(new Error(`Skills can't import modules (sandbox): ${String(specifier).slice(0, 80)}`), {
-      code: "ERR_ACCESS_DENIED",
-    });
+    throw ObjectAssign(new ErrorCtor(`Skills can't import modules (sandbox): ${StringSlice(`${specifier}`, 0, 80)}`), { code: "ERR_ACCESS_DENIED" });
   },
 });
-process.getBuiltinModule = () => {
-  throw denied("Node modules");
+
+// ── network: none in this process ────────────────────────────────────────────────────────
+// Every connection attempt ends here, whatever its address: there is nothing to decide, so
+// nothing a skill could make decide differently. Locked, so it can't be swapped or wrapped.
+ObjectDefineProperty(net.Socket.prototype, "connect", {
+  value: function connect() {
+    throw denied("the network directly: use fetch");
+  },
+  writable: false,
+  configurable: false,
+  enumerable: false,
+});
+dns.lookup = function lookup() {
+  throw denied("name lookups: use fetch");
 };
-
-// ── process: nothing that reaches another process or writes files ────────────────────────
-for (const name of ["kill", "_kill", "_debugProcess", "_debugEnd", "execve"]) {
-  if (typeof process[name] === "function")
-    process[name] = () => {
-      throw denied("signals or other processes");
-    };
+// Node's HTTP client keeps its connection pools on well-known global symbols
+// (undici.globalDispatcher.1 / .2); a pool is an event emitter that owns sockets. Each is
+// replaced with something inert, for good.
+const inert = ObjectFreeze({
+  dispatch() {
+    throw denied("the network directly: use fetch");
+  },
+  close() {},
+  destroy() {},
+});
+const globalSymbols = [Symbol.for("undici.globalDispatcher.1"), Symbol.for("undici.globalDispatcher.2")];
+for (const s of Object.getOwnPropertySymbols(globalThis)) {
+  if (StringIndexOf(`${s.description}`, "undici.") === 0 && globalSymbols.indexOf(s) === -1) ArrayPush(globalSymbols, s);
 }
-try {
-  Object.defineProperty(process, "report", { value: Object.freeze({}), configurable: false, writable: false });
-} catch {
-  /* not configurable on this Node: writeReport is still refused by the permission model */
-}
-
-// ── network: public internet only ────────────────────────────────────────────────────────
-const privateNets = new net.BlockList();
-for (const [address, prefix] of [
-  ["0.0.0.0", 8], // "this network" (0.0.0.0 reaches localhost)
-  ["10.0.0.0", 8],
-  ["100.64.0.0", 10], // carrier-grade NAT
-  ["127.0.0.0", 8], // loopback: the engine's own API lives here
-  ["169.254.0.0", 16], // link-local, cloud metadata
-  ["172.16.0.0", 12],
-  ["192.0.0.0", 24],
-  ["192.168.0.0", 16],
-  ["198.18.0.0", 15], // benchmarking
-  ["224.0.0.0", 3], // multicast + reserved
-])
-  privateNets.addSubnet(address, prefix, "ipv4");
-for (const [address, prefix] of [
-  ["::", 127], // :: and ::1
-  ["fc00::", 7], // unique local
-  ["fe80::", 10], // link-local
-  ["ff00::", 8], // multicast
-])
-  privateNets.addSubnet(address, prefix, "ipv6");
-
-/** IPv4 inside an IPv6 address (::ffff:a.b.c.d, NAT64 64:ff9b::/96), else null. */
-function embeddedV4(v6) {
-  const h = new URL(`http://[${v6}]/`).hostname.slice(1, -1).toLowerCase(); // canonical form
-  const m = /^(?:::ffff:|64:ff9b::)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(h);
-  if (!m) return null;
-  const hi = parseInt(m[1], 16);
-  const lo = parseInt(m[2], 16);
-  return `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
-}
-
-function isPrivate(address) {
+for (const s of globalSymbols) {
   try {
-    const family = net.isIP(address);
-    if (family === 4) return privateNets.check(address, "ipv4");
-    if (family === 6) {
-      const v4 = embeddedV4(address);
-      return v4 ? privateNets.check(v4, "ipv4") : privateNets.check(address, "ipv6");
+    if (StringIndexOf(`${s.description}`, "undici.globalDispatcher") === 0 || (globalThis[s] !== null && typeof globalThis[s] === "object")) {
+      globalThis[s] = inert;
+      ObjectDefineProperty(globalThis, s, { value: inert, writable: false, configurable: false, enumerable: false });
     }
   } catch {
-    /* unparseable (e.g. a zone id): refuse */
+    /* not defined the way this Node defines it: connections are refused at the socket anyway */
   }
-  return true;
 }
 
-const realLookup = dns.lookup;
-/** dns.lookup that refuses names resolving to a private address (checked on what connect will use). */
-function guardedLookup(hostname, options, callback) {
-  const cb = typeof options === "function" ? options : callback;
-  const opts = typeof options === "function" ? {} : typeof options === "number" ? { family: options } : (options ?? {});
-  realLookup(hostname, { ...opts, all: true }, (err, addresses) => {
-    if (err) return cb(err);
-    const list = Array.isArray(addresses) ? addresses : [];
-    if (list.length === 0 || list.some((a) => isPrivate(a.address)))
-      return cb(denied(`the local network (${hostname} is a private address)`));
-    if (opts.all) cb(null, list);
-    else cb(null, list[0].address, list[0].family);
+// ── fetch: a request to the host, which does the networking under its own rules ───────────
+let nextId = 1;
+let pendingCount = 0;
+const pending = new MapCtor();
+
+function send(prefix, payload) {
+  writeOut(`${prefix}${JSONStringify(payload)}\n`);
+}
+
+function hostFetch(input, init) {
+  return new PromiseCtor((resolve, reject) => {
+    let request;
+    try {
+      request = new RequestCtor(input, init);
+    } catch (err) {
+      reject(err);
+      return;
+    }
+    const signal = request.signal;
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const headers = [];
+    HeadersForEach(request.headers, (value, name) => {
+      ArrayPush(headers, [name, value]);
+    });
+    PromiseThen(
+      RequestArrayBuffer(request),
+      (body) => {
+        if (body.byteLength > MAX_REQUEST_BODY) {
+          reject(new TypeErrorCtor("fetch failed: the request body is larger than 1 MB (sandbox)"));
+          return;
+        }
+        if (signal.aborted) {
+          reject(signal.reason);
+          return;
+        }
+        const id = nextId++;
+        const onAbort = () => {
+          if (!MapDelete(pending, id)) return;
+          settled();
+          send(RPC, { id, op: "cancel" });
+          reject(signal.reason);
+        };
+        const settled = () => {
+          SignalRemoveListener(signal, "abort", onAbort);
+          if (--pendingCount === 0 && typeof stdin.unref === "function") stdin.unref();
+        };
+        MapSet(pending, id, { resolve, reject, settled });
+        if (pendingCount++ === 0 && typeof stdin.ref === "function") stdin.ref();
+        SignalAddListener(signal, "abort", onAbort, { once: true });
+        send(RPC, {
+          id,
+          op: "fetch",
+          url: request.url,
+          method: request.method,
+          headers,
+          body: body.byteLength ? BufferToString(BufferFrom(body), "base64") : null,
+          redirect: request.redirect,
+        });
+      },
+      reject,
+    );
   });
 }
 
-/** net.Socket#connect's argument forms, as [options, callback]. */
-function connectArgs(args) {
-  if (Array.isArray(args[0])) return [{ ...(args[0][0] ?? {}) }, args[0][1]]; // net.connect()'s pre-normalized form
-  const [a, b, c] = args;
-  if (a !== null && typeof a === "object") return [{ ...a }, typeof b === "function" ? b : undefined];
-  if (typeof a === "string" && Number.isNaN(Number(a))) return [{ path: a }, typeof b === "function" ? b : undefined];
-  const options = { port: a };
-  if (typeof b === "string") options.host = b;
-  return [options, [b, c].find((x) => typeof x === "function")];
+function onFetched(msg) {
+  const entry = MapGet(pending, msg.id);
+  if (!entry) return;
+  MapDelete(pending, msg.id);
+  entry.settled();
+  if (msg.ok !== true) {
+    const why = typeof msg.error === "string" ? msg.error : "the request failed";
+    entry.reject(msg.code === "private" || msg.code === "scheme" ? denied(why) : new TypeErrorCtor(`fetch failed: ${why}`, { cause: new ErrorCtor(why) }));
+    return;
+  }
+  try {
+    const empty = msg.status === 204 || msg.status === 205 || msg.status === 304 || typeof msg.body !== "string";
+    const res = new ResponseCtor(empty ? null : BufferFrom(msg.body, "base64"), {
+      status: msg.status,
+      statusText: typeof msg.statusText === "string" ? msg.statusText : "",
+      headers: msg.headers,
+    });
+    ObjectDefineProperty(res, "url", { value: typeof msg.url === "string" ? msg.url : "", enumerable: true });
+    ObjectDefineProperty(res, "redirected", { value: msg.redirected === true, enumerable: true });
+    entry.resolve(res);
+  } catch (err) {
+    entry.reject(new TypeErrorCtor(`fetch failed: ${err?.message ?? err}`));
+  }
 }
 
-const realConnect = net.Socket.prototype.connect;
-net.Socket.prototype.connect = function connect(...args) {
-  const [options, cb] = connectArgs(args);
-  if (options.path !== undefined && options.path !== null) throw denied("local sockets or pipes");
-  const host = String(options.host || "localhost").replace(/^\[(.*)\]$/, "$1");
-  if (net.isIP(host)) {
-    if (isPrivate(host)) throw denied(`the local network (${host})`);
-  } else if (/(^|\.)localhost\.?$/i.test(host)) throw denied(`this machine (${host})`);
-  // Our lookup replaces any caller-supplied one, so a resolved address can't dodge the check.
-  return realConnect.call(this, { ...options, host, lookup: guardedLookup }, cb);
+// ── stdin: the request, then the host's answers to fetches ───────────────────────────────
+let buffered = "";
+let gotRequest = null;
+const requestLine = new PromiseCtor((resolve) => (gotRequest = resolve));
+function onLine(line) {
+  if (!StringTrim(line)) return;
+  if (gotRequest) {
+    const resolve = gotRequest;
+    gotRequest = null;
+    resolve(line);
+    // From here stdin only matters while a fetch is waiting: an idle skill may end by itself.
+    if (pendingCount === 0 && typeof stdin.unref === "function") stdin.unref();
+    return;
+  }
+  let msg;
+  try {
+    msg = JSONParse(line);
+  } catch {
+    return;
+  }
+  if (msg !== null && typeof msg === "object") onFetched(msg);
+}
+stdin.setEncoding("utf8");
+stdin.on("data", (chunk) => {
+  buffered += chunk;
+  for (;;) {
+    const at = StringIndexOf(buffered, "\n");
+    if (at === -1) break;
+    const line = StringSlice(buffered, 0, at);
+    buffered = StringSlice(buffered, at + 1);
+    onLine(line);
+  }
+});
+stdin.on("end", () => {
+  if (buffered) onLine(buffered);
+  buffered = "";
+  if (gotRequest) {
+    const resolve = gotRequest;
+    gotRequest = null;
+    resolve("");
+  }
+  // The host is gone: nothing will answer what's still waiting.
+  MapForEach(pending, (entry) => {
+    entry.settled();
+    entry.reject(new TypeErrorCtor("fetch failed: the sandbox is closing"));
+  });
+});
+
+// ── the skill's globals ──────────────────────────────────────────────────────────────────
+// stdout is the result channel; what a skill logs goes to stderr through a console that holds
+// no stream (Node's own console hands its streams out as console._stdout / ._stderr).
+const log = (...args) => {
+  try {
+    writeErr(`${ReflectApply(format, undefined, args)}\n`);
+  } catch {
+    /* unprintable */
+  }
 };
+const quiet = () => {};
+globalThis.console = ObjectFreeze({
+  log,
+  info: log,
+  warn: log,
+  error: log,
+  debug: log,
+  trace: log,
+  dir: log,
+  table: log,
+  assert: (ok, ...args) => {
+    if (!ok) ReflectApply(log, undefined, ["Assertion failed:", ...args]);
+  },
+  group: log,
+  groupCollapsed: log,
+  groupEnd: quiet,
+  time: quiet,
+  timeEnd: quiet,
+  timeLog: quiet,
+  count: quiet,
+  countReset: quiet,
+  clear: quiet,
+});
+globalThis.fetch = hostFetch;
+// Process internals, in case the object is ever reached: nothing that touches another process,
+// a native binding or a raw handle.
+for (const name of ["kill", "_kill", "_debugProcess", "_debugEnd", "execve", "binding", "_linkedBinding", "dlopen", "getBuiltinModule", "_getActiveHandles", "_getActiveRequests", "chdir", "abort"]) {
+  if (typeof process[name] === "function")
+    process[name] = () => {
+      throw denied("process internals");
+    };
+}
+try {
+  ObjectDefineProperty(process, "report", { value: ObjectFreeze({}), configurable: false, writable: false });
+} catch {
+  /* not configurable on this Node: writeReport is still refused by the permission model */
+}
+// …and the object itself leaves the skill's globals, with the globals that create sockets or ports.
+for (const name of ["process", "WebSocket", "EventSource", "MessageChannel", "MessagePort", "BroadcastChannel"]) {
+  try {
+    delete globalThis[name];
+  } catch {
+    /* left as it is */
+  }
+  if (name in globalThis) {
+    try {
+      ObjectDefineProperty(globalThis, name, { value: undefined, writable: false, configurable: false });
+    } catch {
+      /* not configurable */
+    }
+  }
+}
 
 // ── the operation ────────────────────────────────────────────────────────────────────────
 
 /** JSON.stringify replacer: BigInt → string; functions, symbols and cycles dropped. */
 function jsonSafe() {
-  const seen = new WeakSet();
+  const seen = new WeakSetCtor();
   return (_key, value) => {
-    if (typeof value === "bigint") return value.toString();
+    if (typeof value === "bigint") return `${value}`;
     if (typeof value === "function" || typeof value === "symbol") return undefined;
     if (value !== null && typeof value === "object") {
-      if (seen.has(value)) return "[circular]";
-      seen.add(value);
+      if (WeakSetHas(seen, value)) return "[circular]";
+      WeakSetAdd(seen, value);
     }
     return value;
   };
@@ -171,26 +367,29 @@ function answer(payload) {
   answered = true;
   let line;
   try {
-    line = JSON.stringify(payload, jsonSafe());
+    line = JSONStringify(payload, jsonSafe());
   } catch (err) {
-    line = JSON.stringify({ status: "error", stage: "result", error: `the result isn't plain data: ${err?.message ?? err}` });
+    line = JSONStringify({ status: "error", stage: "result", error: `the result isn't plain data: ${err?.message ?? err}` });
   }
   writeOut(`${MARK}${line}\n`, () => exit(0));
-  setTimeout(() => exit(0), 1000).unref();
+  setTimer(() => exit(0), 1000).unref();
 }
 
 /** The error in words, with the skill's own stack frames (file path shortened to "skill.mjs"). */
 function failure(stage, err) {
-  const isErr = err instanceof Error;
-  const message = isErr ? `${err.name}: ${err.message}` : `thrown value: ${String(err)}`;
-  const lines = isErr && typeof err.stack === "string" ? err.stack.split("\n") : [];
-  const stack = lines
-    .filter((l) => l.includes(skillUrl))
-    .slice(0, 6)
-    .map((l) => l.replaceAll(skillUrl, "skill.mjs").trim());
-  // A syntax error's location comes first in its stack ("file:///…/x.skill.mjs:12").
-  if (stack.length === 0 && lines[0]?.includes(skillUrl)) stack.push(lines[0].replaceAll(skillUrl, "skill.mjs"));
-  return { status: "error", stage, error: message.slice(0, 2000), stack: stack.join("\n") };
+  let message = "unknown error";
+  const stack = [];
+  try {
+    const isErr = err instanceof ErrorCtor;
+    message = isErr ? `${err.name}: ${err.message}` : `thrown value: ${err}`;
+    const lines = isErr && typeof err.stack === "string" ? StringSplit(err.stack, "\n") : [];
+    for (let i = 0; i < lines.length && stack.length < 6; i++) {
+      if (StringIncludes(lines[i], skillUrl)) ArrayPush(stack, StringTrim(StringReplaceAll(lines[i], skillUrl, "skill.mjs")));
+    }
+  } catch {
+    /* an error object that can't be read: reported as unknown */
+  }
+  return { status: "error", stage, error: StringSlice(message, 0, 2000), stack: ArrayJoin(stack, "\n") };
 }
 
 process.on("uncaughtException", (err) => answer(failure("run", err)));
@@ -198,9 +397,7 @@ process.on("unhandledRejection", (err) => answer(failure("run", err)));
 
 let request;
 try {
-  let raw = "";
-  for await (const chunk of process.stdin) raw += chunk;
-  request = JSON.parse(raw || "{}");
+  request = JSONParse((await requestLine) || "{}");
 } catch (err) {
   answer(failure("request", err));
 }
@@ -209,7 +406,7 @@ if (request) {
   let skill;
   try {
     skill = (await import(skillUrl)).default;
-    if (!skill || typeof skill !== "object") throw new Error("the module has no `export default { … }` object");
+    if (!skill || typeof skill !== "object") throw new ErrorCtor("the module has no `export default { … }` object");
   } catch (err) {
     answer(failure("load", err));
   }
@@ -226,7 +423,7 @@ if (request) {
     });
   } else if (skill && request.op === "run") {
     try {
-      if (typeof skill.run !== "function") throw new Error("the skill has no run(args) function");
+      if (typeof skill.run !== "function") throw new ErrorCtor("the skill has no run(args) function");
       const value = await skill.run(request.args && typeof request.args === "object" ? request.args : {});
       answer({ status: "ok", value });
     } catch (err) {

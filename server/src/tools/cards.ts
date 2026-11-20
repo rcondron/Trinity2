@@ -3,19 +3,24 @@
 // card says or shows right now, answered by the brain model from its live text), edit_note (change a note's words),
 // rename_card and duplicate_card. Controls report what actually happened in the workspace window
 // (workspace/card-commands.ts), so the spoken line never claims more than the card did.
+import { registerContextProvider } from "../agent/context.js";
 import { jsonChat } from "../services/json-chat.js";
 import { pickMordiemModel } from "../services/mordiem-router.js";
 import { live } from "../settings.js";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
-import { boardActive, duplicateCard, listCards, renameCard, setNoteText, touchCards, type BoardCard } from "../workspace/board.js";
+import { boardActive, boardBlocked, boardRefusal, duplicateCard, isDataKind, listCards, renameCard, reviveWithNext, setNoteText, touchCards, type BoardCard } from "../workspace/board.js";
+import { kindSummary, kindText } from "../workspace/kinds/index.js";
 import { sendCardCommand, type CardOp, type CardResult } from "../workspace/card-commands.js";
 import { cardName, cardOptions, cardsLabel, choiceList, impliedCard, normalizeWords, selectCards } from "../workspace/card-select.js";
-import { registerTool } from "./registry.js";
+import { getTool, registerTool } from "./registry.js";
 
 const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const list = (xs: string[]) => (xs.length <= 1 ? (xs[0] ?? "") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
 const quoted = (xs: string[]) => list(xs.slice(0, 8).map((x) => `“${x}”`));
 const missingLine = (ns: number[]) => `I don't see ${cardsLabel(ns.map((n) => ({ n })))} on the board.`;
+/** A secure form's placeholder (vault/forms.ts): never read, pressed, typed into, renamed or copied from here. */
+const isForm = (c: BoardCard) => c.kind === "form";
+const formLine = (c: BoardCard) => `Card ${c.n} is a secure form. I can't see or touch what's typed there: it goes straight into the vault.`;
 const fmtTime = (s: number) => {
   const t = Math.max(0, Math.round(s));
   return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`;
@@ -139,9 +144,10 @@ const isMedia = (c: BoardCard) => (c.kind === "video" || c.kind === "audio") && 
 function controlTargets(utterance: string, hint: unknown, op: ControlOp): { cards: BoardCard[]; say?: string } {
   const s = selectCards(utterance, { hint });
   if (s.cards.length) {
+    if (s.cards.every(isForm)) return { cards: [], say: formLine(s.cards[0]!) };
     const can = s.cards.filter(playable);
     if (can.length) return { cards: can };
-    const c = s.cards[0]!;
+    const c = s.cards.find((x) => !isForm(x))!;
     const what = c.kind === "image" ? "a picture" : c.kind === "text" ? "a note" : "a card";
     return { cards: [], say: `${capital(cardName(c))} is ${what} — there's nothing on it to play or press.` };
   }
@@ -335,6 +341,8 @@ function storedText(c: BoardCard): string {
 async function cardText(c: BoardCard): Promise<string> {
   if (c.status === "pending") return "(still loading)";
   if (c.status === "error") return `(this card failed: ${c.error ?? "unknown error"})`;
+  // A table, chart, document, code or file: what it holds, from the engine's own copy (a summary first).
+  if (isDataKind(c.kind)) return kindText(c) ?? c.text;
   if (c.html || isMedia(c)) {
     const r = await sendCardCommand(c.n, "read", null, 1500);
     if (r.ok && r.text) return isMedia(c) ? `${r.text}\n(${c.kind} of: ${c.text})` : r.text;
@@ -378,18 +386,28 @@ const readCard: Tool = {
   description:
     "Read a card on the board aloud, or answer a question about what's on it right now — its words and numbers, the time left on a timer, a game's score, what a picture shows, whether a video is playing (“read card 2”, “what does the note say?”, “how much time is left on the timer?”, “what are the ingredients on the recipe card?”).",
   input: { card: { type: "string", description: "which card — a number or what it shows (only when one card is meant)" } },
-  options: (arg) => (arg === "card" ? cardOptions() : undefined),
+  options: (arg) => (arg === "card" ? cardOptions((c) => !isForm(c)) : undefined),
   argMode: "raw",
-  available: () => boardActive() && listCards().length > 0,
+  available: () => boardActive() && listCards().some((c) => !isForm(c)),
   source: "builtin",
   async run(args, ctx: ToolContext): Promise<ToolResult> {
     if (!boardActive()) return { ok: false, say: "There aren't any cards on the board right now." };
     const s = selectCards(ctx.utterance, { hint: args.card, fallback: "implied" });
     if (!s.cards.length) return { ok: false, say: s.missing.length ? missingLine(s.missing) : "Which card should I read?" };
-    const cards = s.cards.slice(0, 4);
+    if (s.cards.every(isForm)) return { ok: false, say: formLine(s.cards[0]!), speak: formLine(s.cards[0]!) };
+    const cards = s.cards.filter((c) => !isForm(c)).slice(0, 4);
     const texts = await Promise.all(cards.map(cardText));
     touchCards(cards.map((c) => c.n));
     const t = normalizeWords(ctx.utterance).replace(/\s*,\s*/g, " ");
+    // "Read the table": what it is, in a sentence — never a hundred rows read aloud. (A question about it is answered below.)
+    const only = cards[0]!;
+    if (cards.length === 1 && BARE_READ.test(t) && (only.kind === "table" || only.kind === "chart" || only.kind === "file") && only.status === "ready") {
+      const what = kindSummary(only);
+      if (what) {
+        const line = `Card ${only.n} is ${what}.`;
+        return { ok: true, say: line, speak: line, data: { cards: [only.n] } };
+      }
+    }
     if (cards.length === 1 && BARE_READ.test(t) && texts[0]!.length <= 500) {
       const words = spoken(texts[0]!);
       const line = `Card ${cards[0]!.n} says: ${words}${/[.!?]$/.test(words) ? "" : "."}`;
@@ -567,6 +585,7 @@ const renameCardTool: Tool = {
     const s = selectCards(parsed.target, { hint: args.card, fallback: "implied" });
     const card = s.cards[0];
     if (!card) return { ok: false, say: s.missing.length ? missingLine(s.missing) : "Which card should I rename?" };
+    if (isForm(card)) return { ok: false, say: formLine(card) };
     const updated = renameCard(card.n, parsed.name);
     if (!updated) return { ok: false, say: `I couldn't rename card ${card.n}.` };
     touchCards([card.n]);
@@ -585,11 +604,22 @@ const duplicateCardTool: Tool = {
   async run(args, ctx: ToolContext): Promise<ToolResult> {
     const s = selectCards(ctx.utterance, { hint: args.card, fallback: "implied" });
     if (!s.cards.length) return { ok: false, say: s.missing.length ? missingLine(s.missing) : "Which card should I copy?" };
+    if (s.cards.every(isForm)) return { ok: false, say: formLine(s.cards[0]!) };
     const made: { from: number; to: number }[] = [];
-    for (const c of s.cards.slice(0, 6)) {
-      const copy = duplicateCard(c.n);
-      if (copy) made.push({ from: c.n, to: copy.n });
+    let full = "";
+    for (const c of s.cards.filter((x) => !isForm(x)).slice(0, 6)) {
+      try {
+        const copy = duplicateCard(c.n);
+        if (copy) made.push({ from: c.n, to: copy.n });
+      } catch (err) {
+        // The board can't take another card: say so, and keep the copies that did fit.
+        const no = boardRefusal(err);
+        if (no === null) throw err;
+        full = no;
+        break;
+      }
     }
+    if (!made.length && full) return { ok: false, say: full };
     if (!made.length) return { ok: false, say: `${capital(cardName(s.cards[0]!))} is still loading — I'll copy it once it's ready.` };
     touchCards(made.map((m) => m.to));
     const say = made.length === 1 ? `Copied card ${made[0]!.from} to card ${made[0]!.to}.` : `Copied ${cardsLabel(made.map((m) => ({ n: m.from })))} to ${cardsLabel(made.map((m) => ({ n: m.to })))}.`;
@@ -597,6 +627,57 @@ const duplicateCardTool: Tool = {
   },
 };
 
+// ─── retry_card ───────────────────────────────────────────────────────────────
+
+/** A card that failed, was interrupted or came out with a script error — and still knows how it was asked for. */
+const retryable = (c: BoardCard) => Boolean(c.retry) && (c.status === "error" || (c.status === "ready" && Boolean(c.error)));
+
+const retryCardTool: Tool = {
+  name: "retry_card",
+  description:
+    "Make a card again that failed, was interrupted or came out broken — the same request, into the same card (“try again”, “retry card 3”, “have another go at the timer”, “rebuild it”). Only for a card already on the board that says it failed; anything new is asked for in its own words.",
+  input: { card: { type: "string", description: "which card — a number or what it shows (only when one card is named)" } },
+  options: (arg) => (arg === "card" ? cardOptions(retryable) : undefined),
+  argMode: "raw",
+  available: () => boardActive() && listCards().some(retryable),
+  source: "builtin",
+  async run(args, ctx: ToolContext): Promise<ToolResult> {
+    if (boardBlocked()) return { ok: false, say: "A game is on the workspace right now — finish or clear it first." };
+    const pool = listCards().filter(retryable);
+    if (!pool.length) return { ok: false, say: "Nothing on the board failed, so there's nothing to try again. Tell me what you'd like made." };
+    const named = selectCards(ctx.utterance, { hint: args.card, among: retryable });
+    // The one they named; else the only one there is; else the one just used; else the newest that failed.
+    const card = named.cards[0] ?? (pool.length === 1 ? pool[0]! : (impliedCard(pool) ?? pool[pool.length - 1]!));
+    const again = card.retry!;
+    const tool = getTool(again.tool);
+    // Only the tool that made the card, and never one that reaches the vault or spends money (those need the user's own words).
+    if (!tool || tool.sensitive || tool.name === "retry_card") return { ok: false, say: `I can't make card ${card.n} again from here — ask for it again in your own words.` };
+    // The tool's first step adds its card: it fills this one again instead (same number, place and size).
+    reviveWithNext(card.id);
+    let running: Promise<ToolResult>;
+    try {
+      running = tool.run({ ...(again.args ?? {}) }, { ...ctx, utterance: again.request, userWords: undefined });
+    } finally {
+      reviveWithNext(null);
+    }
+    const result = await running;
+    touchCards([card.n]);
+    return result;
+  },
+};
+
+let wired = false;
+
 export function registerCardTools(): void {
-  [controlCard, readCard, editNote, renameCardTool, duplicateCardTool].forEach(registerTool);
+  [controlCard, readCard, editNote, renameCardTool, duplicateCardTool, retryCardTool].forEach(registerTool);
+  if (wired) return;
+  wired = true;
+  registerContextProvider({
+    rules: () =>
+      boardActive() && listCards().some(retryable)
+        ? [
+            "A card on the board failed, was interrupted or has a script error: 'try again', 'retry', 'have another go', 'rebuild it', 'redo card 3' is retry_card (it makes that same card again) — not build_ui, make_image, show_card or undo_workspace.",
+          ]
+        : [],
+  });
 }

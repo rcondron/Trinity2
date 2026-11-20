@@ -191,7 +191,7 @@ const GROUPS: GroupDef[] = [
             label: "Quick coder",
             kind: "model",
             list: "dl-coder-models",
-            hint: "Most pages, widgets and charts. Measured on a timer and a chart: mercury-3 ≈ 3 s a page · deepseek-v4-flash-0731-fast ≈ 11 s · openai-gpt-54-mini ≈ 10–15 s · z-ai-glm-5-3-flash ≈ 31 s.",
+            hint: "Most pages, widgets and charts. Measured on a timer and a calculator: deepseek-v4-1-flash-1017-ultrafast ≈ 2 s a page · claude-haiku-5-5 ≈ 10 s · z-ai-glm-5-3-flash ≈ 11 s · kimi-k3-fast-api ≈ 19 s.",
             note: (v) =>
               /glm-5-3(?!-flash)/i.test(v)
                 ? "This model thinks before it writes — ~16 s of reasoning before any code appears (the build preview shows “Thinking…”)."
@@ -230,6 +230,20 @@ const GROUPS: GroupDef[] = [
             hint: "Careful answers (math, reasoning) and scheduled heartbeat turns. Used when Jev picks the quality text tier.",
           },
           {
+            key: "chatModel",
+            label: "Conversation",
+            kind: "model",
+            list: "dl-text-models",
+            hint: "Writes what Trinity says when no tool is needed, a sentence at a time. Blank = the Brain. It must keep to short spoken replies and hand requests on: deepseek-v4-1-flash and claude-haiku-5-5 scored 40 of 41 on the engine's own test lines; nano and qwen3-next 29.",
+          },
+          {
+            key: "chatBackupModel",
+            label: "Conversation backup",
+            kind: "model",
+            list: "dl-text-models",
+            hint: "Takes the turn when the Conversation model hasn't said a word within about a second, or fails. claude-haiku-5-5 starts in a steady second. Blank = no backup.",
+          },
+          {
             key: "plannerModel",
             label: "Problem solver",
             kind: "model",
@@ -241,7 +255,7 @@ const GROUPS: GroupDef[] = [
             label: "Card designer",
             kind: "model",
             list: "dl-text-models",
-            hint: "Writes information cards (recipes, news, profiles, how-tos…): the facts, layout, look and picture brief. mercury-3 ≈ 1.8 s a card · deepseek-v4-flash-0731-fast ≈ 6 s · claude-sonnet-5-5 ≈ 9 s (most careful). Blank = the Brain; the quality tier always uses the Brain.",
+            hint: "Writes information cards (recipes, news, profiles, how-tos…): the facts, layout, look and picture brief. deepseek-v4-1-flash-1017-ultrafast ≈ 1.3 s a card · claude-haiku-5-5 ≈ 6 s · z-ai-glm-5-3-flash ≈ 7 s · claude-sonnet-5-5 ≈ 9 s (most careful). Blank = the Brain; the quality tier always uses the Brain.",
           },
           { key: "replyModel", label: "Reply writer", kind: "model", list: "dl-text-models", hint: "The one spoken sentence after a tool runs." },
           {
@@ -369,6 +383,49 @@ const GROUPS: GroupDef[] = [
         step: 50,
         integer: true,
         hint: "Say a quick “one moment” when a reply takes longer than this.",
+      },
+    ],
+  },
+  {
+    id: "assistant",
+    title: "Email & calendar",
+    icon: "sparkles",
+    sub: "Trinity reads and drafts in your own signed-in browser, through the extension. No account or password is kept for these.",
+    fields: [
+      {
+        key: "mailUrl",
+        label: "Webmail",
+        kind: "url",
+        protocols: ["https:"],
+        wide: true,
+        hint: "Your inbox page. Gmail: https://mail.google.com/mail/u/0/#inbox · Outlook: https://outlook.live.com/mail/0/",
+      },
+      {
+        key: "calendarUrl",
+        label: "Web calendar",
+        kind: "url",
+        protocols: ["https:"],
+        wide: true,
+        hint: "Your calendar page. Google: https://calendar.google.com/calendar/u/0/r · Outlook: https://outlook.live.com/calendar/0/",
+      },
+    ],
+  },
+  {
+    id: "talk",
+    title: "How Trinity talks",
+    icon: "sparkles",
+    sub: "Who writes Trinity's words when no tool is needed. Applies from the next call.",
+    fields: [
+      {
+        key: "talkStyle",
+        label: "Talk style",
+        kind: "choice",
+        wide: true,
+        options: [
+          { value: "polished", label: "Polished", icon: "sparkles", hint: "A text model writes every reply: short, consistent, nothing made up, never talking over a tool. About a second to answer." },
+          { value: "free", label: "Free", icon: "zap", hint: "The voice model improvises small talk itself: instant, but it can ramble, contradict a tool or invent things." },
+        ],
+        hint: "Polished needs the model gateway; without it the voice improvises.",
       },
     ],
   },
@@ -1086,7 +1143,24 @@ export function createModelsSection(): Section {
     }
   }
 
+  // Configured models the gateway no longer serves, and what stands in for each (the engine checks every ten minutes).
+  const issuesEl = h("div", { class: "model-issues" });
+  cardsEl.before(issuesEl);
+  const renderIssues = (data: PublicEndpoints) => {
+    const issues = data.modelIssues ?? [];
+    setChildren(
+      issuesEl,
+      ...issues.map((i) =>
+        h(
+          "div",
+          { class: "notice notice-warn notice-compact", role: "status" },
+          h("span", {}, h("strong", {}, i.configured), ` isn't on the gateway any more. ${i.using ? `Trinity is using ${i.using} in its place` : "Nothing could stand in for it"} — pick another model below.`),
+        ),
+      ),
+    );
+  };
   endpointsRes.subscribe((data) => {
+    renderIssues(data);
     if (!built) {
       if (started) build(data);
       return;

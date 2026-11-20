@@ -1,0 +1,13 @@
+{
+  "about": "Outlook on the web's new-event form as its compose link opens it, for an event with an attendee: the button that saves it is called Send, because saving sends the invitation.",
+  "url": "https://outlook.live.com/calendar/0/deeplink/compose",
+  "title": "Calendar - Ryan Smith - Outlook",
+  "text": "Roadmap with Sam Invite attendees sam@example.com Wed 11/11/2026 3:00 PM to 3:30 PM Don't repeat Search for a room or location Remind me: 15 minutes before Add a description",
+  "controls": [
+    { "ref": 1, "role": "button", "name": "Send" },
+    { "ref": 2, "role": "button", "name": "Discard" },
+    { "ref": 3, "role": "textbox", "name": "Add a title", "editable": true },
+    { "ref": 4, "role": "textbox", "name": "Invite attendees", "editable": true },
+    { "ref": 5, "role": "textbox", "name": "Add a description", "editable": true }
+  ]
+}

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Sign in — Shadowbox</title>
+    <style>
+      body { font: 16px system-ui, sans-serif; margin: 24px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Shadowbox</h1>
+      <p>The sign-in form below lives inside a web component's open shadow root.</p>
+      <login-box>
+        <template shadowrootmode="open">
+          <style>
+            .card { display: block; width: 360px; padding: 16px; border: 1px solid #ccc; }
+            .row { display: block; margin: 10px 0; }
+          </style>
+          <form id="inner" class="card" action="/session" method="post">
+            <div class="row">
+              <label for="u">User name</label>
+              <input id="u" name="user" type="text" autocomplete="username" />
+            </div>
+            <div class="row">
+              <label for="p">Password</label>
+              <input id="p" name="pass" type="password" autocomplete="current-password" />
+            </div>
+            <div class="row"><button type="submit" id="go">Log in</button></div>
+          </form>
+        </template>
+      </login-box>
+      <p><a href="/help">Need help?</a></p>
+    </main>
+    <script>
+      const form = document.querySelector("login-box").shadowRoot.querySelector("form");
+      form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        form.querySelector("button").textContent = "Logged in (test page)";
+      });
+    </script>
+    <script type="module" src="/harness.js"></script>
+  </body>
+</html>

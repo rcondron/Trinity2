@@ -2,9 +2,21 @@ import fs from "node:fs";
 import { nanoid } from "nanoid";
 import db, { getSetting, setSetting } from "../db/sqlite.js";
 import { getImageJob, imagePath } from "../services/images.js";
+import { findMonster, genericStatBlock, snapCr, statBlockOf, type StatBlock } from "./bestiary.js";
+import { ABILITIES, CONDITIONS, isSkill, parseDice, slotsFor, xpForCr } from "./rules.js";
+import { armorStats, classProfile, itemPrice, speciesResistances, weaponStats } from "./srd.js";
 import type {
+  AbilityKey,
+  Adv,
+  Attack,
+  AttackRider,
   Attitude,
+  Breath,
+  Clue,
+  Combat,
+  Combatant,
   Game,
+  GamePhase,
   GameTheme,
   ImageSlot,
   ImageStatus,
@@ -14,22 +26,38 @@ import type {
   LogEntry,
   LogKind,
   Npc,
+  NpcStatus,
+  Pending,
+  PendingAction,
+  PendingCheck,
+  PendingConfirm,
   Player,
+  Quest,
   Rarity,
   Roll,
+  RollOutcome,
   Scene,
+  Secret,
+  SetupState,
   Stats,
+  Story,
+  TableSettings,
 } from "./types.js";
 
 /**
  * Game persistence. One row per game in the shared SQLite DB; the game itself is a JSON
- * document (normalized on every load, so old or partial rows always come back complete).
+ * document (normalized on every load, so old or partial rows always come back complete:
+ * a game saved before heroes had spell slots or monsters had stat blocks loads with
+ * sensible ones).
  *
  * All writes to a game's data go through `mutateGame`, which serializes mutations per
  * game id: each one re-reads the latest row inside the queue, applies the mutator, saves,
  * then notifies listeners (the presenter). Read-modify-write races are impossible as long
  * as nobody holds a Game across an await and saves it later — there is deliberately no
  * public "saveGame".
+ *
+ * `checkpointGame` keeps the last few documents of a game (one per story turn) so a turn
+ * can be undone.
  */
 
 export const NEW_GAME_TITLE = "New Adventure";
@@ -38,6 +66,8 @@ export const PLACEHOLDER_NAMES = { player: "New hero", npc: "A figure approaches
 export const MAX_PLAYERS = 8;
 /** Stored log length (the view shows the last 200). */
 export const MAX_LOG = 500;
+/** How many story turns can be undone. */
+export const MAX_HISTORY = 20;
 
 export const ITEM_TYPES: readonly ItemType[] = ["weapon", "armor", "potion", "scroll", "wondrous", "gear", "treasure", "quest"];
 export const RARITIES: readonly Rarity[] = ["common", "uncommon", "rare", "very rare", "legendary", "artifact"];
@@ -46,6 +76,9 @@ export const LOG_KINDS: readonly LogKind[] = ["narration", "roll", "combat", "lo
 const IMAGE_STATUSES: readonly ImageStatus[] = ["none", "pending", "ready", "error"];
 const FONTS: readonly GameTheme["font"][] = ["serif", "sans", "mono", "display"];
 const TEXTURES: readonly GameTheme["texture"][] = ["parchment", "stone", "wood", "hud", "neon", "none"];
+const PHASES: readonly GamePhase[] = ["setup", "playing", "paused", "ended"];
+const NPC_STATUSES: readonly NpcStatus[] = ["alive", "defeated", "fled"];
+const OUTCOMES: readonly RollOutcome[] = ["success", "failure", "hit", "miss", "crit", "fumble"];
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS games (
@@ -58,6 +91,14 @@ db.exec(`
     updated         INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS games_by_persona ON games (persona_id, updated);
+  CREATE TABLE IF NOT EXISTS game_history (
+    seq     INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_id TEXT NOT NULL,
+    label   TEXT NOT NULL,
+    data    TEXT NOT NULL,
+    created INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS game_history_by_game ON game_history (game_id, seq);
 `);
 
 interface GameRow {
@@ -84,6 +125,15 @@ const stmt = {
   getTemplate: db.prepare(`SELECT custom_template FROM games WHERE id = ?`),
   setTemplate: db.prepare(`UPDATE games SET custom_template = ? WHERE id = ?`),
   deleteSetting: db.prepare(`DELETE FROM settings WHERE key = ?`),
+  rawData: db.prepare(`SELECT data FROM games WHERE id = ?`),
+  pushHistory: db.prepare(`INSERT INTO game_history (game_id, label, data, created) VALUES (?, ?, ?, ?)`),
+  lastHistory: db.prepare(`SELECT seq, label, data FROM game_history WHERE game_id = ? ORDER BY seq DESC LIMIT 1`),
+  dropHistory: db.prepare(`DELETE FROM game_history WHERE seq = ?`),
+  trimHistory: db.prepare(
+    `DELETE FROM game_history WHERE game_id = ? AND seq NOT IN (SELECT seq FROM game_history WHERE game_id = ? ORDER BY seq DESC LIMIT ?)`,
+  ),
+  clearHistory: db.prepare(`DELETE FROM game_history WHERE game_id = ?`),
+  countHistory: db.prepare(`SELECT COUNT(*) AS n FROM game_history WHERE game_id = ?`),
 };
 
 // ─── Ids, defaults ───────────────────────────────────────────────────────────
@@ -119,6 +169,83 @@ export function defaultTheme(): GameTheme {
     labels: { party: "Party", scene: "Scene", log: "Adventure Log", npcs: "NPCs", items: "Items & Loot", map: "Map" },
     ornament: "✦",
   };
+}
+
+const nine = (xs: number[] = []): number[] => Array.from({ length: 9 }, (_, i) => Math.max(0, Math.round(xs[i] ?? 0)));
+
+/** A complete, empty character sheet: every field a hero has, at its default. */
+export function blankPlayer(id: string, name: string): Player {
+  return {
+    id,
+    name,
+    playerName: "",
+    race: "",
+    className: "",
+    level: 1,
+    hp: 1,
+    maxHp: 1,
+    tempHp: 0,
+    ac: 10,
+    speed: 30,
+    stats: { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 },
+    background: "",
+    traits: [],
+    conditions: [],
+    conditionRounds: {},
+    exhaustion: 0,
+    gold: 0,
+    xp: 0,
+    inventory: [],
+    notes: "",
+    appearance: "",
+    portrait: emptySlot(),
+    hitDie: 8,
+    hitDiceUsed: 0,
+    saveProficiencies: [],
+    skillProficiencies: [],
+    castingAbility: null,
+    slotsMax: nine(),
+    slotsUsed: nine(),
+    spells: [],
+    concentration: null,
+    inspiration: false,
+    deathSaves: { successes: 0, failures: 0 },
+    stable: false,
+    dead: false,
+    equipped: { weapon: null, armor: null, shield: null },
+    resistances: [],
+  };
+}
+
+/** A story NPC with a stat block: the bestiary's when its name or role names a creature, a default otherwise. */
+export function defaultStatBlock(name: string, role: string, attitude: Attitude): StatBlock {
+  const known = findMonster(`${name} ${role}`);
+  if (known) return statBlockOf(known);
+  return { ...genericStatBlock(attitude === "hostile" ? 0.5 : 0), statted: false };
+}
+
+export function emptyStory(premise = ""): Story {
+  return {
+    premise,
+    outline: [],
+    beat: 0,
+    secrets: [],
+    clues: [],
+    quests: [],
+    facts: [],
+    threats: [],
+    summary: "",
+    summaryTurn: 0,
+    turn: 0,
+    recentTurns: [],
+    lastTurn: "",
+    lastNarration: "",
+    sessions: 0,
+  };
+}
+
+export function defaultSettings(): TableSettings {
+  return { difficulty: "standard", leveling: "xp", rolls: "ask", avoid: [], expectedPlayers: null, length: null };
 }
 
 // ─── Placeholder registry ────────────────────────────────────────────────────
@@ -166,6 +293,7 @@ function strs(v: unknown, maxItems: number, maxLen: number): string[] {
   }
   return out;
 }
+const lower = (xs: string[]) => [...new Set(xs.map((x) => x.toLowerCase()))];
 function oneOf<T extends string>(v: unknown, allowed: readonly T[], def: T): T {
   return typeof v === "string" && (allowed as readonly string[]).includes(v) ? (v as T) : def;
 }
@@ -179,6 +307,8 @@ function hex(v: unknown, def: string): string {
   const full = t.length === 4 ? `#${[...t.slice(1)].map((c) => c + c).join("")}` : t;
   return full.toLowerCase();
 }
+const abilityKey = (v: unknown): AbilityKey | null => (typeof v === "string" && (ABILITIES as readonly string[]).includes(v) ? (v as AbilityKey) : null);
+const adv = (v: unknown): Adv => (v === "adv" || v === "dis" ? v : null);
 
 /** Coerce anything into a complete theme; missing/invalid parts come from `base`. */
 export function normalizeTheme(raw: unknown, base: GameTheme = defaultTheme()): GameTheme {
@@ -252,37 +382,89 @@ function normStats(raw: unknown): Stats {
   return { str: v("str"), dex: v("dex"), con: v("con"), int: v("int"), wis: v("wis"), cha: v("cha") };
 }
 
+function normRounds(raw: unknown, conditions: string[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (!isObj(raw)) return out;
+  for (const c of conditions) {
+    const n = raw[c];
+    if (typeof n === "number" && Number.isFinite(n) && n >= 1) out[c] = Math.min(1000, Math.round(n));
+  }
+  return out;
+}
+
+/** Heroes whose saved sheet had no `equipped` (a game from before equipment): what they carry is put on after items load. */
+const unequippedSheets = new WeakSet<Player>();
+
 function normPlayer(raw: unknown): Player | null {
   if (!isObj(raw)) return null;
+  const className = str(raw.className, 40).trim();
+  const race = str(raw.race, 40).trim();
+  const profile = classProfile(className);
+  const level = int(raw.level, 1, 1, 20);
   const maxHp = int(raw.maxHp, 1, 1, 999);
+  const dead = raw.dead === true;
+  const hp = dead ? 0 : int(raw.hp, maxHp, 0, maxHp);
+  let conditions = lower(strs(raw.conditions, 12, 40));
+  if (hp > 0) conditions = conditions.filter((c) => c !== "unconscious");
+  else if (!dead && !conditions.includes("unconscious")) conditions.push("unconscious");
+  const hitDie = [6, 8, 10, 12].includes(Number(raw.hitDie)) ? Number(raw.hitDie) : profile.hitDie;
+  const slotsMax = Array.isArray(raw.slotsMax) ? nine(raw.slotsMax.map((x) => int(x, 0, 0, 9))) : slotsFor(profile.caster, level);
+  const slotsUsed = nine(list(raw.slotsUsed).map((x) => int(x, 0, 0, 9))).map((u, i) => Math.min(u, slotsMax[i] ?? 0));
+  const casts = slotsMax.some((n) => n > 0) || profile.caster !== null;
+  const castingAbility = "castingAbility" in raw ? abilityKey(raw.castingAbility) : profile.ability;
+  const ds = isObj(raw.deathSaves) ? raw.deathSaves : {};
+  const eq = isObj(raw.equipped) ? raw.equipped : null;
   const p: Player = {
     id: validId(raw.id) ?? newId(),
     name: str(raw.name, 60).trim() || "Unnamed hero",
-    race: str(raw.race, 40).trim(),
-    className: str(raw.className, 40).trim(),
-    level: int(raw.level, 1, 1, 20),
-    hp: int(raw.hp, maxHp, 0, maxHp),
+    playerName: str(raw.playerName, 40).replace(/\s+/g, " ").trim(),
+    race,
+    className,
+    level,
+    hp,
     maxHp,
+    tempHp: int(raw.tempHp, 0, 0, 999),
     ac: int(raw.ac, 10, 0, 40),
     speed: int(raw.speed, 30, 0, 200),
     stats: normStats(raw.stats),
     background: str(raw.background, 80).trim(),
     traits: strs(raw.traits, 6, 100),
-    conditions: strs(raw.conditions, 12, 40),
+    conditions,
+    conditionRounds: normRounds(raw.conditionRounds, conditions),
+    exhaustion: int(raw.exhaustion, 0, 0, 6),
     gold: int(raw.gold, 0, 0, 1e9),
     xp: int(raw.xp, 0, 0, 1e9),
     inventory: strs(raw.inventory, 300, 40),
     notes: str(raw.notes, 2000),
     appearance: str(raw.appearance, 600).trim(),
     portrait: slot(raw.portrait),
+    hitDie,
+    hitDiceUsed: int(raw.hitDiceUsed, 0, 0, level),
+    saveProficiencies: Array.isArray(raw.saveProficiencies)
+      ? [...new Set(raw.saveProficiencies.map(abilityKey).filter((k): k is AbilityKey => k !== null))]
+      : [...profile.saves],
+    skillProficiencies: Array.isArray(raw.skillProficiencies) ? lower(strs(raw.skillProficiencies, 18, 20)).filter(isSkill) : [...profile.skills],
+    castingAbility: casts ? castingAbility : null,
+    slotsMax,
+    slotsUsed,
+    spells: Array.isArray(raw.spells) ? strs(raw.spells, 40, 40) : casts ? [...profile.spells] : [],
+    concentration: typeof raw.concentration === "string" && raw.concentration.trim() ? raw.concentration.trim().slice(0, 40) : null,
+    inspiration: raw.inspiration === true,
+    deathSaves: { successes: int(ds.successes, 0, 0, 3), failures: int(ds.failures, 0, 0, 3) },
+    stable: raw.stable === true && hp === 0 && !dead,
+    dead,
+    equipped: { weapon: validId(eq?.weapon), armor: validId(eq?.armor), shield: validId(eq?.shield) },
+    resistances: Array.isArray(raw.resistances) ? lower(strs(raw.resistances, 8, 20)) : speciesResistances(race),
   };
+  if (hp > 0) p.deathSaves = { successes: 0, failures: 0 };
   if (raw.pending === true) p.pending = true;
+  if (!eq) unequippedSheets.add(p);
   return p;
 }
 
 function normItem(raw: unknown): Item | null {
   if (!isObj(raw)) return null;
-  return {
+  const it: Item = {
     id: validId(raw.id) ?? newId(),
     name: str(raw.name, 80).trim() || "Curious item",
     type: oneOf(raw.type, ITEM_TYPES, "gear"),
@@ -292,19 +474,111 @@ function normItem(raw: unknown): Item | null {
     ownerId: validId(raw.ownerId),
     appearance: str(raw.appearance, 600).trim(),
     icon: slot(raw.icon),
+    quantity: int(raw.quantity, 1, 1, 999),
+    value: 0,
+  };
+  it.value = typeof raw.value === "number" && Number.isFinite(raw.value) ? int(raw.value, 0, 0, 1e7) : itemPrice(it);
+  return it;
+}
+
+const dice = (v: unknown, def: string | null): string | null => (typeof v === "string" && parseDice(v) ? v.replace(/\s+/g, "").slice(0, 20) : def);
+
+function normRider(raw: unknown): AttackRider | null {
+  if (!isObj(raw)) return null;
+  const ability = abilityKey(raw.ability);
+  if (!ability) return null;
+  return {
+    ability,
+    dc: int(raw.dc, 10, 1, 30),
+    condition: typeof raw.condition === "string" && raw.condition.trim() ? raw.condition.trim().toLowerCase().slice(0, 30) : null,
+    rounds: typeof raw.rounds === "number" && raw.rounds >= 1 ? int(raw.rounds, 1, 1, 1000) : null,
+    damage: dice(raw.damage, null),
+    damageType: typeof raw.damageType === "string" && raw.damageType.trim() ? raw.damageType.trim().toLowerCase().slice(0, 20) : null,
+    half: raw.half === true,
+  };
+}
+
+function normAttack(raw: unknown): Attack | null {
+  if (!isObj(raw)) return null;
+  const name = str(raw.name, 40).trim();
+  const damage = dice(raw.damage, null);
+  if (!name || !damage) return null;
+  return {
+    name,
+    toHit: int(raw.toHit, 2, -5, 25),
+    damage,
+    damageType: str(raw.damageType, 20).trim().toLowerCase() || "bludgeoning",
+    ranged: raw.ranged === true,
+    range: int(raw.range, 5, 5, 1200),
+    extraDamage: dice(raw.extraDamage, null),
+    extraType: typeof raw.extraType === "string" && raw.extraType.trim() ? raw.extraType.trim().toLowerCase().slice(0, 20) : null,
+    rider: normRider(raw.rider),
+  };
+}
+
+function normBreath(raw: unknown): Breath | null {
+  if (!isObj(raw)) return null;
+  const ability = abilityKey(raw.ability);
+  const damage = dice(raw.damage, null);
+  if (!ability || !damage) return null;
+  return {
+    name: str(raw.name, 40).trim() || "Breath",
+    ability,
+    dc: int(raw.dc, 12, 1, 30),
+    damage,
+    damageType: str(raw.damageType, 20).trim().toLowerCase() || "fire",
+    recharge: int(raw.recharge, 5, 2, 6),
+    ready: raw.ready !== false,
+    targets: int(raw.targets, 2, 1, 6),
   };
 }
 
 function normNpc(raw: unknown): Npc | null {
   if (!isObj(raw)) return null;
+  const name = str(raw.name, 60).trim() || "Stranger";
+  const role = str(raw.role, 60).trim();
+  const attitude = oneOf(raw.attitude, ATTITUDES, "unknown");
+  // A character saved before stat blocks existed gets one now: the bestiary's if it names a creature, a default otherwise.
+  const hasBlock = typeof raw.maxHp === "number" && Array.isArray(raw.attacks);
+  const base = defaultStatBlock(name, role, attitude);
+  const attacks = hasBlock ? list(raw.attacks).map(normAttack).filter((a): a is Attack => a !== null).slice(0, 6) : [];
+  const maxHp = hasBlock ? int(raw.maxHp, base.maxHp, 1, 2000) : base.maxHp;
+  const status = oneOf(raw.status, NPC_STATUSES, "alive");
+  const conditions = lower(strs(raw.conditions, 12, 40));
+  const saves: Partial<Record<AbilityKey, number>> = {};
+  if (hasBlock && isObj(raw.saves)) for (const k of ABILITIES) if (typeof raw.saves[k] === "number") saves[k] = int(raw.saves[k], 0, -5, 20);
+  const cr = hasBlock ? snapCr(raw.cr, base.cr) : base.cr;
   return {
     id: validId(raw.id) ?? newId(),
-    name: str(raw.name, 60).trim() || "Stranger",
-    role: str(raw.role, 60).trim(),
+    name,
+    role,
     description: str(raw.description, 600).trim(),
-    attitude: oneOf(raw.attitude, ATTITUDES, "unknown"),
+    attitude,
     appearance: str(raw.appearance, 600).trim(),
     portrait: slot(raw.portrait),
+    kind: hasBlock ? str(raw.kind, 40).trim() : base.kind,
+    creatureType: hasBlock ? str(raw.creatureType, 20).trim() || "creature" : base.creatureType,
+    hp: status === "defeated" ? 0 : hasBlock ? int(raw.hp, maxHp, 0, maxHp) : base.hp,
+    maxHp,
+    tempHp: int(raw.tempHp, 0, 0, 999),
+    ac: hasBlock ? int(raw.ac, base.ac, 1, 30) : base.ac,
+    speed: hasBlock ? int(raw.speed, 30, 0, 200) : base.speed,
+    stats: hasBlock ? normStats(raw.stats) : base.stats,
+    attacks: attacks.length ? attacks : base.attacks,
+    attacksPerTurn: hasBlock ? int(raw.attacksPerTurn, 1, 1, 5) : base.attacksPerTurn,
+    breath: hasBlock ? normBreath(raw.breath) : base.breath,
+    saves: hasBlock ? saves : base.saves,
+    cr,
+    xp: hasBlock ? int(raw.xp, xpForCr(cr), 0, 200000) : base.xp,
+    status,
+    conditions,
+    conditionRounds: normRounds(raw.conditionRounds, conditions),
+    resistances: hasBlock ? lower(strs(raw.resistances, 10, 20)) : base.resistances,
+    vulnerabilities: hasBlock ? lower(strs(raw.vulnerabilities, 10, 20)) : base.vulnerabilities,
+    immunities: hasBlock ? lower(strs(raw.immunities, 10, 20)) : base.immunities,
+    regen: hasBlock ? int(raw.regen, 0, 0, 50) : base.regen,
+    regenBlocked: raw.regenBlocked === true,
+    statted: hasBlock ? raw.statted !== false : base.statted,
   };
 }
 
@@ -339,6 +613,7 @@ function normRoll(raw: unknown): Roll | null {
   const rolls = list(raw.rolls)
     .map((r) => int(r, 0, -1e6, 1e6))
     .slice(0, 100);
+  const intOrNull = (v: unknown, lo: number, hi: number) => (typeof v === "number" && Number.isFinite(v) ? int(v, 0, lo, hi) : null);
   return {
     id: validId(raw.id) ?? newId(),
     who: typeof raw.who === "string" && raw.who.trim() ? raw.who.trim().slice(0, 60) : null,
@@ -348,6 +623,11 @@ function normRoll(raw: unknown): Roll | null {
     total: int(raw.total, 0, -1e6, 1e6),
     label: typeof raw.label === "string" && raw.label.trim() ? raw.label.trim().slice(0, 80) : null,
     ts: int(raw.ts, Date.now(), 0, 8.64e15),
+    adv: adv(raw.adv),
+    kept: intOrNull(raw.kept, 1, 1000),
+    natural: intOrNull(raw.natural, 1, 20),
+    dc: intOrNull(raw.dc, 0, 100),
+    outcome: typeof raw.outcome === "string" && (OUTCOMES as readonly string[]).includes(raw.outcome) ? (raw.outcome as RollOutcome) : null,
   };
 }
 
@@ -357,6 +637,165 @@ function normScene(raw: unknown): Scene | null {
   const description = str(raw.description, 1500).trim();
   if (!title && !description && !isObj(raw.image)) return null;
   return { title, description, image: slot(raw.image) };
+}
+
+function normStory(raw: unknown, setting: string): Story {
+  const s = isObj(raw) ? raw : {};
+  const base = emptyStory(setting);
+  const text = (v: unknown, max: number) => str(v, max).replace(/\s+/g, " ").trim();
+  const quests: Quest[] = [];
+  for (const q of list(s.quests).slice(0, 12)) {
+    if (!isObj(q)) continue;
+    const title = text(q.title, 80);
+    if (!title) continue;
+    quests.push({ id: validId(q.id) ?? newId(), title, detail: text(q.detail, 300), status: oneOf(q.status, ["open", "done", "failed"] as const, "open") });
+  }
+  const clues: Clue[] = [];
+  for (const c of list(s.clues).slice(0, 12)) {
+    const t = isObj(c) ? text(c.text, 240) : "";
+    if (isObj(c) && t) clues.push({ id: validId(c.id) ?? newId(), text: t, found: c.found === true });
+  }
+  const secrets: Secret[] = [];
+  for (const c of list(s.secrets).slice(0, 12)) {
+    const t = isObj(c) ? text(c.text, 240) : "";
+    if (isObj(c) && t) secrets.push({ id: validId(c.id) ?? newId(), text: t, revealed: c.revealed === true });
+  }
+  const outline = strs(s.outline, 8, 240);
+  const turn = int(s.turn, 0, 0, 1e6);
+  return {
+    premise: text(s.premise, 800) || base.premise,
+    outline,
+    beat: int(s.beat, 0, 0, Math.max(0, outline.length - 1)),
+    secrets,
+    clues,
+    quests,
+    facts: strs(s.facts, 30, 200),
+    threats: lower(strs(s.threats, 8, 40)),
+    summary: text(s.summary, 1200),
+    summaryTurn: int(s.summaryTurn, 0, 0, turn),
+    turn,
+    recentTurns: list(s.recentTurns)
+      .map((x) => text(x, 400))
+      .filter(Boolean)
+      .slice(-12),
+    lastTurn: text(s.lastTurn, 400),
+    lastNarration: text(s.lastNarration, 1200),
+    sessions: int(s.sessions, 0, 0, 1e5),
+  };
+}
+
+function normSettings(raw: unknown): TableSettings {
+  const s = isObj(raw) ? raw : {};
+  const base = defaultSettings();
+  return {
+    difficulty: oneOf(s.difficulty, ["easy", "standard", "hard"] as const, base.difficulty),
+    leveling: oneOf(s.leveling, ["xp", "milestone"] as const, base.leveling),
+    rolls: oneOf(s.rolls, ["ask", "auto"] as const, base.rolls),
+    avoid: strs(s.avoid, 10, 80),
+    expectedPlayers: typeof s.expectedPlayers === "number" ? int(s.expectedPlayers, 1, 1, MAX_PLAYERS) : null,
+    length: s.length === "one-shot" || s.length === "short" || s.length === "campaign" ? s.length : null,
+  };
+}
+
+function normSetupState(raw: unknown): SetupState {
+  const s = isObj(raw) ? raw : {};
+  const asked: Record<string, number> = {};
+  if (isObj(s.asked)) for (const [k, v] of Object.entries(s.asked).slice(0, 40)) if (typeof v === "number" && /^[a-z0-9-]{1,24}$/.test(k)) asked[k] = int(v, 0, 0, 99);
+  return { seatName: str(s.seatName, 40).replace(/\s+/g, " ").trim(), asked, answered: lower(strs(s.answered, 40, 20)) };
+}
+
+function normPending(raw: unknown, playerIds: Set<string>): Pending {
+  const p = isObj(raw) ? raw : {};
+  let check: PendingCheck | null = null;
+  if (isObj(p.check)) {
+    const heroId = validId(p.check.heroId);
+    if (heroId && playerIds.has(heroId)) {
+      const skill = typeof p.check.skill === "string" && isSkill(p.check.skill) ? p.check.skill : null;
+      check = {
+        id: validId(p.check.id) ?? newId(),
+        heroId,
+        kind: oneOf(p.check.kind, ["check", "save", "death"] as const, "check"),
+        ability: abilityKey(p.check.ability),
+        skill,
+        label: str(p.check.label, 60).trim() || "Check",
+        // Kept as asked: a DC a creature sets (a passive score, a save DC) is not on the easy-to-hard ladder.
+        dc: p.check.kind === "death" ? 10 : int(p.check.dc, 15, 1, 30),
+        adv: adv(p.check.adv),
+        reason: str(p.check.reason, 160).trim(),
+        words: str(p.check.words, 400),
+        askedAt: int(p.check.askedAt, Date.now(), 0, 8.64e15),
+        reminders: int(p.check.reminders, 0, 0, 99),
+        endsTurn: p.check.endsTurn === true,
+      };
+    }
+  }
+  let confirm: PendingConfirm | null = null;
+  if (isObj(p.confirm)) {
+    const kind = oneOf(p.confirm.kind, ["new_game", "remove_player", "load_game", "end_campaign"] as const, "new_game");
+    confirm = {
+      id: validId(p.confirm.id) ?? newId(),
+      kind,
+      targetId: validId(p.confirm.targetId),
+      words: str(p.confirm.words, 400),
+      question: str(p.confirm.question, 240).trim(),
+      askedAt: int(p.confirm.askedAt, Date.now(), 0, 8.64e15),
+    };
+  }
+  let action: PendingAction | null = null;
+  if (isObj(p.action)) {
+    const tool = str(p.action.tool, 40).trim();
+    const words = str(p.action.words, 400).trim();
+    if (tool && words) {
+      const actorId = validId(p.action.actorId);
+      action = {
+        id: validId(p.action.id) ?? newId(),
+        tool,
+        words,
+        question: str(p.action.question, 240).trim(),
+        need: p.action.need === "target" ? "target" : "actor",
+        actorId: actorId && playerIds.has(actorId) ? actorId : null,
+        askedAt: int(p.action.askedAt, Date.now(), 0, 8.64e15),
+      };
+    }
+  }
+  return { check, confirm, action };
+}
+
+function normCombat(raw: unknown, playerIds: Set<string>, npcs: Npc[]): Combat | null {
+  if (!isObj(raw)) return null;
+  const live = new Map(npcs.filter((n) => n.status === "alive").map((n) => [n.id, n]));
+  const order: Combatant[] = [];
+  const seen = new Set<string>();
+  for (const c of list(raw.order)) {
+    if (!isObj(c)) continue;
+    const id = validId(c.id);
+    const kind = c.kind === "npc" ? "npc" : "hero";
+    if (!id || seen.has(id) || (kind === "hero" ? !playerIds.has(id) : !live.has(id))) continue;
+    seen.add(id);
+    order.push({
+      id,
+      kind,
+      init: int(c.init, 0, -20, 60),
+      roll: int(c.roll, 10, 1, 20),
+      surprised: c.surprised === true,
+      reactionUsed: c.reactionUsed === true,
+      engaged: strs(c.engaged, 20, 40),
+      lastTargetId: validId(c.lastTargetId),
+      lastAttackerId: validId(c.lastAttackerId),
+    });
+  }
+  if (!order.length) return null;
+  const vacant = raw.vacant === true;
+  return {
+    round: int(raw.round, 1, 1, 1e5),
+    index: int(raw.index, 0, vacant ? -1 : 0, order.length - 1),
+    vacant,
+    order,
+    bonusUsed: raw.bonusUsed === true,
+    disengaged: raw.disengaged === true,
+    xpEarned: int(raw.xpEarned, 0, 0, 1e7),
+    overcome: strs(raw.overcome, 40, 60),
+  };
 }
 
 function uniqueById<T extends { id: string }>(xs: (T | null)[]): T[] {
@@ -369,6 +808,20 @@ function uniqueById<T extends { id: string }>(xs: (T | null)[]): T[] {
     out.push(x);
   }
   return out;
+}
+
+/** Put on what a hero carries: the first weapon, the first armor and a shield. Never changes the armor class by itself. */
+export function autoEquip(p: Player, items: Item[]): void {
+  const mine = p.inventory.map((id) => items.find((it) => it.id === id)).filter((it): it is Item => !!it);
+  const usable = (id: string | null, ok: (it: Item) => boolean) => (id && mine.some((it) => it.id === id && ok(it)) ? id : null);
+  const isWeapon = (it: Item) => it.type === "weapon" && weaponStats(it) !== null;
+  const isArmor = (it: Item) => armorStats(it)?.kind === "armor";
+  const isShield = (it: Item) => armorStats(it)?.kind === "shield";
+  p.equipped = {
+    weapon: usable(p.equipped.weapon, (it) => weaponStats(it) !== null) ?? mine.find(isWeapon)?.id ?? null,
+    armor: usable(p.equipped.armor, isArmor) ?? mine.find(isArmor)?.id ?? null,
+    shield: usable(p.equipped.shield, isShield) ?? mine.find(isShield)?.id ?? null,
+  };
 }
 
 interface RowMeta {
@@ -386,6 +839,7 @@ function normalizeGame(raw: unknown, meta: RowMeta): Game {
 
   const players = uniqueById(list(g.players).map(normPlayer)).filter((p) => !p.pending || live(p.id));
   const playerIds = new Set(players.map((p) => p.id));
+  const heroIds = new Set(players.filter((p) => !p.pending).map((p) => p.id));
 
   const items = uniqueById(list(g.items).map(normItem))
     .filter((it) => !isPlaceholderSlot(it.icon) || live(it.id))
@@ -404,6 +858,11 @@ function normalizeGame(raw: unknown, meta: RowMeta): Game {
     const ordered = p.inventory.filter((id) => mine.includes(id));
     for (const id of mine) if (!ordered.includes(id)) ordered.push(id);
     p.inventory = ordered;
+    if (unequippedSheets.has(p)) autoEquip(p, items);
+    else {
+      // What is held must still be carried.
+      for (const k of ["weapon", "armor", "shield"] as const) if (p.equipped[k] && !ordered.includes(p.equipped[k]!)) p.equipped[k] = null;
+    }
   }
 
   const npcs = uniqueById(list(g.npcs).map(normNpc)).filter((n) => !isPlaceholderSlot(n.portrait) || live(n.id));
@@ -425,8 +884,22 @@ function normalizeGame(raw: unknown, meta: RowMeta): Game {
     .filter((e): e is LogEntry => e !== null)
     .slice(-MAX_LOG);
 
-  const activePlayerId = validId(g.activePlayerId);
+  const phase = oneOf(g.phase, PHASES, "setup");
+  const inPlay = phase === "playing" || phase === "paused";
+  const combat = inPlay ? normCombat(g.combat, heroIds, npcs) : null;
+  const firstUp = players.find((p) => !p.pending && !p.dead)?.id ?? null;
+  const saved = (v: unknown) => {
+    const id = validId(v);
+    return id && heroIds.has(id) ? id : null;
+  };
+  // A game saved before the spotlight existed: the hero last acted on holds it. (A saved null means nobody does.)
+  const spotlightId = !inPlay ? null : "spotlightId" in g ? saved(g.spotlightId) : (saved(g.activePlayerId) ?? firstUp);
+  const current = combat && !combat.vacant ? combat.order[combat.index] : null;
+  const activePlayerId = combat ? (current?.kind === "hero" ? current.id : null) : inPlay ? spotlightId : saved(g.activePlayerId);
   const currentLocationId = validId(g.currentLocationId);
+  const setting = str(g.setting, 800).trim();
+  const pending = normPending(g.pending, heroIds);
+  if (!inPlay) pending.check = null;
 
   return {
     id: meta.id,
@@ -434,12 +907,20 @@ function normalizeGame(raw: unknown, meta: RowMeta): Game {
     title: str(g.title, 120).trim() || meta.title.trim() || NEW_GAME_TITLE,
     genre: str(g.genre, 60).trim(),
     tone: str(g.tone, 60).trim(),
-    setting: str(g.setting, 800).trim(),
+    setting,
     artStyle: str(g.artStyle, 300).trim(),
     theme: normalizeTheme(g.theme),
-    phase: g.phase === "playing" ? "playing" : "setup",
-    round: int(g.round, 0, 0, 1e6),
-    activePlayerId: activePlayerId && playerIds.has(activePlayerId) ? activePlayerId : null,
+    phase,
+    mode: phase === "paused" ? "paused" : combat ? "combat" : "explore",
+    round: combat ? combat.round : 0,
+    activePlayerId,
+    spotlightId,
+    combat,
+    pending,
+    story: normStory(g.story, setting),
+    settings: normSettings(g.settings),
+    setupState: normSetupState(g.setupState),
+    partyGold: int(g.partyGold, 0, 0, 1e9),
     titleImage: slot(g.titleImage),
     scene: normScene(g.scene),
     players,
@@ -452,6 +933,12 @@ function normalizeGame(raw: unknown, meta: RowMeta): Game {
     createdAt: int(g.createdAt, meta.created, 0, 8.64e15) || meta.created,
     updatedAt: meta.updated,
   };
+}
+
+/** Normalize a document as a saved row would be (exported for tests of old saved games). */
+export function normalizeGameDocument(raw: unknown, meta: { id?: string; personaId?: string; title?: string } = {}): Game {
+  const now = Date.now();
+  return normalizeGame(raw, { id: meta.id ?? "preview", personaId: meta.personaId ?? "game-master", title: meta.title ?? "", created: now, updated: now });
 }
 
 function fromRow(r: GameRow): Game {
@@ -478,6 +965,14 @@ export function createGame(personaId: string, init: Partial<Game> = {}): Game {
   return game;
 }
 
+/** Store a raw document as a game (a saved game from elsewhere, or a test fixture); it is normalized when read. */
+export function importGame(personaId: string, raw: unknown, title = NEW_GAME_TITLE): Game {
+  const now = Date.now();
+  const id = newId();
+  stmt.insert.run({ id, personaId, title, data: JSON.stringify(raw ?? {}), created: now, updated: now });
+  return getGame(id)!;
+}
+
 export function getGame(id: string): Game | null {
   const r = stmt.get.get(id) as GameRow | undefined;
   return r ? fromRow(r) : null;
@@ -494,6 +989,7 @@ export function deleteGame(id: string): boolean {
   const r = stmt.get.get(id) as GameRow | undefined;
   if (!r) return false;
   stmt.delete.run(id);
+  stmt.clearHistory.run(id);
   const key = activeKey(r.persona_id);
   if (getSetting(key) === id) stmt.deleteSetting.run(key);
   return true;
@@ -587,6 +1083,49 @@ async function applyMutation(id: string, fn: GameMutator): Promise<Game | null> 
   return next;
 }
 
+// ─── History (undo) ──────────────────────────────────────────────────────────
+
+/**
+ * Keep the game as it is right now, labelled with what is about to happen ("Thorin attacks the goblin"). Called
+ * once per story turn, before the turn changes anything; only the last MAX_HISTORY are kept.
+ */
+export function checkpointGame(id: string, label: string): void {
+  const row = stmt.rawData.get(id) as { data: string } | undefined;
+  if (!row) return;
+  stmt.pushHistory.run(id, label.replace(/\s+/g, " ").trim().slice(0, 160) || "the last turn", row.data, Date.now());
+  stmt.trimHistory.run(id, id, MAX_HISTORY);
+}
+
+export function historyDepth(id: string): number {
+  return (stmt.countHistory.get(id) as { n: number } | undefined)?.n ?? 0;
+}
+
+/** Throw away the newest checkpoint (a turn that ended up changing nothing). */
+export function dropCheckpoint(id: string): void {
+  const last = stmt.lastHistory.get(id) as { seq: number } | undefined;
+  if (last) stmt.dropHistory.run(last.seq);
+}
+
+/**
+ * Take the game back to its newest checkpoint: the document as it was before the last story turn. Resolves with
+ * the restored game and the label of the turn that was undone, or null when there is nothing to undo.
+ */
+export async function undoGame(id: string): Promise<{ game: Game; label: string } | null> {
+  const last = stmt.lastHistory.get(id) as { seq: number; label: string; data: string } | undefined;
+  if (!last) return null;
+  let doc: unknown;
+  try {
+    doc = JSON.parse(last.data);
+  } catch {
+    stmt.dropHistory.run(last.seq);
+    return null;
+  }
+  const restored = await mutateGame(id, () => doc as Game);
+  if (!restored) return null;
+  stmt.dropHistory.run(last.seq);
+  return { game: restored, label: last.label };
+}
+
 // ─── Small pure helpers for mutators ─────────────────────────────────────────
 
 /** Append a log entry (in place). */
@@ -614,3 +1153,6 @@ export function setImageStatus(game: Game, imageId: string, status: ImageStatus)
   for (const l of game.locations) touch(l.image);
   return changed;
 }
+
+/** The fourteen SRD conditions (a sheet may also carry free-form tags such as "hidden"). */
+export const SRD_CONDITIONS: readonly string[] = CONDITIONS;

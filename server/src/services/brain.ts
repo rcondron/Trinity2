@@ -114,8 +114,9 @@ export async function think(input: {
     });
   } catch (err) {
     if (input.strict) throw err;
-    console.warn("[brain] live think failed, using mock:", (err as Error).message);
-    return mockThink(input);
+    console.warn("[brain] live think failed:", (err as Error).message);
+    // (The canned demo line is for running with no gateway key at all. Here a model is set up and didn't answer.)
+    return "I couldn't reach my language model just now. Give it a moment and ask me again.";
   }
 }
 

@@ -2,6 +2,9 @@ import { getEndpoints, live } from "../settings.js";
 import { getTools } from "../tools/registry.js";
 import type { Persona, Tool, ToolArgSpec } from "../types.js";
 import { looksLikeAsk, secondOpinion } from "./arbiter.js";
+import { EVERYDAY_TOOL_WORDS, voiceIntent } from "../tools/intents.js";
+import { ASSIST_TOOLS, assistRoute } from "../services/assist/routes.js";
+import { yesOrNo } from "./pending.js";
 import { contextFor, type AgentContext } from "./context.js";
 
 /**
@@ -197,7 +200,8 @@ export function confidentOptions(d: Decision, min: number): Record<string, strin
 
 /** Situation first, then the conversation — so the user's latest words come last. */
 function pageText(conversation: string, ctx: AgentContext): string {
-  return `Situation: ${ctx.summary.slice(0, 700)}\n\n${conversation}`;
+  // (A game's digest runs to about 1,500 characters, the most important first; the board's summary is shorter.)
+  return `Situation: ${ctx.summary.slice(0, 1600)}\n\n${conversation}`;
 }
 
 /** Tie-breakers for tools whose labels overlap — only when both are offered. */
@@ -213,7 +217,17 @@ function toolRules(tools: Tool[]): string[] {
       "Something to see or use on screen (a page, app, chart, game or form) is build_ui; a new ability the assistant should keep using later (a converter, a lookup, a connection to a web service) is create_skill.",
     );
   if (has("build_ui") && has("make_image"))
-    rules.push("A picture, image, photo, illustration, painting or artwork of something is make_image, even when the user says 'draw' or 'make'; a chart, diagram, page or app is build_ui.");
+    rules.push(
+      has("show_chart")
+        ? "A picture, image, photo, illustration, painting or artwork of something is make_image, even when the user says 'draw' or 'make'; a diagram, page or app is build_ui."
+        : "A picture, image, photo, illustration, painting or artwork of something is make_image, even when the user says 'draw' or 'make'; a chart, diagram, page or app is build_ui.",
+    );
+  if (has("show_chart") && has("build_ui"))
+    rules.push(
+      "Numbers to see as a chart or graph (given by the user, just found, in a table card or a file) are show_chart, and rows and columns to see are show_table; an interactive chart app, dashboard or tool to use is build_ui.",
+    );
+  if (has("retry_card"))
+    rules.push("'Try again', 'retry', 'have another go' about a card that failed or was interrupted is retry_card.");
   if (has("build_ui") && has("clear_workspace"))
     rules.push("Clearing, closing, resetting or blanking the screen or workspace is clear_workspace; changing what's on it is build_ui.");
   if (has("undo_workspace"))
@@ -264,7 +278,11 @@ function toolRules(tools: Tool[]): string[] {
         "'Search for / look up / google X' to hear what's out there is web_search; news, headlines, the weather, scores or any looked-up information the user wants laid out is show_card.",
       );
     if (has("build_ui"))
-      rules.push("Information to read (a recipe, a profile, a guide, the news) is show_card; an interactive tool, app, game, chart or form to use is build_ui.");
+      rules.push(
+        has("show_chart")
+          ? "Information to read (a recipe, a profile, a guide, the news) is show_card; an interactive tool, app, game or form to use is build_ui."
+          : "Information to read (a recipe, a profile, a guide, the news) is show_card; an interactive tool, app, game, chart or form to use is build_ui.",
+      );
     if (has("make_image")) rules.push("A picture alone is make_image; information about something is show_card (it adds its own picture).");
     if (has("make_text"))
       rules.push("A note in the user's own words is make_text; researched or written-up information — even 'put the muffin recipe on the board' — is show_card.");
@@ -333,7 +351,7 @@ export function jevRequest(input: RouteInput) {
 }
 
 /** Screen ops the keyword heuristic may take when Jev abstains — clear/move/remove/undo are unambiguous. */
-const HEURISTIC_OVERRIDE = /^(clear_workspace|undo_workspace|remove_card|move_card|arrange_cards|resize_card|control_card|read_card|edit_note|rename_card|duplicate_card|describe_workspace|edit_html|set_speech_rate)$/;
+const HEURISTIC_OVERRIDE = /^(answer_question|answer_followup|send_email|save_meeting|browser_sign_in|browser_fill_card|browser_fill_details|vault_save_login|vault_save_card|vault_save_details|vault_list|vault_forget|get_time|clear_workspace|undo_workspace|remove_card|move_card|arrange_cards|resize_card|control_card|read_card|edit_note|rename_card|duplicate_card|describe_workspace|edit_html|set_speech_rate)$/;
 
 export async function decide(input: RouteInput): Promise<Decision> {
   const started = Date.now();
@@ -348,7 +366,8 @@ export async function decide(input: RouteInput): Promise<Decision> {
   const waved = first.action === "NONE" && looksLikeAsk(latestWords(input.conversation));
   if (finished && (unsure || waved)) {
     const second = await secondOpinion(input, prepared.tools, first, min);
-    if (second) return { ...second, ms: Date.now() - started, ...(first.error ? { error: first.error } : {}) };
+    // (Its pick stands on its own: carrying Jev's error along would make firing() skip it — the fallback would be mute.)
+    if (second) return { ...second, ms: Date.now() - started };
   }
   return first;
 }
@@ -364,7 +383,8 @@ async function firstDecision(input: RouteInput, ctx: AgentContext, prepared: Pre
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${ep.typesafeKey}` },
       body: JSON.stringify(buildJevBody(input, prepared, ctx)),
-      signal: AbortSignal.timeout(8000),
+      // Jev answers in a fraction of a second; one that hasn't in a few is treated as down, and the fallbacks decide.
+      signal: AbortSignal.timeout(3500),
     });
     if (!res.ok) throw new Error(`Jev ${res.status}: ${(await res.text()).slice(0, 200)}`);
     const answers =
@@ -393,6 +413,7 @@ async function firstDecision(input: RouteInput, ctx: AgentContext, prepared: Pre
       ms: Date.now() - started,
     };
   } catch (err) {
+    console.warn("[router] Jev failed; the keyword rules decide:", (err as Error).message);
     jev = { action: "NONE", confidence: 0, tool: null, options: {}, offered: [], ms: Date.now() - started, error: (err as Error).message };
   }
 
@@ -408,25 +429,38 @@ async function firstDecision(input: RouteInput, ctx: AgentContext, prepared: Pre
       if (jev.action === "build_ui" && h.action !== "edit_html") {
         /* keep build_ui unless the heuristic is specifically an HTML tweak */
       } else {
-        return { ...h, ms: Date.now() - started, error: jev.error };
+        return { ...h, ms: Date.now() - started };
       }
     }
-    // When Jev abstains or is unsure, promote a confident game-tool heuristic so setup and
-    // play still fire (board tooling used to drown these out).
-    if (
-      !jevIsGame &&
-      (jev.action === "NONE" || jev.confidence < 0.5 || jev.error) &&
-      h.action.startsWith("game_") &&
-      h.tool &&
-      h.confidence >= 0.7
-    ) {
-      return { ...h, ms: Date.now() - started, error: jev.error };
-    }
+    // Jev itself failed (not: answered "no tool"): the keyword rules stand in for it, game tools included, so setup
+    // and play still move. When Jev answered NONE it has judged the words — table talk ("I'll be right back", "pause
+    // the game") must not be turned into a game action by a keyword.
+    if (jev.error && h.action !== "NONE" && h.tool && h.confidence >= 0.7) return { ...h, ms: Date.now() - started };
+  }
+  // A password or a card is the vault's, whatever else the words sound like: "remember my Netflix password" must
+  // never become a memory. (Only while the vault's tools are on offer; the rule finds nothing otherwise.)
+  if (jev.action === "remember") {
+    const h = heuristic(input, prepared.tools, started);
+    if (h.tool && /^vault_save_(login|card)$/.test(h.action)) return { ...h, ms: Date.now() - started };
   }
   return jev;
 }
 
 // ─── Heuristic fallback (no Jev key) ─────────────────────────────────────────
+
+/** The request is negated: "don't clear the screen", "never mind closing them", "do not remove it". */
+const NOT_THAT = /\b(?:don'?t|do not|never|not|no need to|stop)\b[^.?!]{0,24}\b(?:clear|wipe|erase|empty|blank|reset|delet|remov|clos)/;
+/** The clock or the calendar asked for: "what time is it", "what's the date today", "what day is it". */
+const CLOCK = /\bwhat(?:'s| is)? (?:the )?(?:time|date|day)\b|\bwhat time\b|\b(?:today'?s|the current) (?:date|time)\b|\bwhat day (?:is|of)\b/;
+/** Tool names whose words are everyday ones: a mention is not a request. */
+const EVERYDAY = new Set(
+  "about after again answer arrange audio back begin board brain browser build call card cards clear close content control create date describe duplicate edit figure file find from game give good have help home image know last like list long look make media memory modify more most move music name need never next note notes open other page play player print question rate read recall remember remove rename resize roll save schedule screen search send share show skill some speech start state stop story table tabs take tell text that their there these thing think this those time turn undo video voice want week what when where which while with work workspace would write year your document documents spreadsheet spreadsheets files".split(
+    " ",
+  ),
+);
+
+// (The memory, reminder and skill tools are named with everyday words; tools/intents.ts reads a request for them.)
+for (const word of EVERYDAY_TOOL_WORDS) EVERYDAY.add(word);
 
 function latestWords(conversation: string): string {
   const m = /User's latest words \([^)]*\): ([\s\S]*)$/.exec(conversation);
@@ -610,9 +644,113 @@ const ASKS = new RegExp(String.raw`\b(remind me|${REMEMBER_TO}|set( up)?( me)? (
 const ONLINE = /\b(google|online|internet|search the web)\b/;
 
 /** Keyword routing to the same tools Jev would see (already filtered for persona, phase and context). */
+// The vault (tools/vault.ts), in the words people use. A board card is also a "card": the payment kind is named as one
+// ("credit card", "my Visa", "card number") or by "the vault".
+const VAULT_KEEP = String.raw`(save|store|remember|keep|add|hold on to|take down|put)\s+(down\s+)?(my|the|this|that|our|a|an|another|his|her|their)\b`;
+/** …not a field of a page being built ("add a password field", "a credit card form"). */
+const NOT_A_FIELD = String.raw`(?!\s+(field|input|box|form|prompt|page|screen|button|widget|generator|checker|strength|manager|reset|policy|rules?|validation)\b)`;
+const VAULT_LOGIN = new RegExp(
+  String.raw`\b${VAULT_KEEP}[^.?!]{0,30}\b(log-?ins?|passwords?|pass ?codes?|credentials|sign-?in details)\b${NOT_A_FIELD}|\bi'?ll give you (my|the|a) (log-?in|password|credentials)\b`,
+);
+const PAY_CARD = String.raw`((credit|debit|bank|payment) cards?|card (number|details|info(rmation)?)|(visa|mastercard|amex|american express|discover)( card)?)`;
+const VAULT_CARD = new RegExp(String.raw`\b${VAULT_KEEP}[^.?!]{0,30}\b${PAY_CARD}\b${NOT_A_FIELD}`);
+const VAULT_DETAILS = new RegExp(
+  String.raw`\b(save|store|add|keep)\b[^.?!]{0,30}\bmy ((home|shipping|billing|mailing|delivery|street) )?(address|contact (details|info(rmation)?)|(shipping|billing|personal) (details|info(rmation)?)|phone number)\b${NOT_A_FIELD}`,
+);
+const VAULT_LIST = new RegExp(
+  String.raw`\b(what|which|list|show( me)?)\b[^.?!]{0,30}\b(log-?ins?|passwords?|credentials|${PAY_CARD})\b[^.?!]{0,30}\b(do you have|have you got|are saved|saved|stored|on file)\b|\bwhat('s| is| do you have) in (the|your|my) vault\b|\b(what|which)\b[^.?!]{0,40}\bin (the|your|my) vault\b`,
+);
+const VAULT_FORGET = new RegExp(
+  String.raw`\b(forget|delete|remove|erase|get rid of)\b[^.?!]{0,40}\b(log-?ins?|passwords?|credentials|saved (card|details)|${PAY_CARD})\b${NOT_A_FIELD}|\b(forget|delete|remove|erase)\b[^.?!]{0,50}\bfrom (the|your|my) vault\b`,
+);
+
+const NUMBER_WORDS: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12 };
+const NUMBER_WORD = Object.keys(NUMBER_WORDS).join("|");
+/** "card two", "cards two and three" as "card 2", "cards 2 and 3": the rules below match digits. */
+function cardDigits(text: string): string {
+  let s = text.replace(new RegExp(String.raw`\b((?:cards?|notes?|number)\s+)(${NUMBER_WORD})\b`, "g"), (_m, lead: string, w: string) => `${lead}${NUMBER_WORDS[w]}`);
+  const more = new RegExp(String.raw`(\d\s*(?:,|and|through|to)\s*)(${NUMBER_WORD})\b`);
+  for (let i = 0; i < 12 && more.test(s); i++) s = s.replace(more, (_m, lead: string, w: string) => `${lead}${NUMBER_WORDS[w]}`);
+  return s;
+}
+
+// Signing in and filling from the vault (tools/browser-fill.ts), while the extension is connected. "Click the sign in
+// button" is a click; "sign me in" is this.
+const LEAD = String.raw`^(?:(?:ok(?:ay)?|hey|so|now|and|then|please|trinity|can you|could you|would you|go ahead and)[,.!]?\s+)*`;
+const BROWSER_SIGN_IN = new RegExp(
+  String.raw`\b(?:sign|log)\s+me\s+(?:in|into|on)\b|${LEAD}(?:sign|log)\s+(?:in|into)\b|\buse\s+my\s+saved\s+(?:password|log-?in|credentials)\b|\b(?:fill|put|type)\s+in\s+my\s+(?:password|log-?in|credentials|user ?name)\b`,
+);
+const BROWSER_FILL_CARD = new RegExp(
+  String.raw`\b(?:fill\s+(?:in|out)|enter|put\s+in|type\s+in|use)\s+my\s+(?:(?:credit|debit|payment|bank)\s+)?card\b|\bpay\s+with\s+my\s+(?:card|visa|mastercard|amex|american express|(?:credit|debit)\s+card)\b|\bfill\s+(?:in|out)\s+(?:the\s+)?(?:card|payment)\s+(?:details|info(?:rmation)?|form|fields?)\b`,
+);
+const BROWSER_FILL_DETAILS = new RegExp(
+  String.raw`\bfill\s+(?:in|out)\s+my\s+(?:details|address|info(?:rmation)?|name|contact\s+(?:details|info(?:rmation)?)|shipping\s+\w+|billing\s+\w+)\b|\bfill\s+(?:in|out)\s+(?:this|the)\s+form\b[^.?!]{0,20}\bmy\s+(?:details|info(?:rmation)?|address)\b|\b(?:enter|put\s+in|type\s+in|use)\s+my\s+(?:(?:shipping|billing|home|mailing)\s+)?(?:address|details|contact\s+(?:details|info(?:rmation)?))\b`,
+);
+/** Tab and window commands beyond BROWSER_TABS: pin, mute, duplicate, move, group, reopen; a new, closed or minimized window. */
+const BROWSER_TABS_MORE =
+  /\b(?:pin|unpin|mute|unmute|duplicate)\s+(?:this|that|the|the current|my)?\s*(?:\w+\s+)?tabs?\b|\bmove\s+(?:this|that|the)\s+(?:\w+\s+)?tab\b|\b(?:group|ungroup)\s+(?:these|those|the|my|all|all the)?\s*(?:\w+\s+)?tabs\b|\breopen\s+(?:the\s+|that\s+|my\s+)?(?:last\s+|closed\s+)*tabs?\b|\b(?:open|start|make)\s+(?:a\s+|another\s+)(?:new\s+)?(?:\w+\s+)?window\b|\bnew\s+(?:browser\s+|incognito\s+|private\s+)?window\b|\b(?:close|minimi[sz]e|maximi[sz]e|restore)\s+(?:this|that|the)\s+(?:browser\s+)?window\b/;
+
+// The Game Master's table commands (game/play-tools.ts), for when Jev is down or there is no key.
+const GAME_PAUSE =
+  /\b(?:pause|unpause|resume)\s+(?:the\s+|our\s+)?(?:game|session|play|adventure)\b|\b(?:let'?s\s+)?take\s+(?:a\s+)?(?:short\s+|quick\s+|little\s+)?break\b|\bwe'?re\s+back\b|^(?:ok(?:ay)?[,\s]+)?(?:resume|unpause|pause)[.!]?$/;
+const GAME_UNDO = /\b(?:undo\s+(?:that|it|the\s+last\s+(?:turn|move|roll))|take\s+(?:that|it)\s+back|scratch\s+that|that\s+was\s+a\s+mistake)\b|^(?:ok(?:ay)?[,\s]+)?undo[.!]?$/;
+const GAME_NEXT_TURN =
+  /\b(?:that'?s\s+(?:it\s+for\s+)?my\s+turn|end\s+(?:my|the|our)\s+turn|i'?m\s+done(?:\s+with\s+my\s+turn)?|i\s+pass|skip\s+my\s+turn|i\s+(?:delay|hold\s+my\s+action)|next\s+(?:turn|player|person|one))\b|^(?:ok(?:ay)?[,\s]+)?next[.!]?$/;
+const GAME_START_COMBAT = /\broll\s+(?:for\s+)?initiative\b|\b(?:start|begin)\s+(?:the\s+|a\s+)?(?:combat|fight|battle|encounter)\b|\bwe\s+(?:attack|charge|ambush)\s+(?:them|the)\b/;
+const GAME_END_COMBAT = /\b(?:end|stop|finish)\s+(?:the\s+)?(?:combat|fight|battle|encounter)\b|\b(?:combat|the\s+fight|the\s+battle)\s+is\s+over\b|\bthey\s+(?:surrender|flee|run\s+away)\b/;
+const GAME_REST = /\b(?:take|have|make|do)\s+(?:a\s+)?(?:short|long)\s+rest\b|\b(?:short|long)\s+rest\b|\bwe\s+(?:make\s+camp|camp\s+for\s+the\s+night|rest\s+for\s+(?:an\s+hour|the\s+night))\b/;
+const GAME_END_SESSION =
+  /\b(?:end|wrap\s+up|finish)\s+(?:the\s+|this\s+|our\s+|tonight'?s\s+)?session\b|\blet'?s\s+(?:stop|call\s+it|wrap\s+(?:it\s+)?up)\s+(?:here|there|for\s+(?:tonight|today|now))\b|\bthat'?s\s+(?:it|all)\s+for\s+(?:tonight|today)\b/;
+/** A roll is a game roll with dice words near it ("I rolled a 14", "roll for perception", "roll a d20"). */
+const GAME_ROLL =
+  /\b(?:i\s+rolled|roll\s+for\s+me)\b|\b(?:roll(?:ed|ing|s)?|throw)\b[^.?!]{0,30}?\b(?:d\d+|dice|die|\d+|a\s+(?:natural|nat)\b|for\b|initiative|check|save|saving\s+throw|attack|damage|perception|stealth|athletics|acrobatics|investigation|insight|persuasion|deception|intimidation|arcana|history|nature|religion|medicine|survival|sleight|animal|performance|strength|dexterity|constitution|intelligence|wisdom|charisma)\b/;
+/** "I…" that is talk around the table, not something a hero does. */
+const TABLE_TALK =
+  /\b(?:right\s+back|brb|bathroom|restroom|snacks?|pizza|my\s+phone|gotta\s+go|have\s+to\s+go|need\s+to\s+go|be\s+back|heading\s+out|log\s+off|my\s+(?:mom|dad|wife|husband|boss|kids?)\s+(?:is|are)\s+calling)\b/;
+
+// Saved files (tools/files.ts): each rule needs a file word, so notes, cards, pages and the vault keep their own.
+/** A saved file's noun ("file", "document", "PDF", "spreadsheet"…) — never "file card" (a card on the board). */
+const FILE_NOUN = String.raw`(?:files?|documents?|docs?|pdfs?|spread\s?sheets?|workbooks?|csvs?|(?:word|excel)\s+(?:docs?|documents?|files?|sheets?))\b(?!\s+cards?\b)`;
+/** A name with an extension, typed or heard ("shopping.txt", "shopping dot t x t"). */
+const FILE_NAME = String.raw`\b[\w'-]+(?:\.|\s+dot\s+)(?:txt|t x t|md|markdown|json|csv|html|pdf|p d f|docx|xlsx)\b`;
+/** Up to a few words between the article and the noun ("the old report file", "my shopping list file"). */
+const SOME = String.raw`(?:[\w'-]+\s+){0,4}?`;
+
+const FILE_LIST = new RegExp(
+  String.raw`\b(?:what|which)\s+(?:saved\s+)?(?:files|documents|docs|pdfs|spread\s?sheets)\s+(?:do|did|have)\b|\blist\s+(?:all\s+)?(?:of\s+)?(?:my|the)\s+(?:saved\s+)?(?:files|documents|docs|pdfs|spread\s?sheets)\b|\b(?:show|tell)\s+me\s+(?:all\s+)?(?:of\s+)?my\s+(?:saved\s+)?(?:files|documents)\b|\bdo\s+i\s+have\s+any\s+(?:saved\s+)?(?:files|documents|pdfs|spread\s?sheets)\b|\bis\s+there\s+a\s+(?:file|document)\s+(?:about|on|for|called|named)\b`,
+);
+const FILE_DELETE = new RegExp(String.raw`\b(?:delete|remove|erase|trash|get\s+rid\s+of|throw\s+away)\s+(?:all\s+)?(?:of\s+)?(?:the|that|this|those|these|my)\s+${SOME}${FILE_NOUN}|\b(?:delete|remove|trash)\s+${FILE_NAME}`);
+const FILE_RENAME = new RegExp(
+  String.raw`\b(?:rename|retitle)\s+(?:the|that|this|my)\s+${SOME}${FILE_NOUN}|\brename\s+${FILE_NAME}|\b(?:call|name)\s+(?:the|that|this)\s+(?:[\w'-]+\s+)?(?:file|document|pdf|spread\s?sheet)\s+\w|\bchange\s+the\s+name\s+of\s+(?:the|that|my)\s+${SOME}${FILE_NOUN}`,
+);
+const FILE_READ = new RegExp(
+  String.raw`\bread\s+(?:me\s+|out\s+|aloud\s+)?(?:the|my|that|this)\s+${SOME}(?:file|document|doc|pdf)\b(?!s|\s+cards?\b)|\bread\s+(?:me\s+)?(?:the\s+)?file\s+(?:called|named)\b|\bread\s+(?:me\s+)?${FILE_NAME}|\bwhat(?:'s|\s+is|\s+does)\s+(?:in\s+)?(?:the|my|that)\s+${SOME}(?:file|document)\b(?!s)`,
+);
+const FILE_OPEN = new RegExp(
+  String.raw`\b(?:open|bring\s+up|pull\s+up|show\s+me)\s+(?:up\s+)?(?:the|my|that|this)\s+${SOME}${FILE_NOUN}|\bopen\s+${FILE_NAME}|\bwhere(?:'s|\s+is)\s+(?:the|my|that)\s+${SOME}(?:file|document|pdf|spread\s?sheet)\b`,
+);
+const FILE_SAVE = new RegExp(
+  String.raw`\bsave\s+(?:that|this|it|(?:the|that|this|my)\s+(?:[\w'-]+\s+){0,3}?(?:note|card|list|answer|text)|card\s*\d+)\s+(?:as|to|in|into)\b(?!\s+(?:soon|well|is|usual)\b)|\bsave\s+.{1,60}?\s+as\s+${FILE_NAME.slice(2)}|\b(?:make|create|start)\s+an?\s+(?:new\s+)?(?:text\s+|txt\s+)?file\s+(?:called|named)\b`,
+);
+const FILE_SHEET = new RegExp(
+  String.raw`\b(?:in|into|as|to)\s+(?:an?\s+)?(?:excel(?:\s+(?:file|sheet|workbook|spreadsheet))?|spread\s?sheet|csv)\b(?!\s+(?:app|widget|tool|page)\b)|\b(?:make|create|build|start|give\s+me|export|put\s+together)\s+(?:me\s+)?(?:an?\s+)?(?:[\w'-]+\s+){0,3}?(?:spread\s?sheet|excel\s+(?:file|sheet|workbook)|workbook|csv)\b(?!\s+(?:app|widget|tool|page)\b)`,
+);
+/** A web page, site or tab: the browser tools' words, kept away from the file rules ("save this page as a PDF"). */
+const PAGE_WORDS = /\b(?:this|that|the)\s+(?:web\s*)?(?:page|site|website|tab|article)\b/;
+const FILE_DOC = new RegExp(
+  String.raw`\b(?:write|draft|make|create|prepare|put\s+together|type\s+up|write\s+up)\s+(?:me\s+|us\s+)?(?:an?\s+|the\s+|my\s+)?(?:[\w'-]+\s+){0,4}?(?:letter|resume|cv|cover\s+letter|report|invoice|essay|memo|contract|proposal|agreement|document|pdf|word\s+doc(?:ument)?)\b|\b(?:as|into|to|in)\s+(?:an?\s+)?(?:pdf|word\s+(?:doc|document|file)|docx|(?:editable\s+)?document)\b`,
+);
+
+// The engine-drawn card kinds (tools/display.ts) and rebuilding a failed card (retry_card).
+const SHOW_TABLE = /\b(?:in(?:to)?|as) a table\b|\b(?:make|show|give) (?:me )?a table of\b/;
+const SHOW_CHART = /\b(?:chart|graph|plot) (?:that|those|this|these|the|it|them)\b|\ba (?:bar|line|area|pie|donut|scatter) (?:chart|graph|plot)\b|\bas a (?:\w+ )?(?:chart|graph)\b/;
+const SHOW_DOCUMENT = /\bas a document\b/;
+const SHOW_CODE = /\b(?:show|let me see) (?:me )?(?:the )?(?:source )?code (?:for|of|behind)\b/;
+const RETRY_CARD = /^(?:(?:ok(?:ay)?|please|trinity)[\s,]+)*(?:try (?:that |it )?again|retry\b|have another go|rebuild (?:it|card \d+))/;
+
 function heuristic(input: RouteInput, tools: Tool[], started: number): Decision {
-  // Curly apostrophes (phone keyboards type "I’ll", "don’t") read as straight ones.
-  const t = latestWords(input.conversation).toLowerCase().replace(/[‘’]/g, "'");
+  // Curly apostrophes (phone keyboards type "I’ll", "don’t") read as straight ones; a card's number as a digit.
+  const t = cardDigits(latestWords(input.conversation).toLowerCase().replace(/[‘’]/g, "'"));
   const pick = (action: string, confidence = 0.75): Decision => ({
     action,
     confidence,
@@ -622,6 +760,24 @@ function heuristic(input: RouteInput, tools: Tool[], started: number): Decision 
     ms: Date.now() - started,
   });
   const has = (name: string) => tools.some((x) => x.name === name);
+  // A yes or a no while Trinity is waiting for one (the tool is only offered then): decided here, whatever Jev makes of it.
+  if (has("answer_question") && yesOrNo(t) !== null && t.split(/\s+/).length <= 10) return pick("answer_question", 0.95);
+  // Filling from the vault on the page in front (offered only while the extension is connected): before the vault's
+  // own "save" words and before a click.
+  if (has("browser_fill_card") && BROWSER_FILL_CARD.test(t)) return pick("browser_fill_card", 0.9);
+  if (has("browser_fill_details") && BROWSER_FILL_DETAILS.test(t)) return pick("browser_fill_details", 0.9);
+  if (has("browser_sign_in") && BROWSER_SIGN_IN.test(t) && !/\b(?:click|tap|press|hit|push)\b/.test(t)) return pick("browser_sign_in", 0.9);
+  // The vault, while its tools are on offer. Before memory and the board: "remember my Netflix password" opens the
+  // secure form (it is never kept as a memory), and "delete my saved card" is not a board card.
+  if (has("vault_forget") && VAULT_FORGET.test(t)) return pick("vault_forget", 0.9);
+  if (has("vault_list") && VAULT_LIST.test(t)) return pick("vault_list", 0.9);
+  if (has("vault_save_card") && VAULT_CARD.test(t)) return pick("vault_save_card", 0.9);
+  if (has("vault_save_login") && VAULT_LOGIN.test(t)) return pick("vault_save_login", 0.9);
+  if (has("vault_save_details") && VAULT_DETAILS.test(t)) return pick("vault_save_details", 0.9);
+  // The memory, reminder and skill tools asked for outright, and the answer to a question the problem solver just
+  // asked (tools/intents.ts).
+  const learned = voiceIntent(t, has);
+  if (learned) return pick(learned, learned === "answer_followup" ? 0.9 : 0.85);
   // While a game runs (its tools are offered), the user's words are about the story: a question about a
   // hero's sheet is game_answer and what "I" or "we" do is game_narrate.
   const inGame = has("game_narrate") || has("game_answer");
@@ -629,9 +785,14 @@ function heuristic(input: RouteInput, tools: Tool[], started: number): Decision 
   const atGameTable =
     has("game_new") || has("game_begin") || has("game_add_player") || has("game_narrate") || has("game_configure");
   // Begin before new: "let's start the adventure" during setup is game_begin, not a fresh game_new.
-  if (has("game_begin") && /\b(let'?s (begin|start)|ready to (begin|play)|start the adventure|that'?s everyone|we'?re ready)\b/.test(t))
+  if (
+    has("game_begin") &&
+    /\b(let'?s (begin|start)|ready to (begin|play)|start the adventure|that'?s everyone|we'?re ready|(start|begin) (the|our|this) (game|adventure|campaign|session))\b/.test(t)
+  )
     return pick("game_begin", 0.85);
-  if (has("game_new") && /\b(start|begin|run|set up|play)\b.*\b(game|campaign|adventure|one.?shot)\b/.test(t)) return pick("game_new", 0.85);
+  // A NEW game is asked for as one ("start a new game", "let's play a one-shot") — not "pause the game" or "start the game".
+  if (has("game_new") && /\b(start|begin|run|set up|play)\b[^.?!]*\b(a|an|another|new)\b[^.?!]*\b(game|campaign|adventure|one.?shot)\b/.test(t))
+    return pick("game_new", 0.85);
   // ("What's my character's armor class?" asks about the sheet; "What's my character going to be? An elf…" makes one.)
   if (has("game_answer") && /\b(what('s| is| are)|how (much|many))\b/.test(t) && /\b(my character's|hp|hit points|armou?r|ac|gear|inventory|gold|stats?)\b/.test(t))
     return pick("game_answer", 0.85);
@@ -639,9 +800,23 @@ function heuristic(input: RouteInput, tools: Tool[], started: number): Decision 
     return pick("game_add_player", 0.85);
   if (has("game_configure") && /\b(genre|setting|tone|campaign|fantasy|sci-?fi|horror|pirate|space|cyberpunk)\b/.test(t))
     return pick("game_configure", 0.8);
-  if (has("game_roll") && /\broll\b/.test(t)) return pick("game_roll", 0.85);
-  if (has("game_narrate") && !ONLINE.test(t) && /^((ok(ay)?|so|and|then|now|alright)\b[\s,]*)*(i|we)('(ll|m|re|ve|d))?\s+\w/.test(t))
+  // The table's own commands (each offered only when it applies: a fight to end only in a fight, and so on).
+  if (has("game_end_session") && GAME_END_SESSION.test(t)) return pick("game_end_session", 0.85);
+  if (has("game_pause") && GAME_PAUSE.test(t)) return pick("game_pause", 0.85);
+  if (has("game_undo") && GAME_UNDO.test(t)) return pick("game_undo", 0.85);
+  if (has("game_start_combat") && GAME_START_COMBAT.test(t)) return pick("game_start_combat", 0.85);
+  if (has("game_end_combat") && GAME_END_COMBAT.test(t)) return pick("game_end_combat", 0.85);
+  if (has("game_next_turn") && GAME_NEXT_TURN.test(t)) return pick("game_next_turn", 0.85);
+  if (has("game_rest") && GAME_REST.test(t)) return pick("game_rest", 0.85);
+  // A yes or a no to the Game Master's own question — after the named commands ("okay, we're back" resumes).
+  if (has("game_confirm") && yesOrNo(t) !== null && t.split(/\s+/).length <= 10) return pick("game_confirm", 0.95);
+  if (has("game_roll") && GAME_ROLL.test(t)) return pick("game_roll", 0.85);
+  if (has("game_narrate") && !ONLINE.test(t) && !TABLE_TALK.test(t) && /^((ok(ay)?|so|and|then|now|alright)\b[\s,]*)*(i|we)('(ll|m|re|ve|d))?\s+\w/.test(t))
     return pick("game_narrate", 0.85);
+  // Email, the calendar, meetings and booking (services/assist/routes.ts): each rule knows what is open right now
+  // ("send it" only while Trinity's draft is open, "save it" only while her event form is).
+  const assist = assistRoute(t, has);
+  if (assist) return pick(assist, 0.85);
   // Memory, reminders, search and builds share verbs ("remind me to look it up", "build a tracker
   // for every day"): route by the intent the user leads with — the pattern that matches earliest
   // wins, so a reminder that mentions a chart is still a reminder, and a build that mentions "every
@@ -678,11 +853,33 @@ function heuristic(input: RouteInput, tools: Tool[], started: number): Decision 
   // without it). A look change on the live site ("hide the ads") beats remove_card; a page share beats make_text.
   if (at("browser_share", BROWSER_SHARE) < Infinity) return pick("browser_share", 0.85);
   if (at("browser_modify", BROWSER_MODIFY) < Infinity && !IMAGE.test(t) && !VIDEO.test(t)) return pick("browser_modify", 0.82);
-  if (at("browser_tabs", BROWSER_TABS) < Infinity) return pick("browser_tabs", 0.85);
+  if (at("browser_tabs", BROWSER_TABS) < Infinity || at("browser_tabs", BROWSER_TABS_MORE) < Infinity) return pick("browser_tabs", 0.85);
   if (at("browser_save", BROWSER_SAVE) < Infinity && !IMAGE.test(t)) return pick("browser_save", 0.82);
   if (at("browser_read", BROWSER_READ) < Infinity) return pick("browser_read", 0.82);
   if (at("browser_open", BROWSER_OPEN) < Infinity && !IMAGE.test(t) && !VIDEO.test(t)) return pick("browser_open", 0.85);
   if (at("browser_act", BROWSER_ACT) < Infinity) return pick("browser_act", 0.8);
+  // Engine-drawn cards and a retry, before the build verbs: "make a bar chart of these numbers" is drawn, not built.
+  if (!atGameTable) {
+    if (at("retry_card", RETRY_CARD) < Infinity) return pick("retry_card", 0.85);
+    if (at("show_chart", SHOW_CHART) < Infinity) return pick("show_chart", 0.85);
+    if (at("show_table", SHOW_TABLE) < Infinity) return pick("show_table", 0.85);
+    if (at("show_code", SHOW_CODE) < Infinity) return pick("show_code", 0.85);
+    if (at("show_document", SHOW_DOCUMENT) < Infinity && !PAGE_WORDS.test(t)) return pick("show_document", 0.85);
+  }
+  // Saved files, before the card rules: "read the shopping list file" is not a card, "delete the old report file" not
+  // a board card. A request naming a file to read, open, delete or rename comes before one that makes a file.
+  if (!atGameTable) {
+    if (at("list_files", FILE_LIST) < Infinity) return pick("list_files", 0.85);
+    if (at("delete_file", FILE_DELETE) < Infinity) return pick("delete_file", 0.85);
+    if (at("rename_file", FILE_RENAME) < Infinity) return pick("rename_file", 0.85);
+    if (at("read_file", FILE_READ) < Infinity) return pick("read_file", 0.85);
+    if (at("open_file", FILE_OPEN) < Infinity) return pick("open_file", 0.85);
+    if (at("save_file", FILE_SAVE) < Infinity) return pick("save_file", 0.85);
+    if (!SKILL.test(t) && !PAGE_WORDS.test(t)) {
+      if (at("make_spreadsheet", FILE_SHEET) < Infinity) return pick("make_spreadsheet", 0.82);
+      if (at("make_document", FILE_DOC) < Infinity) return pick("make_document", 0.82);
+    }
+  }
   // Arranging before undo: "put the cards in a grid" is a layout, not "put the cards back".
   if (at("arrange_cards", ARRANGE) < Infinity) return pick("arrange_cards", 0.9);
   // A card's size before undo too: "restore card 2" / "put card 2 back to normal" is a resize, not an undo.
@@ -699,7 +896,9 @@ function heuristic(input: RouteInput, tools: Tool[], started: number): Decision 
   }
   // Undo before clear: "put the cards back" must not wipe the board again.
   if (at("undo_workspace", UNDO) < Infinity) return pick("undo_workspace", 0.9);
-  if (at("clear_workspace", CLEAR) < Infinity) return pick("clear_workspace", 0.8);
+  // ("Don't clear the screen" asks for the opposite.)
+  if (at("clear_workspace", CLEAR) < Infinity && !NOT_THAT.test(t)) return pick("clear_workspace", 0.8);
+  if (at("get_time", CLOCK) < Infinity) return pick("get_time", 0.88);
   if (at("describe_workspace", DESCRIBE) < Infinity) return pick("describe_workspace", 0.8);
   if (at("set_speech_rate", SPEECH_RATE) < Infinity) return pick("set_speech_rate", 0.88);
   if (!atGameTable) {
@@ -736,12 +935,13 @@ function heuristic(input: RouteInput, tools: Tool[], started: number): Decision 
     return pick("make_text");
   }
   if (buildAt < Infinity) return pick("build_ui");
+  // Last resort, for tools the rules above don't know (a skill Trinity made): a distinctive word of the tool's name
+  // said aloud ("run the tip calculator"). Never an everyday word ("I had a great time" is not get_time, "the game was
+  // fun" is not game_new), never a game tool (table talk is full of their words), never one that touches the vault.
   const words = new Set(t.split(/[^a-z0-9]+/).filter((w) => w.length > 2));
   for (const tool of tools) {
-    if (inGame && tool.name === "web_search") continue; // "search the chest": no web words, no web search
-    if (/^(make_image|make_video|make_audio|make_text|show_card|clear_workspace|undo_workspace|describe_workspace|remove_card|move_card|arrange_cards|resize_card|control_card|read_card|edit_note|rename_card|duplicate_card|edit_html|set_speech_rate)$/.test(tool.name))
-      continue; // a video or picture mentioned isn't one asked for
-    if (tool.name.split(/[_\s]+/).some((tok) => tok.length > 3 && words.has(tok))) return pick(tool.name, 0.7);
+    if (tool.sensitive || tool.name.startsWith("game_") || ASSIST_TOOLS.has(tool.name)) continue;
+    if (tool.name.split(/[_\s]+/).some((tok) => tok.length > 3 && !EVERYDAY.has(tok) && words.has(tok))) return pick(tool.name, 0.7);
   }
   return pick("NONE", 0.6);
 }

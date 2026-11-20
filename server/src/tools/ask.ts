@@ -29,7 +29,7 @@ const keywords = (s: string) =>
   );
 
 /** Memories that share a real word with the question (search ranks by salience too, so it returns some regardless). */
-async function relevantMemories(docs: Promise<MemoryDoc[]>, question: string): Promise<string[]> {
+export async function relevantMemories(docs: Promise<MemoryDoc[]>, question: string): Promise<string[]> {
   const words = keywords(question);
   let found: MemoryDoc[] = [];
   try {

@@ -1,0 +1,16 @@
+{
+  "about": "A Google-Calendar-like day view (r/day/2026/11/11): the hour labels down the side, then each event as its chip shows it and as its screen-reader label says it.",
+  "url": "https://calendar.google.com/calendar/u/0/r/day/2026/11/11",
+  "title": "Google Calendar - Wednesday, November 11, 2026",
+  "text": "Wednesday, November 11 WED 11 GMT-06 1 AM 2 AM 3 AM 4 AM 5 AM 6 AM 7 AM 8 AM 9 AM 10 AM 11 AM 12 PM 1 PM 2 PM 3 PM 4 PM 5 PM 6 PM 7 PM 8 PM 9 PM 10 PM 11 PM Stand-up 9 – 9:15am 9am to 9:15am, Stand-up, Ryan Smith, No location, November 11, 2026 Lunch with Dana 12:30 – 1:30pm Bistro Verde 12:30pm to 1:30pm, Lunch with Dana, Ryan Smith, Location: Bistro Verde, November 11, 2026 Design review 4 – 5pm Room 4B 4pm to 5pm, Design review, Ryan Smith, Location: Room 4B, November 11, 2026",
+  "controls": [
+    { "ref": 1, "role": "button", "name": "Main drawer" },
+    { "ref": 2, "role": "button", "name": "Today, Tuesday, November 10" },
+    { "ref": 3, "role": "button", "name": "Previous day" },
+    { "ref": 4, "role": "button", "name": "Next day" },
+    { "ref": 5, "role": "button", "name": "Create" },
+    { "ref": 6, "role": "button", "name": "Stand-up 9 – 9:15am" },
+    { "ref": 7, "role": "button", "name": "Lunch with Dana 12:30 – 1:30pm Bistro Verde" },
+    { "ref": 8, "role": "button", "name": "Design review 4 – 5pm Room 4B" }
+  ]
+}

@@ -25,6 +25,10 @@ export interface Endpoints {
   mordiemUrl: string;
   mordiemKey: string;
   brainModel: string;
+  /** Writes what Trinity says when no tool is needed (the talking brain). Blank = brainModel. */
+  chatModel: string;
+  /** Takes the turn when the chat model is slow to start or fails. Blank = none. */
+  chatBackupModel: string;
   /** Writes information cards (show_card): facts, layout, look and picture brief. Blank = brainModel. */
   cardModel: string;
   /** The coding skill's coders: a quick one (the default; the "glm" slot) and a strong one for big apps (the "kimi" slot). */
@@ -52,6 +56,9 @@ export interface Endpoints {
   /** SerpApi: live Google Shopping / Flights / Hotels results for the shopping and travel cards. */
   serpapiKey: string;
   falKey: string;
+  /** The user's webmail and web calendar (opened in their own signed-in browser through the extension). */
+  mailUrl: string;
+  calendarUrl: string;
   // Behaviour.
   /** "auto": skills Trinity creates are sandbox-tested and usable at once; "manual": they wait for approval. */
   skillApproval: "auto" | "manual";
@@ -61,6 +68,8 @@ export interface Endpoints {
   fillerAfterMs: number;
   /** What the workspace window draws over the board besides the cards (every open window follows at once). */
   workspaceOverlays: "all" | "alerts" | "none";
+  /** "polished": the live voice only speaks words it is given (tool replies, the talking brain). "free": it improvises small talk. */
+  talkStyle: "polished" | "free";
 }
 
 const STORE = path.join(DATA_DIR, "endpoints.json");
@@ -80,6 +89,8 @@ function envDefaults(): Endpoints {
     mordiemUrl: config.mordiem.base,
     mordiemKey: config.mordiem.key,
     brainModel: config.mordiem.brainModel,
+    chatModel: config.mordiem.chatModel,
+    chatBackupModel: config.mordiem.chatBackupModel,
     cardModel: config.mordiem.cardModel,
     glmModel: config.mordiem.glmModel,
     kimiModel: config.mordiem.kimiModel,
@@ -97,31 +108,88 @@ function envDefaults(): Endpoints {
     tavilyKey: config.web.key,
     serpapiKey: config.web.serpapiKey,
     falKey: config.fal.key,
+    mailUrl: config.assistant.mailUrl,
+    calendarUrl: config.assistant.calendarUrl,
     skillApproval: config.skills.approval,
     routeEveryMs: config.timing.routeEveryMs,
     minConfidence: config.timing.minConfidence,
     fillerAfterMs: config.timing.fillerAfterMs,
     workspaceOverlays: config.workspace.overlays,
+    talkStyle: config.voice.talkStyle,
   };
 }
 
-function readStore(): Partial<Endpoints> {
+/** What Settings has saved: overrides, and for each saved key the address it was entered for. */
+type Stored = Partial<Endpoints> & { keyFor?: Partial<Record<keyof Endpoints, string>> };
+
+function readStore(): Stored {
   try {
-    return JSON.parse(fs.readFileSync(STORE, "utf8")) as Partial<Endpoints>;
+    return JSON.parse(fs.readFileSync(STORE, "utf8")) as Stored;
   } catch {
     return {};
   }
 }
 
-/** Env defaults with stored overrides applied (blank/undefined overrides ignored). */
-export function getEndpoints(): Endpoints {
+/** Each service's address and the key that is sent to it. */
+const KEY_FOR_URL: [url: keyof Endpoints, key: keyof Endpoints][] = [
+  ["mordiemUrl", "mordiemKey"],
+  ["typesafeUrl", "typesafeKey"],
+  ["deepgramUrl", "deepgramKey"],
+  ["personaplexWsUrl", "personaplexAdminToken"],
+];
+
+/**
+ * Env defaults with stored overrides applied (blank/undefined overrides ignored): what the user configured.
+ *
+ * A key belongs to the address it was entered for. One saved in Settings is remembered with that address (`keyFor`);
+ * one from .env is for the .env address. When the address in effect is a different one, the key is withheld (the
+ * service shows as missing its key until the key for the new address is entered) — otherwise repointing an address
+ * would hand the old key to whoever answers at the new one.
+ */
+export function rawEndpoints(): Endpoints {
   const base = envDefaults();
   const stored = readStore();
   const merged = { ...base };
   for (const [k, v] of Object.entries(stored)) {
-    if (v === undefined || v === null || v === "") continue;
+    if (k === "keyFor" || v === undefined || v === null || v === "") continue;
     (merged as Record<string, unknown>)[k] = v;
   }
+  const out = merged as Record<string, unknown>;
+  for (const [urlKey, keyName] of KEY_FOR_URL) {
+    if (!out[keyName]) continue;
+    const savedFor = (stored as Record<string, unknown>)[keyName] ? stored.keyFor?.[keyName] : base[urlKey];
+    // (A key saved before addresses were remembered has none recorded: it stays with the address in effect.)
+    if (savedFor !== undefined && savedFor !== out[urlKey]) out[keyName] = "";
+  }
+  return merged;
+}
+
+/** A configured model the gateway no longer serves, and the one used in its place ("" = none could be found). */
+export interface ModelStandIn {
+  key: keyof Endpoints;
+  configured: string;
+  using: string;
+}
+let standIns: ModelStandIn[] = [];
+
+/** Set by services/model-health.ts after it has checked the catalog. Returns the previous list. */
+export function setModelStandIns(next: ModelStandIn[]): ModelStandIn[] {
+  const before = standIns;
+  standIns = next;
+  return before;
+}
+export function modelStandIns(): ModelStandIn[] {
+  return standIns;
+}
+
+/**
+ * The settings every caller uses: what the user configured, with a model the gateway no longer serves replaced by its
+ * stand-in (only while the setting still names the missing model).
+ */
+export function getEndpoints(): Endpoints {
+  const merged = rawEndpoints();
+  const fields = merged as unknown as Record<string, unknown>;
+  for (const s of standIns) if (s.using && fields[s.key] === s.configured) fields[s.key] = s.using;
   return merged;
 }
 
@@ -130,18 +198,91 @@ const CHOICES: Partial<Record<keyof Endpoints, readonly string[]>> = {
   coderDefault: ["glm", "kimi"],
   skillApproval: ["auto", "manual"],
   workspaceOverlays: ["all", "alerts", "none"],
+  talkStyle: ["polished", "free"],
 };
 
-/** Apply a partial update. Blank string clears an override back to the env default. */
+/** Numeric settings and the range each must stay in. */
+const NUMBERS: Partial<Record<keyof Endpoints, [min: number, max: number]>> = {
+  routeEveryMs: [100, 5000],
+  minConfidence: [0.3, 0.99],
+  fillerAfterMs: [200, 10_000],
+};
+
+/**
+ * A service address: https or wss anywhere, plain http or ws on this machine — and for the voice pod, which is sent no
+ * key on its socket, plain ws too (a pod behind a bare address). Never with a user name or password in it.
+ */
+function addressOk(key: keyof Endpoints, value: string): boolean {
+  try {
+    const u = new URL(value);
+    if (u.username || u.password) return false;
+    if (u.protocol === "https:" || u.protocol === "wss:") return true;
+    if (u.protocol !== "http:" && u.protocol !== "ws:") return false;
+    return key === "personaplexWsUrl" || ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
+/** A page to open in the user's browser (webmail, calendar): https only (plain http on this machine, for tests). */
+function pageOk(value: string): boolean {
+  try {
+    const u = new URL(value);
+    if (u.username || u.password) return false;
+    return u.protocol === "https:" || (u.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Apply a partial update. Blank string clears an override back to the env default. Every value is checked for its
+ * kind: an unknown key, a wrong type, a number out of range or a bad address is ignored. A key saved here is
+ * remembered with the address it is for (see rawEndpoints), and a stored key is dropped when its address changes
+ * without a new key in the same update.
+ */
 export function setEndpoints(patch: Partial<Endpoints>): Endpoints {
   const stored = readStore();
+  const defaults = envDefaults();
+  const before = rawEndpoints();
+  const isAddress = (key: keyof Endpoints) => KEY_FOR_URL.some(([urlKey]) => urlKey === key);
+  /** What this update really stored (a value that fails a check is skipped, and must not count as a new key). */
+  const accepted = new Set<string>();
   for (const [k, v] of Object.entries(patch)) {
-    if (!(k in envDefaults())) continue;
-    const choices = CHOICES[k as keyof Endpoints];
-    if (choices && v !== "" && v !== undefined && v !== null && !choices.includes(String(v))) continue;
-    if (v === "" || v === undefined || v === null) delete (stored as Record<string, unknown>)[k];
-    else (stored as Record<string, unknown>)[k] = v;
+    if (!(k in defaults)) continue;
+    const key = k as keyof Endpoints;
+    const clear = v === "" || v === undefined || v === null;
+    if (!clear) {
+      const choices = CHOICES[key];
+      if (choices && !choices.includes(String(v))) continue;
+      const range = NUMBERS[key];
+      if (range) {
+        if (typeof v !== "number" || !Number.isFinite(v) || v < range[0] || v > range[1]) continue;
+      } else if (typeof v !== "string" || v.length > 2000) continue;
+      if (isAddress(key) && !addressOk(key, String(v))) continue;
+      if ((key === "mailUrl" || key === "calendarUrl") && !pageOk(String(v))) continue;
+    }
+    if (clear) delete (stored as Record<string, unknown>)[k];
+    else {
+      (stored as Record<string, unknown>)[k] = v;
+      accepted.add(k);
+    }
   }
+  // Keys and their addresses, once the whole update is in.
+  const out = stored as Record<string, unknown>;
+  const keyFor: Partial<Record<keyof Endpoints, string>> = { ...(stored.keyFor ?? {}) };
+  for (const [urlKey, keyName] of KEY_FOR_URL) {
+    const address = String(out[urlKey] ?? defaults[urlKey] ?? "");
+    const newKey = accepted.has(keyName);
+    if (newKey) keyFor[keyName] = address;
+    else if (out[keyName] && address !== before[urlKey]) {
+      delete out[keyName]; // entered for the old address
+      delete keyFor[keyName];
+    }
+    if (!out[keyName]) delete keyFor[keyName];
+  }
+  if (Object.keys(keyFor).length) stored.keyFor = keyFor;
+  else delete stored.keyFor;
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.writeFileSync(STORE, JSON.stringify(stored, null, 2), "utf8");
   return getEndpoints();
@@ -156,6 +297,8 @@ export function coderModel(which?: "glm" | "kimi"): string {
 
 const MODEL_NAMES: Record<string, string> = {
   "mercury-3": "Mercury 3",
+  "deepseek-v4-1-flash-1017-ultrafast": "DeepSeek flash",
+  "deepseek-v4-1-flash": "DeepSeek V4.1 flash",
   "mercury-2-5": "Mercury 2.5",
   "kimi-k3": "Kimi K3",
   "kimi-k3-fast-api": "Kimi K3 fast",
@@ -188,12 +331,14 @@ export function coderName(which: "glm" | "kimi"): string {
 
 /** Safe-to-send view: secret keys become booleans (`*Set`), values withheld. */
 export function publicEndpoints(): Record<string, unknown> {
-  const e = getEndpoints();
+  // What the user configured (not the stand-ins): the page edits settings, and lists the swaps beside them.
+  const e = rawEndpoints();
   const out: Record<string, unknown> = { ...e };
   for (const k of SECRET_KEYS) {
     out[`${k}Set`] = Boolean(e[k]);
     delete out[k];
   }
+  out.modelIssues = standIns;
   return out;
 }
 

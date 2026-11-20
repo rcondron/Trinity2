@@ -1,0 +1,15 @@
+{
+  "about": "The New Message window after Send was pressed and the page refused it: the form is still there, with an error.",
+  "url": "https://mail.google.com/mail/u/0/#inbox?compose=new",
+  "title": "Inbox (3) - ryan@example.com - Gmail",
+  "text": "Error Please specify at least one recipient. OK Primary Promotions Social Updates Sam Lee Roadmap for Q1 - Hi Ryan, attached is the draft roadmap for next quarter. 9:42 AM",
+  "controls": [
+    { "ref": 1, "role": "button", "name": "OK" },
+    { "ref": 2, "role": "button", "name": "Compose" },
+    { "ref": 3, "role": "combobox", "name": "To recipients", "editable": true },
+    { "ref": 4, "role": "textbox", "name": "Subject", "editable": true },
+    { "ref": 5, "role": "textbox", "name": "Message Body", "editable": true },
+    { "ref": 6, "role": "button", "name": "Send" },
+    { "ref": 7, "role": "button", "name": "Discard draft" }
+  ]
+}

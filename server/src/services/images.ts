@@ -198,7 +198,7 @@ async function attempt(prompt: string, size: string, model: string): Promise<Buf
   const first = data.data?.[0];
   if (first?.b64_json) return Buffer.from(first.b64_json, "base64");
   if (first?.url) {
-    const img = await fetch(first.url, { signal: AbortSignal.timeout(ATTEMPT_TIMEOUT_MS) });
+    const img = await (await import("./safe-fetch.js")).safeFetch(first.url, { timeoutMs: ATTEMPT_TIMEOUT_MS, maxBytes: 32 * 1024 * 1024 }); // a gateway-supplied URL: public hosts only, checked per hop
     if (!img.ok) throw new Error(`image download ${img.status}`);
     return Buffer.from(await img.arrayBuffer());
   }

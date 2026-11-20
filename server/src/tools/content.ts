@@ -36,8 +36,9 @@ import { extractFlightAsk, extractHotelAsk, parseShoppingAsk, resolveFlightAsk, 
 import { search, type WebResult } from "../services/web.js";
 import { live } from "../settings.js";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
-import { addCard, boardBlocked, getCard, removeCard, tagsFromText, updateCard } from "../workspace/board.js";
+import { boardBlocked, BoardLimitError, cardById, dropCard, patchCard, tagsFromText, tryAddCard, type CardPatch } from "../workspace/board.js";
 import { workspace } from "../workspace/bus.js";
+import { holdCard } from "../workspace/card-jobs.js";
 import { renderContentCard, renderPendingCard } from "../workspace/content-card.js";
 import { registerTool } from "./registry.js";
 
@@ -77,6 +78,8 @@ type LiveAsk =
   | { kind: "hotels"; query: HotelQuery; assumed: string[] };
 
 interface CardJob {
+  /** The card this job writes into: its id (the number is only for what is said — it can pass to another card). */
+  id: string;
   n: number;
   type: ContentType;
   topic: string;
@@ -93,7 +96,18 @@ interface CardJob {
   dead: boolean;
 }
 
-const busy = (n: number, text: string | null) => workspace.activity(`card:${n}`, text);
+const busy = (job: Pick<CardJob, "id">, text: string | null) => workspace.activity(`card:${job.id}`, text);
+
+/** Write into the job's own card (by id). False when the card is gone or the board can't take it: the job stops. */
+function put(job: CardJob, patch: CardPatch): boolean {
+  try {
+    return patchCard(job.id, patch) !== null;
+  } catch (err) {
+    if (!(err instanceof BoardLimitError)) throw err;
+    workspace.toast(`Card ${job.n}: ${err.message}`, "warn");
+    return false;
+  }
+}
 const article = (label: string) => (/^[aeiou]/i.test(label) ? `an ${label.toLowerCase()}` : `a ${label.toLowerCase()}`);
 
 function typeArg(v: unknown): ContentType | null {
@@ -115,9 +129,9 @@ function searchQuery(job: CardJob, ask: LiveAsk | null): string {
 /** Still on the board? (Removed or cleared: the job quietly stops.) */
 function alive(job: CardJob): boolean {
   if (job.dead) return false;
-  if (!getCard(job.n)) {
+  if (!cardById(job.id)) {
     job.dead = true;
-    busy(job.n, null);
+    busy(job, null);
   }
   return !job.dead;
 }
@@ -139,7 +153,7 @@ function paint(job: CardJob): void {
   if (!job.spec || !alive(job)) return;
   const spec = job.spec;
   const html = renderContentCard(spec, { imageUrl: job.imageUrl, imagePending: job.imagePending });
-  const ok = updateCard(job.n, {
+  const ok = put(job, {
     status: "ready",
     title: cardTitle(spec).slice(0, 80),
     text: spec.summary || job.utterance,
@@ -154,7 +168,7 @@ function paint(job: CardJob): void {
 /** The placeholder, refreshed (the picture may land before the words; the topic may sharpen after parsing). */
 function repaintPending(job: CardJob, status: string): void {
   if (job.spec || !alive(job)) return;
-  updateCard(job.n, {
+  put(job, {
     title: provisionalTitle(job.type, job.topic).slice(0, 80),
     tags: tagsFromText(job.topic, CONTENT_TYPES[job.type].label),
     html: renderPendingCard(job.type, job.topic, status, { imageUrl: job.imageUrl, imagePending: job.imagePending }),
@@ -172,15 +186,19 @@ function startImage(job: CardJob, prompt: string): void {
   }
   if (first?.status === "error") return;
   job.imagePending = true;
-  void done.then((j) => {
-    job.imagePending = false;
-    if (j.status === "ready" && j.url) job.imageUrl = j.url;
-    if (!alive(job)) return;
-    if (job.spec) {
-      paint(job);
-      busy(job.n, null);
-    } else repaintPending(job, `${job.designer} is writing the card…`);
-  });
+  // (The picture may land after the words: the card is held until it has.)
+  const release = holdCard(job.id);
+  void done
+    .then((j) => {
+      job.imagePending = false;
+      if (j.status === "ready" && j.url) job.imageUrl = j.url;
+      if (!alive(job)) return;
+      if (job.spec) {
+        paint(job);
+        busy(job, null);
+      } else repaintPending(job, `${job.designer} is writing the card…`);
+    })
+    .finally(release);
 }
 
 /** "the news" / "today's headlines" → top stories; "news about X" → stories about X. */
@@ -210,7 +228,7 @@ async function prepareLive(job: CardJob): Promise<LiveAsk | { clarify: string } 
     return { kind: "products", query: shoppingQuery(ask), assumed: [] };
   }
   if (job.type === "flights") {
-    busy(job.n, "Working out the route and dates…");
+    busy(job, "Working out the route and dates…");
     const resolved = resolveFlightAsk(await extractFlightAsk(job.utterance), job.utterance);
     if (!resolved.ok) return { clarify: resolved.clarify };
     const q = resolved.query;
@@ -218,7 +236,7 @@ async function prepareLive(job: CardJob): Promise<LiveAsk | { clarify: string } 
     return { kind: "flights", query: q, assumed: resolved.assumed };
   }
   if (job.type === "hotels") {
-    busy(job.n, "Working out the place and dates…");
+    busy(job, "Working out the place and dates…");
     const resolved = resolveHotelAsk(await extractHotelAsk(job.utterance), job.utterance);
     if (!resolved.ok) return { clarify: resolved.clarify };
     job.topic = `hotels in ${resolved.query.destination}`;
@@ -252,12 +270,12 @@ async function fetchLive(job: CardJob, ask: LiveAsk): Promise<LiveOutcome> {
         text: `Live prices need a SerpApi key — add one in Settings → API keys (the free tier is 250 searches a month). The ${label} link below opens this search.`,
       },
     };
-  busy(job.n, `Searching ${label} for ${job.topic}…`);
+  busy(job, `Searching ${label} for ${job.topic}…`);
   try {
     if (ask.kind === "products") {
       const res = await withTimeout(searchProducts(ask.query, LIVE_MS), LIVE_MS + 500);
       if (!res.products.length) return { bundle: null, note: empty(label, job.topic) };
-      busy(job.n, `Fetching pictures for card ${job.n}…`);
+      busy(job, `Fetching pictures for card ${job.n}…`);
       const images = await cacheRemoteImages(liveImages(res), { timeoutMs: IMAGES_MS, max: 8 });
       return { bundle: productsBundle(res, images, ask.assumed), note: null };
     }
@@ -269,7 +287,7 @@ async function fetchLive(job: CardJob, ask: LiveAsk): Promise<LiveOutcome> {
     }
     const res = await withTimeout(searchHotels(ask.query, LIVE_MS), LIVE_MS + 500);
     if (!res.hotels.length) return { bundle: null, note: empty(label, job.topic) };
-    busy(job.n, `Fetching pictures for card ${job.n}…`);
+    busy(job, `Fetching pictures for card ${job.n}…`);
     const images = await cacheRemoteImages(liveImages(res), { timeoutMs: IMAGES_MS, max: 7 });
     return { bundle: hotelsBundle(res, images, ask.assumed), note: null };
   } catch (err) {
@@ -309,7 +327,7 @@ async function compose(job: CardJob, ctx: ToolContext, quality: unknown, ask: Li
     job.liveCount = outcome.bundle?.count ?? 0;
   }
   if (!outcome.bundle && wantsWeb(job.type, job.utterance)) {
-    busy(job.n, `Searching the web for ${job.topic}…`);
+    busy(job, `Searching the web for ${job.topic}…`);
     // News (and a fresh sports / event ask): real headlines from the news feed first — a web search for
     // "the news" only finds the front pages of news sites. Anything else, or a feed that gives nothing: web search.
     if (job.type === "news" || job.type === "sports" || job.type === "event") {
@@ -330,7 +348,7 @@ async function compose(job: CardJob, ctx: ToolContext, quality: unknown, ask: Li
     }
     if (!alive(job)) return null;
   }
-  busy(job.n, `${job.designer} is writing card ${job.n}…`);
+  busy(job, `${job.designer} is writing card ${job.n}…`);
   const bundle = outcome.bundle;
   const composed = await composeContent({
     persona: ctx.persona,
@@ -359,8 +377,8 @@ async function compose(job: CardJob, ctx: ToolContext, quality: unknown, ask: Li
       quality,
     });
     if (!plain) {
-      busy(job.n, null);
-      updateCard(job.n, { status: "error", error: "the card designer didn't answer in time", model: undefined });
+      busy(job, null);
+      put(job, { status: "error", error: "the card designer didn't answer in time", html: null, model: undefined });
       workspace.toast(`Card ${job.n}: couldn't write that card`, "error");
       return null;
     }
@@ -380,7 +398,7 @@ async function compose(job: CardJob, ctx: ToolContext, quality: unknown, ask: Li
   // The picture: the early one if it's already painting; else the designer's brief, unless this kind never has one.
   if (!job.imageStarted && spec.image && CONTENT_TYPES[spec.type].image !== "none") startImage(job, spec.image.prompt);
   paint(job);
-  busy(job.n, job.imagePending ? `Painting the picture for card ${job.n}…` : null);
+  busy(job, job.imagePending ? `Painting the picture for card ${job.n}…` : null);
   console.log(
     `[show_card] card ${job.n} (${spec.type}) written by ${composed ? `${composed.label} in ${composed.ms} ms` : "no designer, plain card"}${bundle ? `, ${bundle.count} live ${bundle.kind}` : ""}${job.imagePending ? ", picture pending" : ""}`,
   );
@@ -416,6 +434,7 @@ const showCard: Tool = {
     const designer = pickCardModel(args.quality, utterance);
     const imagePick = pickMordiemModel({ modality: "image", quality: args.quality, utterance });
     const job: CardJob = {
+      id: "",
       n: 0,
       type,
       topic,
@@ -431,7 +450,7 @@ const showCard: Tool = {
     };
     const early = earlyImagePrompt(type, topic);
     const isLive = LIVE_TYPES.has(type);
-    const card = addCard({
+    const card = tryAddCard({
       kind: "widget",
       title: provisionalTitle(type, topic).slice(0, 80),
       text: utterance,
@@ -441,36 +460,57 @@ const showCard: Tool = {
       model: designer.label,
       w: CARD_W,
       h: CARD_H,
+      // What "try again" needs, should this card fail or be interrupted.
+      retry: { tool: "show_card", request: utterance.slice(0, 600), args: { type, ...(typeof args.quality === "string" ? { quality: args.quality.slice(0, 40) } : {}) } },
     });
+    if (typeof card === "string") return { ok: false, say: card };
+    job.id = card.id;
     job.n = card.n;
+    // The card is held from here until the words are written (or the job gives up): it is never "interrupted" meanwhile.
+    const release = holdCard(card.id);
     if (early) startImage(job, early);
 
     // Shopping / flights / hotels: resolve the search first — a missing origin or destination is a question, not a card.
     let ask: LiveAsk | null = null;
     if (isLive) {
-      const prepared = await prepareLive(job);
-      if (!alive(job)) return { ok: true, say: "That card was taken down before I got to it.", data: { card: job.n, type } };
+      let prepared: Awaited<ReturnType<typeof prepareLive>>;
+      try {
+        prepared = await prepareLive(job);
+      } catch (err) {
+        release();
+        throw err;
+      }
+      if (!alive(job)) {
+        release();
+        return { ok: true, say: "That card was taken down before I got to it.", data: { card: job.n, type } };
+      }
       if (prepared && "clarify" in prepared) {
-        removeCard(job.n);
-        busy(job.n, null);
+        // A question, not a card: the placeholder goes (with no undo entry — there was never anything in it).
+        release();
+        dropCard(job.id);
+        busy(job, null);
         return { ok: true, say: prepared.clarify, data: { type, clarify: true } };
       }
       ask = prepared;
       repaintPending(job, travelLive() ? `Searching ${LIVE_LABEL[ask!.kind]}…` : `${designer.label} is writing the card…`);
     }
 
-    const writing = compose(job, ctx, args.quality, ask).catch((err: unknown) => {
-      // Whatever broke, the placeholder never stays up as if still writing.
-      const why = (err as Error).message;
-      console.warn(`[show_card] card ${job.n} failed: ${why}`);
-      if (alive(job) && !job.spec) {
-        busy(job.n, null);
-        updateCard(job.n, { status: "error", error: `couldn't write the card: ${why}`.slice(0, 160), model: undefined });
-      }
-      return null;
-    });
+    const writing = compose(job, ctx, args.quality, ask)
+      .catch((err: unknown) => {
+        // Whatever broke, the placeholder never stays up as if still writing.
+        const why = (err as Error).message;
+        console.warn(`[show_card] card ${job.n} failed: ${why}`);
+        if (alive(job) && !job.spec) {
+          busy(job, null);
+          put(job, { status: "error", error: `couldn't write the card: ${why}`.slice(0, 160), html: null, model: undefined });
+        }
+        return null;
+      })
+      .finally(release);
     const first = await Promise.race([writing, sleep(SPEAK_WAIT_MS).then(() => "later" as const)]);
     if (first !== "later") {
+      // Taken off the board while it was being written: nothing failed, and nothing is on the board to point at.
+      if (!first && job.dead) return { ok: true, say: "That card was taken off the board before I finished it.", data: { type } };
       if (!first) return { ok: false, say: `I couldn't put together ${article(info.label)} on ${job.topic} just now.`, data: { card: job.n, type } };
       const line = spokenLine(first, job.n);
       return {

@@ -1,0 +1,20 @@
+{
+  "about": "The inbox with TWO New Message windows open — Trinity's draft and one the user started themselves. The snapshot can't say which fields or which Send belong to which.",
+  "url": "https://mail.google.com/mail/u/0/#inbox?compose=new,CllgCJvmXpQr",
+  "title": "Inbox (3) - ryan@example.com - Gmail",
+  "text": "Primary Promotions Social Updates Sam Lee Roadmap for Q1 - Hi Ryan, attached is the draft roadmap for next quarter. Could you send comments by Friday? 9:42 AM First National Bank Your October statement is ready - Your statement for the account ending 4821 is now available online. 8:15 AM 1–7 of 7",
+  "controls": [
+    { "ref": 1, "role": "button", "name": "Compose" },
+    { "ref": 2, "role": "link", "name": "Roadmap for Q1 - Hi Ryan, attached is the draft roadmap for next quarter. Could" },
+    { "ref": 3, "role": "combobox", "name": "To recipients", "editable": true },
+    { "ref": 4, "role": "textbox", "name": "Subject", "editable": true },
+    { "ref": 5, "role": "textbox", "name": "Message Body", "editable": true },
+    { "ref": 6, "role": "button", "name": "Send" },
+    { "ref": 7, "role": "button", "name": "Discard draft" },
+    { "ref": 8, "role": "combobox", "name": "To recipients", "editable": true },
+    { "ref": 9, "role": "textbox", "name": "Subject", "editable": true },
+    { "ref": 10, "role": "textbox", "name": "Message Body", "editable": true },
+    { "ref": 11, "role": "button", "name": "Send" },
+    { "ref": 12, "role": "button", "name": "Discard draft" }
+  ]
+}

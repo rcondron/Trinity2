@@ -47,9 +47,43 @@ export type ToastTone = "info" | "success" | "warn" | "error";
 
 export type AgentKind = "decision" | "tool" | "tool_result" | "reply";
 
+/** One input of a secure form (mirror of FormField in server/src/vault/index.ts). */
+export interface FormField {
+  name: string;
+  label: string;
+  type: "text" | "password" | "email" | "tel" | "card-number" | "expiry" | "cvc" | "otp-secret" | "checkbox";
+  required?: boolean;
+  placeholder?: string;
+  /** What the field holds ("username", "cc-number", …) — a description; the window decides what the browser is told. */
+  autocomplete?: string;
+  /** Already filled in — only ever for fields that aren't secret (a site's name). */
+  value?: string;
+}
+
+/**
+ * A secure form for this window to draw in its own page, over the board (mirror of FormRequest in
+ * server/src/vault/index.ts). It is a descriptor: no value ever arrives this way, and what is typed goes straight to
+ * POST /api/vault/forms/<id> on this page's own origin — never back over the socket, never into a frame.
+ */
+export interface FormRequest {
+  id: string;
+  purpose: "save-login" | "save-card" | "save-identity" | "save-secret" | "one-time" | "confirm" | "unlock";
+  title: string;
+  detail: string;
+  host?: string;
+  fields: FormField[];
+  submitLabel: string;
+  expiresAt: number;
+  card?: number;
+}
+
+export type FormEnd = "submitted" | "approved" | "cancelled" | "expired";
+
 /** Server → window. */
 export type WorkspaceEvent =
   | { type: "snapshot"; snapshot: WorkspaceSnapshot }
+  | { type: "form"; form: FormRequest }
+  | { type: "form_closed"; id: string; status: FormEnd }
   | { type: "state"; version: number; state: unknown; title: string }
   | { type: "template"; version: number; template: WorkspaceTemplate; state: unknown; title?: string }
   | { type: "html"; version: number; title: string; html: string }

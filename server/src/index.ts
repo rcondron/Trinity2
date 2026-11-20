@@ -11,23 +11,19 @@ import { emitPersonaActivated } from "./events.js";
 import { createApi } from "./http.js";
 import { startHeartbeat } from "./heartbeat.js";
 import { Orchestrator } from "./orchestrator.js";
-import { VoiceCall, hasVoiceCall, setVoiceNotifier, setVoiceResolver, setWakeNotifier } from "./services/voice-call.js";
+import { VoiceCall, hasVoiceCall, noteInCall, setVoiceNotifier, setVoiceResolver, setWakeNotifier } from "./services/voice-call.js";
 import { ensureVoiceOnPod } from "./services/voices.js";
-import { registerGameContext, sweepGamesOnBoot } from "./game/integration.js";
-import { registerStoryTools } from "./game/story-tools.js";
-import { registerGameTools } from "./game/tools.js";
-import { registerAskTools } from "./tools/ask.js";
-import { registerBuiltins } from "./tools/builtins.js";
-import { registerCodingTools } from "./tools/coding.js";
+import { sweepGamesOnBoot } from "./game/integration.js";
 import { setTellFallback } from "./agent/tell.js";
+import { authBanner, authenticate } from "./auth.js";
+import { watchModels } from "./services/model-health.js";
 import { handleBrowserUpgrade } from "./services/browser-bridge.js";
-import { registerBrowserTools } from "./tools/browser.js";
-import { loadForgedSkills, registerForgeTools } from "./tools/forge.js";
-import { registerMemoryTools } from "./tools/memory.js";
+import { registerAllTools } from "./tools/all.js";
+import { loadForgedSkills } from "./tools/forge.js";
 import { loadSkills } from "./tools/registry.js";
-import { registerScheduleTools } from "./tools/schedule.js";
-import { bg, isAllowedHost, isAllowedOrigin, safeInterval } from "./util/bg.js";
+import { bg, isAllowedHost, safeInterval } from "./util/bg.js";
 import { workspace, type WorkspaceClientEvent } from "./workspace/bus.js";
+import { onCardEvent } from "./workspace/card-events.js";
 import type { ClientEvent, ServerEvent } from "./types.js";
 
 // A voice app must not die on one stray rejection (Node 24 exits on unhandled ones).
@@ -73,19 +69,9 @@ async function main() {
   if (reworded) console.log(`[memory] reworded ${reworded} saved memor${reworded === 1 ? "y" : "ies"} from "the caller" to "the user"`);
   await seed(memory);
 
-  // The tools Jev routes to: built-ins, the coding skill, memory, scheduling, skill forging,
-  // and the Game Master's toolset (only for personas that enable it).
-  registerBuiltins();
-  registerCodingTools();
-  registerAskTools();
-  registerMemoryTools();
-  registerScheduleTools();
-  registerForgeTools();
-  registerGameTools();
-  registerStoryTools();
-  registerGameContext();
+  // The tools Jev routes to, every family (tools/all.ts).
+  registerAllTools();
   workspace.setOverlays(getEndpoints().workspaceOverlays); // Settings → Workspace window: what windows draw over the board
-  registerBrowserTools();
   // Custom voices are uploaded to the pod (if missing) before a call connects with them.
   setVoiceResolver(ensureVoiceOnPod);
   const skills = await loadSkills();
@@ -116,19 +102,26 @@ async function main() {
   dropSilentPeers(wss);
   dropSilentPeers(workspaceWss);
   server.on("upgrade", (req, socket, head) => {
-    const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
-    // /ext = the Chrome extension (its origin is chrome-extension://…; the pairing token is the gate).
-    const origin = req.headers.origin;
-    const extensionOrigin = origin === undefined || origin.startsWith("chrome-extension://") || isAllowedOrigin(origin);
+    let pathname: string;
+    try {
+      pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+    } catch {
+      // ("//" and the like are not addresses: that socket ends here, the engine goes on.)
+      socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
+      return socket.destroy();
+    }
+    // /ext = the Chrome extension. Only the paired extension's own origin gets a socket (any extension's while a pairing
+    // code waits), and that socket must prove the pairing key before a single call is sent to it (browser-bridge.ts).
     if (pathname === "/ext") {
-      if (!isAllowedHost(req.headers.host) || !extensionOrigin) {
+      if (!isAllowedHost(req.headers.host)) {
         socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
         return socket.destroy();
       }
       return handleBrowserUpgrade(req, socket, head);
     }
-    if (!isAllowedHost(req.headers.host) || !isAllowedOrigin(origin)) {
-      socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+    // The app's sockets: a linked browser on one of the app's own pages, or the API key (auth.ts).
+    if (!isAllowedHost(req.headers.host) || !authenticate(req.headers)) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
       return socket.destroy();
     }
     if (pathname === "/ws") wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
@@ -188,6 +181,11 @@ async function main() {
     speechRate: getSpeechRate(),
   });
   onSpeechRateChange((rate) => broadcast({ type: "speech_rate", rate }));
+  // A press in a widget (workspace/card-events.ts): part of the conversation's record, on the text channel and in a call.
+  onCardEvent((e) => {
+    orchestrator.noteSystem(e.line, broadcast);
+    noteInCall(e.line);
+  });
 
   wss.on("connection", (ws) => {
     clients.add(ws);
@@ -263,6 +261,8 @@ async function main() {
     const s = serviceStatus();
     console.log(`\n  Trinity engine on http://${HOST === "0.0.0.0" ? "localhost" : HOST}:${config.port}`);
     console.log(`  services: ${Object.entries(s).map(([k, v]) => `${k}=${v}`).join("  ")}`);
+    console.log(`  ${authBanner()}`);
+    watchModels(); // a configured model the gateway dropped is stood in for, and Settings says so
     console.log(`  (mock services are fully functional; add keys in .env to go live)\n`);
   });
 }

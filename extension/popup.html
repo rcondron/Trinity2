@@ -15,37 +15,52 @@
       <button id="connBtn" type="button" class="ghost" hidden>Disconnect</button>
     </header>
 
-    <section class="actions">
+    <p class="whole" id="whole">
+      While this is connected, Trinity controls this whole browser: every tab and window, the pages you are signed in to, and — when you
+      ask her — the logins and cards kept in her vault.
+    </p>
+
+    <section id="pairPanel" class="pair" hidden>
+      <h2 id="pairTitle">Pair with Trinity</h2>
+      <p class="hint" id="pairHint">
+        In Trinity, open <strong>Settings → Browser</strong> and press <strong>Show a pairing code</strong>. Type the code here. It works
+        once, for ten minutes.
+      </p>
+      <form id="pairForm" class="pair-row" autocomplete="off">
+        <input id="code" type="text" inputmode="text" maxlength="12" placeholder="ABCD-EFGH" aria-label="Pairing code" autocomplete="off" autocapitalize="characters" spellcheck="false" />
+        <button id="pairBtn" type="submit" class="primary">Pair</button>
+      </form>
+      <p class="note" id="pairNote" role="status"></p>
+    </section>
+
+    <section class="actions" id="actions">
       <button id="shareBtn" class="primary" type="button">Put this page on Trinity's board</button>
       <p class="hint">
-        Right-click a page, a selection, a link or an image to put that on the board too. Trinity drives this browser herself —
-        opening, closing and switching tabs, reading and changing pages, saving files — just ask her.
+        Right-click a page, a selection, a link or an image to put that on the board too. Everything else you just ask her for: tabs and
+        windows, reading and changing pages, signing in, filling forms, saving files.
       </p>
     </section>
 
     <details id="setup">
       <summary>Connection</summary>
       <label>
-        <span>Engine</span>
-        <input id="engine" type="text" placeholder="ws://127.0.0.1:8799" autocomplete="off" spellcheck="false" />
-      </label>
-      <label>
-        <span>Pairing token <small>(Trinity → Settings → Browser extension)</small></span>
-        <span class="token-row">
-          <input id="token" type="password" placeholder="Paste the token" autocomplete="off" spellcheck="false" />
-          <button id="showToken" type="button" class="ghost" title="Show the token">Show</button>
+        <span>Engine address</span>
+        <span class="pair-row">
+          <input id="engine" type="text" placeholder="ws://127.0.0.1:8799" autocomplete="off" spellcheck="false" />
+          <button id="saveBtn" type="button">Save</button>
         </span>
       </label>
+      <p class="hint" id="pairedLine"></p>
       <div class="row">
-        <button id="saveBtn" type="button">Save &amp; connect</button>
-        <span id="saveNote" class="note"></span>
+        <button id="repairBtn" type="button" class="ghost">Pair with a new code</button>
+        <button id="forgetBtn" type="button" class="ghost danger">Forget this pairing</button>
       </div>
+      <p class="hint" id="scriptsHint" hidden>
+        <strong>JavaScript on strict sites.</strong> Some sites block injected scripts. To let Trinity run JavaScript there, open this
+        extension's <a href="#" id="detailsLink">details page</a> and turn on <em>Allow User Scripts</em>. Styling changes work everywhere
+        regardless.
+      </p>
     </details>
-
-    <section id="scriptsHint" class="tip" hidden>
-      <strong>JavaScript on strict sites.</strong> Some sites block injected scripts. To let Trinity run JavaScript there, open this extension's
-      <a href="#" id="detailsLink">details page</a> and turn on <em>Allow User Scripts</em>. Styling changes work everywhere regardless.
-    </section>
 
     <footer class="foot">
       <span id="version"></span>

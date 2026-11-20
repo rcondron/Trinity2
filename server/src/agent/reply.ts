@@ -20,6 +20,8 @@ export interface ReplyRequest {
   style: ReplyStyle;
   /** The work was only started (a build streaming in, a skill being made) or queued — the reply must not claim it's done. */
   inProgress?: "started" | "queued";
+  /** The action did not work: the reply says so plainly, and never that it was done. */
+  failed?: boolean;
 }
 
 export function speakable(text: string): string {
@@ -42,8 +44,9 @@ function systemPrompt(req: ReplyRequest): string {
     maxSentences > 1
       ? `at most ${maxSentences} short sentences, under ${maxWords} words in total`
       : `ONE short, natural spoken sentence, under ${maxWords} words`;
-  const task =
-    req.inProgress === "queued"
+  const task = req.failed
+    ? `A helper tried to do what the user asked and it did NOT work. Reply in character with ${shape}: say plainly that it didn't work and, if the note below says why in everyday terms, why — or what you need from the user. Never say it was done, and never read out error codes.`
+    : req.inProgress === "queued"
       ? `A helper has lined up what the user asked: it starts as soon as the work ahead of it finishes. Reply in character with ${shape}: say you're on it and it's next. Never say it's done or ready.`
       : req.inProgress
         ? `A helper has just STARTED on what the user asked and it is still in progress. Reply in character with ${shape}: say you're on it and where it will show up (or that you'll say when it's ready). Never say it's done or ready.`
@@ -71,11 +74,8 @@ export function fallbackReply(outcome: string): string {
 /**
  * Stream the reply. `onWords` receives speakable word chunks as they're written; the
  * full text is returned. Stops after `style.maxSentences` sentences (the first needs
- * ≥ 4 words — "Got it." alone isn't a reply, as in the reference), or at the end of the
- * sentence that runs past the word cap — words already spoken can't be taken back, so a
- * long sentence is finished rather than cut off mid-way ("…to take out the"). One that runs
- * past twice the cap (a long list) ends with the clause it's in, its comma made a full stop,
- * and in any case a dozen words later.
+ * ≥ 4 words — "Got it." alone isn't a reply, as in the reference) or past the word cap
+ * (see streamSpoken, which holds the caps).
  */
 export async function streamReply(
   req: ReplyRequest,
@@ -105,26 +105,73 @@ async function writeStreamed(req: ReplyRequest, emit: (chunk: string) => void, s
     return;
   }
 
-  const { mordiemUrl, mordiemKey, replyModel } = getEndpoints();
+  const { replyModel } = getEndpoints();
   // With an appended question, the "Setup next" note is ours to say — keep the model off it.
   const outcome = req.style.append ? (req.outcome.split(/\bSetup next:/i)[0] ?? req.outcome).trim() : req.outcome;
-  const softCap = req.style.maxWords + 6; // past this, stop where the sentence ends
-  const hardCap = req.style.maxWords * 2 + 6; // past this, stop where the clause ends
+  try {
+    await streamSpoken(
+      {
+        model: replyModel,
+        temperature: 0.3,
+        timeoutMs: 10_000,
+        messages: [
+          { role: "system", content: systemPrompt(req) },
+          {
+            role: "user",
+            content: `User said: "${req.asked.replace(/"/g, "'")}"\nWhat was done: ${outcome}\nSituation: ${req.situation}`,
+          },
+        ],
+      },
+      { maxWords: req.style.maxWords, maxSentences: req.style.maxSentences },
+      out,
+      signal,
+    );
+  } catch (err) {
+    console.warn("[reply] writer failed, using fallback:", (err as Error).message);
+  }
+  if (!emitted) out(fallbackReply(req.outcome));
+}
+
+/** How long a spoken reply may run (see streamSpoken). */
+export interface SpokenCaps {
+  maxWords: number;
+  maxSentences: number;
+  /** Words a sentence needs before it counts as one (default 4: "Got it." alone isn't a reply; talk counts "Yes." too). */
+  minSentenceWords?: number;
+}
+
+export interface SpokenRequest {
+  model: string;
+  messages: { role: "system" | "user" | "assistant"; content: string }[];
+  temperature?: number;
+  timeoutMs?: number;
+}
+
+/**
+ * Stream a chat completion as speakable chunks — a finished sentence, or the words so far of one — so speech can start
+ * before the reply is written, and stop at the caps: after `maxSentences` sentences, or at the end of the sentence that
+ * runs past the word cap — words already spoken can't be taken back, so a long sentence is finished rather than cut off
+ * mid-way ("…to take out the"). One that runs past twice the cap (a long list) ends with the clause it's in, its comma
+ * made a full stop, and in any case a dozen words later. The caps hold in code, whatever the model was told.
+ *
+ * Resolves when the reply ended or was cut at a cap (also when the stream broke after some words: they stand). Rejects
+ * only when the model failed before any word came — the caller says something else then.
+ */
+/** Resolves true when the stream ran to its end (or a cap), false when it was cut off after some words were out. */
+export async function streamSpoken(req: SpokenRequest, caps: SpokenCaps, out: (chunk: string) => void, signal?: AbortSignal): Promise<boolean> {
+  const { mordiemUrl, mordiemKey } = getEndpoints();
+  const minWords = caps.minSentenceWords ?? 4;
+  const softCap = caps.maxWords + 6; // past this, stop where the sentence ends
+  const hardCap = caps.maxWords * 2 + 6; // past this, stop where the clause ends
   const lastCap = hardCap + 12; // never more than this
   const body = {
-    model: replyModel,
+    model: req.model,
     stream: true,
     max_tokens: Math.ceil(lastCap * 1.6) + 16, // room to finish a sentence that runs past the soft cap
-    temperature: 0.3,
-    messages: [
-      { role: "system", content: systemPrompt(req) },
-      {
-        role: "user",
-        content: `User said: "${req.asked.replace(/"/g, "'")}"\nWhat was done: ${outcome}\nSituation: ${req.situation}`,
-      },
-    ],
+    temperature: req.temperature ?? 0.3,
+    messages: req.messages,
   };
-  const timeout = AbortSignal.timeout(10_000);
+  const timeout = AbortSignal.timeout(req.timeoutMs ?? 10_000);
   const sig = signal ? AbortSignal.any([signal, timeout]) : timeout;
   const call = (extra: Record<string, unknown>) =>
     fetch(`${mordiemUrl}/chat/completions`, {
@@ -134,6 +181,11 @@ async function writeStreamed(req: ReplyRequest, emit: (chunk: string) => void, s
       signal: sig,
     });
 
+  let emitted = 0;
+  const say = (chunk: string) => {
+    emitted++;
+    out(chunk);
+  };
   let pending = "";
   let words = 0;
   let sentences = 0;
@@ -171,14 +223,14 @@ async function writeStreamed(req: ReplyRequest, emit: (chunk: string) => void, s
           if (afterClock) {
             afterClock = false;
             const next = STARTS_SENTENCE.test(w);
-            if (next && words >= 4 && (++sentences >= req.style.maxSentences || words >= softCap)) {
-              if (group.length) out(group.join(" "));
+            if (next && words >= minWords && (++sentences >= caps.maxSentences || words >= softCap)) {
+              if (group.length) say(group.join(" "));
               pending = "";
               void reader.cancel().catch(() => {});
-              return;
+              return true;
             }
             if (next && group.length) {
-              out(group.join(" "));
+              say(group.join(" "));
               group = [];
             }
           }
@@ -189,32 +241,30 @@ async function writeStreamed(req: ReplyRequest, emit: (chunk: string) => void, s
           if (clock) afterClock = true;
           const endsSentence = !clock && /[.!?]["'”’)\]]*$/.test(w);
           const endsClause = /[,;:]["'”’)\]]*$/.test(w);
-          if (endsSentence && words >= 4) sentences++;
-          if (sentences >= req.style.maxSentences || (endsSentence && words >= softCap) || ((endsSentence || endsClause) && words >= hardCap) || words >= lastCap) {
+          if (endsSentence && words >= minWords) sentences++;
+          if (sentences >= caps.maxSentences || (endsSentence && words >= softCap) || ((endsSentence || endsClause) && words >= hardCap) || words >= lastCap) {
             // (A clause that ends the line ends it as a sentence.)
             if (endsClause && !endsSentence) group[group.length - 1] = w.replace(/[,;:](["'”’)\]]*)$/, ".$1");
-            out(group.join(" "));
+            say(group.join(" "));
             pending = "";
             void reader.cancel().catch(() => {});
-            return;
+            return true;
           }
           if (endsSentence) {
-            out(group.join(" "));
+            say(group.join(" "));
             group = [];
           }
         }
-        if (group.length) out(group.join(" "));
+        if (group.length) say(group.join(" "));
       }
     }
   } catch (err) {
-    if (!emitted && !pending.trim()) {
-      console.warn("[reply] writer failed, using fallback:", (err as Error).message);
-      out(fallbackReply(req.outcome));
-      return;
-    }
+    if (!emitted && !pending.trim()) throw err;
+    // Cut off (its time limit, a dropped connection): a word it was in the middle of is not said.
+    return false;
   }
-  if (pending.trim()) out(pending.trim());
-  if (!emitted) out(fallbackReply(req.outcome));
+  if (pending.trim()) say(pending.trim());
+  return true;
 }
 
 /** Non-streaming convenience for the text path. */

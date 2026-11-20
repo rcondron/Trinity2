@@ -1,0 +1,13 @@
+{
+  "about": "The new-event form after Save was pressed on an event with guests: the calendar asks whether to email them. Nothing is saved for good until one of the two is chosen.",
+  "url": "https://calendar.google.com/calendar/u/0/r/eventedit",
+  "title": "Google Calendar - Event details",
+  "text": "Would you like to send invitation emails to Google Calendar guests? Back to editing Don't send Send Event details Find a time Guests sam@example.com",
+  "controls": [
+    { "ref": 1, "role": "button", "name": "Back to editing" },
+    { "ref": 2, "role": "button", "name": "Don't send" },
+    { "ref": 3, "role": "button", "name": "Send" },
+    { "ref": 4, "role": "textbox", "name": "Title", "editable": true },
+    { "ref": 5, "role": "button", "name": "Save" }
+  ]
+}

@@ -7,11 +7,14 @@ import { contextFor } from "./agent/context.js";
 import { writeReply } from "./agent/reply.js";
 import { confidentOptions, decide, firing, type Decision, type RecentAction } from "./agent/router.js";
 import { think } from "./services/brain.js";
+import { profileForPrompt } from "./services/profile.js";
+import { converse, talkCaps, type TalkResult } from "./services/talk.js";
 import { selectMemories } from "./services/jev.js";
 import { curateExchange, curationAfter, statesOwnName, type Handled } from "./services/curator.js";
+import { logTurn, recentTurns, startSession } from "./db/conversations.js";
 import { announce, type Spoken } from "./services/voice-call.js";
 import { personaplexTurn } from "./services/voice.js";
-import { getTools } from "./tools/registry.js";
+import { getTool, getTools } from "./tools/registry.js";
 import { isReminder, reminderLine } from "./tools/schedule.js";
 import { workspace } from "./workspace/bus.js";
 import type { HeartbeatTask, MemoryDoc, RouteDecision, ServerEvent, TranscriptTurn } from "./types.js";
@@ -45,7 +48,7 @@ function toRouteDecision(d: Decision): RouteDecision {
  * memories or creating skills needs the user there. (Game tools are left out too — a
  * scheduled task must never move a story on.)
  */
-const NOT_PROACTIVE = new Set(["schedule", "remember", "create_skill"]);
+const NOT_PROACTIVE = new Set(["schedule", "cancel_reminder", "change_reminder", "remember", "update_profile", "forget", "create_skill", "fix_skill", "disable_skill", "enable_skill", "answer_followup"]);
 
 /** What Jev reads for a scheduled task: the user's own request, due now. */
 function scheduledConversation(task: HeartbeatTask): string {
@@ -66,8 +69,13 @@ const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1).repl
 export class Orchestrator {
   private transcript: TranscriptTurn[] = [];
   private done: RecentAction[] = [];
+  /** The text channel in the conversation log (db/conversations.ts): one session per engine run, begun at the first turn. */
+  private session = "";
 
-  constructor(private memory: MemoryStore) {}
+  constructor(private memory: MemoryStore) {
+    // What was said in the last half hour carries over an engine restart.
+    this.transcript = recentTurns(12, { withinMs: 30 * 60_000 });
+  }
 
   /**
    * Agent-core events → text-channel ServerEvents. A transcript line a tool sends on its own
@@ -103,16 +111,26 @@ export class Orchestrator {
   ): TranscriptTurn {
     const turn: TranscriptTurn = { id, speaker, text, ts: Date.now(), ...flags };
     this.transcript.push(turn);
+    // (A line the live call said in full is in the call's own record.)
+    if (speaker !== "system" && !flags.voiced) {
+      this.session ||= startSession("text", getActivePersona().name);
+      logTurn(this.session, { speaker, text });
+    }
     if (this.transcript.length > 40) this.transcript.shift();
     emit({ type: "transcript", turn });
     return turn;
+  }
+
+  /** Something that happened that the user didn't say (a press in a card): a system line in the transcript. */
+  noteSystem(text: string, emit: Emit): void {
+    this.pushTurn("system", text, emit);
   }
 
   /** Reference-format conversation text for Jev (history BEFORE the latest words). */
   private conversation(latest: string): string {
     const recent = this.transcript
       .slice(-8)
-      .map((t) => `${t.speaker === "user" ? "User" : "Agent"}: ${t.text}`)
+      .map((t) => `${t.speaker === "user" ? "User" : t.speaker === "system" ? "System" : "Agent"}: ${t.text}`)
       .join("\n");
     return `Conversation so far, oldest first:\n${recent || "(nothing yet)"}\n\nUser's latest words (finished speaking): ${latest}`;
   }
@@ -141,9 +159,47 @@ export class Orchestrator {
 
     const ctx = contextFor(persona);
     let outcome: Outcome | null = null;
-    let say: string;
-    if (firing(d, true, ep.minConfidence) === "fire") {
-      outcome = await act(d, userText, {
+    let say = "";
+    // What fires: the router's pick — or, when the talking brain reads the words as a request no tool took (ACT), the
+    // solver. A typed request gets tried, not declined, just as on a call.
+    let fired: Decision | null = firing(d, true, ep.minConfidence) === "fire" ? d : null;
+    if (!fired) {
+      const recalled = await recallP;
+      for (const doc of recalled) emit({ type: "memory", doc, op: "recall" });
+      const memories = recalled.map((m) => m.text);
+      // The same talking brain as the live call (services/talk.ts): the persona, the profile, the time and the board
+      // in view, and a brief answer.
+      const talkInput = {
+        persona,
+        transcript: this.transcript,
+        userText,
+        situation: ctx.summary,
+        memories,
+        profile: profileForPrompt(1200),
+        userName: getProfileName(),
+        guidance: ctx.talk.guidance,
+        caps: ctx.talk.caps ? talkCaps(userText, ctx.talk.caps) : undefined,
+      };
+      const failed = (): TalkResult => ({ how: "failed", text: "", firstMs: null, model: null });
+      let talk = await converse({ ...talkInput, markers: true }, () => {}).catch(failed);
+      const solver = talk.how === "act" ? getTool("figure_out") : undefined;
+      if (solver && !ctx.hiddenActions.has(solver.name) && (!solver.toolset || persona.toolsets.includes(solver.toolset))) {
+        fired = { action: solver.name, confidence: 1, tool: solver, options: {}, offered: [], ms: 0 };
+        emit({ type: "route", decision: toRouteDecision(fired) });
+        workspace.agent("decision", { tool: fired.action, text: userText, confidence: 1 });
+      } else if (talk.how === "silent" && ctx.talk.silence) {
+        // Not for her (chatter between players at the table): no reply, as on a call.
+        return;
+      } else {
+        // A request nothing here can take, or a nod that still deserves an answer: the talking brain in words (as the
+        // call does) — it never claims that something was done.
+        if (talk.how === "act" || talk.how === "silent") talk = await converse({ ...talkInput, markers: false }, () => {}).catch(failed);
+        // No model answered at all: the plain brain path, which says so honestly if it fails too.
+        say = talk.how === "said" && talk.text.trim() ? talk.text.trim() : await think({ persona, transcript: this.transcript, memories: withName(memories), userText, situation: ctx.summary });
+      }
+    }
+    if (fired) {
+      outcome = await act(fired, userText, {
         persona,
         memory: this.memory,
         emit: this.channelEmit(emit),
@@ -152,6 +208,10 @@ export class Orchestrator {
         minConfidence: ep.minConfidence,
       });
       this.done.push(recentAction(outcome, userText));
+      // (What a tool did is part of the conversation's record: reflection reads which skills failed.)
+      if (this.session) logTurn(this.session, { speaker: "system", text: outcome.say, tool: outcome.action, ok: outcome.ok });
+      // Words that weren't for Trinity (talk between players at a game table): no reply, and none shown.
+      if (outcome.silent) return;
       if (outcome.speak) say = outcome.speak; // grounded narration/answers, as written
       else {
         const after = contextFor(persona); // the world as the action left it
@@ -162,14 +222,11 @@ export class Orchestrator {
           situation: after.summary,
           style: after.style,
           inProgress: outcome.inProgress,
+          failed: !outcome.ok,
         });
       }
-    } else {
-      const recalled = await recallP;
-      for (const doc of recalled) emit({ type: "memory", doc, op: "recall" });
-      say = await think({ persona, transcript: this.transcript, memories: withName(recalled.map((m) => m.text)), userText, situation: ctx.summary });
     }
-    workspace.agent("reply", { tool: d.action === "NONE" ? undefined : d.action, text: say, ok: true });
+    workspace.agent("reply", { tool: fired ? fired.action : undefined, text: say, ok: true });
     this.pushTurn("trinity", say, emit);
     // In the light of what the action did (see curationAfter); a recall answer is never saved back.
     const how = curationAfter(outcome ? [{ action: outcome.action, ok: outcome.ok }] : []);
@@ -179,7 +236,7 @@ export class Orchestrator {
   /** Auto-curation: extract durable memories from the latest exchange (deduped). */
   private async curate(userText: string, trinityText: string, emit: Emit, handled?: Handled): Promise<void> {
     try {
-      for (const doc of await curateExchange(this.memory, userText, trinityText, { handled })) emit({ type: "memory", doc, op: "write" });
+      for (const doc of await curateExchange(this.memory, userText, trinityText, { handled, sessionId: this.session || undefined })) emit({ type: "memory", doc, op: "write" });
     } catch (err) {
       console.warn("[curate] failed:", (err as Error).message);
     }
@@ -199,10 +256,13 @@ export class Orchestrator {
     const conversation = this.conversation(turn.text);
     this.pushTurn("trinity", turn.text, emit);
 
-    const d = await decide({ persona, conversation, done: this.done });
+    // These are PersonaPlex's words about the clip, not the user's own: nothing sensitive (the vault, sign-in,
+    // payment, sending, the answer to a yes/no question) is offered to the router here, and act() refuses one too.
+    const hidden = new Set(getTools().filter((t) => t.sensitive).map((t) => t.name));
+    const d = await decide({ persona, conversation, done: this.done, hidden });
     emit({ type: "route", decision: toRouteDecision(d) });
     workspace.agent("decision", { tool: d.action, text: turn.text, confidence: d.confidence });
-    if (firing(d, true, ep.minConfidence) === "fire") {
+    if (firing(d, true, ep.minConfidence) === "fire" && !d.tool?.sensitive) {
       const ctx = contextFor(persona);
       const outcome = await act(d, turn.text, {
         persona,
@@ -211,6 +271,7 @@ export class Orchestrator {
         recentTranscript: this.transcript.slice(-6),
         situation: ctx.summary,
         minConfidence: ep.minConfidence,
+        origin: "planner",
       });
       this.done.push(recentAction(outcome, turn.text));
     }
@@ -267,13 +328,14 @@ export class Orchestrator {
     const ctx = contextFor(persona);
     // (Hidden from the decision itself, so "Every morning, search the news…" can still search — the game's
     // tools too: offered, they'd make the router read the task as a move in the story.)
-    const hidden = new Set([...NOT_PROACTIVE, ...getTools().filter((t) => t.toolset).map((t) => t.name)]);
+    // Nor anything sensitive (the vault, sign-in, payment, sending): those start on the user's own words only.
+    const hidden = new Set([...NOT_PROACTIVE, ...getTools().filter((t) => t.toolset || t.sensitive).map((t) => t.name)]);
     const d = await decide({ persona, conversation: scheduledConversation(task), done: [], hidden });
     emit({ type: "route", decision: toRouteDecision(d) });
     workspace.agent("decision", { tool: d.action, text: task.instruction, confidence: d.confidence });
 
     let say: string | null;
-    const usable = d.tool && !d.tool.toolset && !NOT_PROACTIVE.has(d.tool.name);
+    const usable = d.tool && !d.tool.toolset && !d.tool.sensitive && !NOT_PROACTIVE.has(d.tool.name);
     if (usable && firing(d, true, ep.minConfidence) === "fire") {
       const outcome = await act(d, task.instruction, {
         persona,
@@ -282,6 +344,7 @@ export class Orchestrator {
         recentTranscript: [],
         situation: ctx.summary,
         minConfidence: ep.minConfidence,
+        origin: "scheduled",
       });
       if (outcome.speak) say = outcome.speak;
       else {

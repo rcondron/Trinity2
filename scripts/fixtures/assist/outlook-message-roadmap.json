@@ -1,0 +1,16 @@
+{
+  "about": "Outlook with a message open in the reading pane: the list is still on the page (so the preview's words come twice), followed by the message itself and its Reply / Forward buttons.",
+  "url": "https://outlook.live.com/mail/0/inbox/id/AQMkADAwATY3ZmYAZS1hNzQx",
+  "title": "Mail - Ryan Smith - Outlook",
+  "text": "Inbox Focused Other Filter Today SL Sam Lee Roadmap for Q1 9:42 AM Hi Ryan, attached is the draft roadmap for next quarter. Could you send comments by Friday? FB First National Bank Your October statement is ready 8:15 AM Your statement for the account ending 4821 is now available online. Roadmap for Q1 Sam Lee <sam@example.com> To: You Tue 11/10/2026 9:42 AM Hi Ryan, attached is the draft roadmap for next quarter. The big change is moving the billing work ahead of search. Could you send comments by Friday? Thanks, Sam roadmap-q1.pdf 184 KB Reply Forward",
+  "controls": [
+    { "ref": 1, "role": "button", "name": "New mail" },
+    { "ref": 2, "role": "button", "name": "Filter" },
+    { "ref": 3, "role": "option", "name": "SL Sam Lee Roadmap for Q1 9:42 AM Hi Ryan, attached is the draft roadmap for next" },
+    { "ref": 4, "role": "option", "name": "FB First National Bank Your October statement is ready 8:15 AM Your statement fo" },
+    { "ref": 5, "role": "button", "name": "Reply" },
+    { "ref": 6, "role": "button", "name": "Reply all" },
+    { "ref": 7, "role": "button", "name": "Forward" },
+    { "ref": 8, "role": "button", "name": "roadmap-q1.pdf 184 KB" }
+  ]
+}

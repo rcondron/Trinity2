@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Controlled form — Reactly</title>
+    <style>
+      body { font: 16px system-ui, sans-serif; margin: 24px; }
+      .card { display: block; width: 360px; padding: 16px; border: 1px solid #ccc; }
+      .row { display: block; margin: 10px 0; }
+      .state { display: block; margin-top: 16px; font-family: monospace; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Log in to Reactly</h1>
+      <form id="login" class="card" action="/login" method="post">
+        <div class="row">
+          <label for="user">Username</label>
+          <input id="user" name="username" type="text" />
+        </div>
+        <div class="row">
+          <label for="pass">Password</label>
+          <input id="pass" name="password" type="password" />
+        </div>
+        <div class="row"><button type="submit" id="go" disabled>Log in</button></div>
+      </form>
+      <!-- What the "framework" believes the fields hold: lengths only, so nothing typed is echoed into the page. -->
+      <output id="state" class="state">state: username 0 chars, password 0 chars</output>
+    </main>
+    <script>
+      // A controlled input the way React keeps one: the framework owns the value. It wraps the element's own `value`
+      // property to remember what it last set, listens for `input`, and ignores an event when the value is the one it
+      // already knows. A value assigned through the wrapped property (el.value = …) therefore never reaches the state —
+      // and the next render puts the old value back. Only the prototype's setter plus an `input` event gets through.
+      const state = { username: "", password: "" };
+      const fields = { username: document.getElementById("user"), password: document.getElementById("pass") };
+      const native = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+      const tracked = new Map();
+      for (const [key, el] of Object.entries(fields)) {
+        tracked.set(el, el.value);
+        Object.defineProperty(el, "value", {
+          configurable: true,
+          get() {
+            return native.get.call(this);
+          },
+          set(v) {
+            tracked.set(this, String(v));
+            native.set.call(this, v);
+          },
+        });
+        el.addEventListener("input", () => {
+          const now = native.get.call(el);
+          if (now === tracked.get(el)) return; // "nothing changed"
+          tracked.set(el, now);
+          state[key] = now;
+          render();
+        });
+      }
+      function render() {
+        for (const [key, el] of Object.entries(fields)) if (native.get.call(el) !== state[key]) el.value = state[key];
+        document.getElementById("state").textContent = `state: username ${state.username.length} chars, password ${state.password.length} chars`;
+        document.getElementById("go").disabled = !(state.username && state.password);
+      }
+      setInterval(render, 250); // re-render now and then, as a framework does
+      document.getElementById("login").addEventListener("submit", (e) => {
+        e.preventDefault();
+        document.getElementById("state").textContent += " — submitted";
+      });
+    </script>
+    <script type="module" src="/harness.js"></script>
+  </body>
+</html>

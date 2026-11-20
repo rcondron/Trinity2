@@ -1,0 +1,13 @@
+{
+  "about": "Back on the calendar after an event was saved: the day view with the new event on it, and the 'Event saved' bar.",
+  "url": "https://calendar.google.com/calendar/u/0/r/day/2026/11/11",
+  "title": "Google Calendar - Wednesday, November 11, 2026",
+  "text": "Event saved Undo Wednesday, November 11 WED 11 GMT-06 9 AM 10 AM 11 AM 12 PM 1 PM 2 PM 3 PM 4 PM 5 PM Stand-up 9 – 9:15am Roadmap with Sam 3 – 3:30pm Design review 4 – 5pm",
+  "controls": [
+    { "ref": 1, "role": "button", "name": "Undo" },
+    { "ref": 2, "role": "button", "name": "Create" },
+    { "ref": 3, "role": "button", "name": "Stand-up 9 – 9:15am" },
+    { "ref": 4, "role": "button", "name": "Roadmap with Sam 3 – 3:30pm" },
+    { "ref": 5, "role": "button", "name": "Design review 4 – 5pm Room 4B" }
+  ]
+}

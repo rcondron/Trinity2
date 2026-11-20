@@ -1,0 +1,15 @@
+{
+  "about": "The inbox just after a message went: the New Message window is gone and the 'Message sent' bar offers Undo and View message (the bar's words sit outside the main region; its two links are controls).",
+  "url": "https://mail.google.com/mail/u/0/#inbox",
+  "title": "Inbox (3) - ryan@example.com - Gmail",
+  "text": "Primary Promotions Social Updates Sam Lee Roadmap for Q1 - Hi Ryan, attached is the draft roadmap for next quarter. Could you send comments by Friday? 9:42 AM First National Bank Your October statement is ready - Your statement for the account ending 4821 is now available online. 8:15 AM 1–7 of 7",
+  "controls": [
+    { "ref": 1, "role": "button", "name": "Main menu" },
+    { "ref": 2, "role": "textbox", "name": "Search mail", "editable": true },
+    { "ref": 3, "role": "button", "name": "Compose" },
+    { "ref": 4, "role": "link", "name": "Inbox 3", "href": "https://mail.google.com/mail/u/0/#inbox" },
+    { "ref": 5, "role": "link", "name": "Roadmap for Q1 - Hi Ryan, attached is the draft roadmap for next quarter. Could" },
+    { "ref": 6, "role": "link", "name": "Undo" },
+    { "ref": 7, "role": "link", "name": "View message" }
+  ]
+}

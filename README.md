@@ -11,21 +11,104 @@ page in its own window — as the conversation happens:
 - *"Remember that my favorite color is green"* / *"What's my favorite color?"*
 - *"Remind me in ten minutes to stretch"* → she says it, in the call, when it's due.
 - *"What's the tallest building in the world?"* → a web search, answered out loud.
+- *"Save my Netflix password"* → a secure form opens on the workspace; the vault keeps it encrypted and
+  fills it in later only on that site, without Trinity or any model ever seeing it.
+- *"Sign me in"*, *"fill in my card"* → done in your own browser by the extension, after you say yes.
+- *"Write a one-page summary of the plan as a PDF"*, *"a spreadsheet of my expenses"* → kept as files,
+  opened and downloaded from the board.
+- *"Check my email"*, *"schedule a meeting with Dana on Friday at two"* → through the mail and calendar
+  pages in your browser; nothing is sent or saved without a yes.
+- *"Put those numbers in a table"*, *"show that as a pie chart"* → drawn on the board at once.
+- *"Let's start a short fantasy adventure for two players"* → the Game Master runs it, with turns, real
+  rules and dice, on a live game screen.
 
 Trinity has **personas** (who she is and how she sounds), a **memory** system, a **heartbeat**
 (reminders and scheduled tasks), and **creates skills on the fly**. Personas can carry extra
 tool sets — the Game Master, which runs tabletop adventures on a live game screen, is one example.
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design, and
+[`docs/REVIEW-2026-11.md`](docs/REVIEW-2026-11.md) for the November 2026 review: what was found, what changed,
+what was measured, and what is still open.
+
+## Getting started
+
+**Requirements:** [Node.js 22+](https://nodejs.org/) (LTS is fine), npm, and a modern desktop browser
+(Chrome / Edge recommended for voice and the optional browser extension).
+
+```bash
+git clone https://github.com/rcondron/Trinity2.git
+cd Trinity2
+npm install
+cp .env.example .env   # leave keys blank to start in mock mode
+npm run dev
+```
+
+Open **http://localhost:5173**. The engine listens on `127.0.0.1:8799`.
+
+That’s enough to explore the UI, type to Trinity, and use mock voice (your browser’s Web Speech API).
+Add keys when you want live routing, models, search, or real-time PersonaPlex voice.
+
+### Optional: go live
+
+| You want… | Set in `.env` or **Settings → Models & API keys** |
+|-----------|--------------------------------------------------|
+| Tool routing (Jev) | `TYPESAFE_API_KEY` |
+| Coding / brain / images / video | `MORDIEM_API_KEY` |
+| Live transcription | `DEEPGRAM_API_KEY` |
+| Better web search | `TAVILY_API_KEY` (else keyless DuckDuckGo) |
+| Shopping / flights / hotels cards | `SERPAPI_KEY` |
+| Real-time full-duplex voice | `PERSONAPLEX_WS_URL` + Deepgram (see [Real-time voice](#real-time-voice)) |
+
+Keys and runtime data stay on your machine:
+
+- `.env` is gitignored — never commit it
+- `data/` holds the DB, auth tokens, vault, workspace, and media — also gitignored
+- Prefer the Settings page for day-to-day key edits; it writes into `data/`, not into the repo
+
+### First minutes in the app
+
+1. Open **http://localhost:5173** and allow mic access if you try voice.
+2. Open **⚙ Settings** to create a persona, paste API keys, or pick models.
+3. Type or speak a request (e.g. *"build me a tip calculator"* or *"remember my favorite color is green"*).
+4. Optional: load the **Trinity Browser Bridge** from [`extension/`](extension/) (Chrome → Extensions → Load unpacked) and link it under Settings → Browser extension.
+5. Optional: for full-duplex PersonaPlex voice, follow [Hosting PersonaPlex on a GPU pod](#hosting-personaplex-on-a-gpu-pod).
+
+**Linking a browser.** Every request to the engine is authenticated. The first browser to open the
+app is linked by itself. Any other browser is asked for a six-digit code: the engine prints one when
+it starts, and Settings → Vault → "Link another browser" shows a fresh one on a browser that is
+already linked. Scripts use the API key in `data/auth.json` (`Authorization: Bearer …`) — that file
+is local-only and never committed.
+
+### Scripts
+
+| Command | What it does |
+|---------|----------------|
+| `npm run dev` | Engine (watch) + Vite web UI |
+| `npm run start` | Engine only |
+| `npm run build:web` | Production web build into `dist/` |
+| `npm run typecheck` | Type-check the whole project |
+| `npm test` | Offline suites on throwaway data (`-- --list`, `-- --only voice,vault`) |
+| `npm run harness` | App + stand-in services at http://127.0.0.1:8898 (after `build:web`) |
+| `npm run eval:assistant` | Router eval (~115 prompts); no side effects on your data |
+| `npm run eval:cards` | Card-skill library against a throwaway board |
+| `node scripts/e2e-voice.mjs "…"` | Real voice-loop drive with typed turns |
+
+For use from another device on a **trusted** network, set `HOST=0.0.0.0` and
+`ALLOWED_HOSTS=<that machine's IP or name>` (see `.env.example`). Do not expose the engine to the
+public internet without additional protection.
 
 ## How it works
 
-1. **PersonaPlex** (NVIDIA's full-duplex speech model, self-hosted) does the talking.
+1. **PersonaPlex** (NVIDIA's full-duplex speech model, self-hosted) is the voice. It says only
+   words it is given: it never makes up a reply of its own.
 2. **Deepgram** transcribes you live, beside it.
-3. **Jev** (TypeSafe AI) reads the transcription every ~400 ms and picks a tool when you ask
-   for something.
-4. The tool runs; a fast model writes one spoken line that PersonaPlex is **made to say in its
-   own voice**; the **workspace** window updates live.
+3. **Jev** (TypeSafe AI) reads the transcription as you speak and picks a tool when you ask for
+   something.
+4. A tool that fires runs, a fast model writes one spoken line about what it did, and the
+   **workspace** window updates live. When no tool fires, a text model (the "talking brain")
+   answers in a sentence or two, with your profile, the time and the board in view, started the
+   moment you stop speaking. A request no tool covers is handed to a multi-step solver instead
+   of being declined.
 
 ## The stack
 
@@ -34,9 +117,9 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design.
 | Voice — real-time, full-duplex | NVIDIA **PersonaPlex-7B**, self-hosted (patched) on a **Runpod** GPU pod |
 | Live transcription | **Deepgram** (nova-3, interim results) |
 | Tool routing | **Jev** (TypeSafe AI) — System One decision API |
-| Coding skill (UIs, new skills) | **Mordiem** `mercury-3` (quick, default: a page in ~3 s) or `kimi-k3` (strong) |
+| Coding skill (UIs, new skills) | **Mordiem** `deepseek-v4-1-flash-1017-ultrafast` (quick, default: a page in ~2 s) or `kimi-k3` (strong) |
 | Brain | **Mordiem** `claude-sonnet-5-5` |
-| Card designer (recipes, news, profiles… on the board) | **Mordiem** `mercury-3` (≈1.8 s a card; `claude-sonnet-5-5` for the quality tier) |
+| Card designer (recipes, news, profiles… on the board) | **Mordiem** `deepseek-v4-1-flash-1017-ultrafast` (≈1.3 s a card; `claude-sonnet-5-5` for the quality tier) |
 | Fast reply writer + JSON | **Mordiem** `nvidia-nemotron-3-nano` |
 | Images | **Mordiem** `krea-2-turbo` |
 | Web search | Tavily (keyed) or keyless DuckDuckGo |
@@ -62,6 +145,7 @@ Open **⚙ Settings** (a full page at `/settings.html`):
   test, delete), whether new skills need your approval, and a box to ask for a new one.
 - **Memory** — what Trinity remembers about you (search, edit, add, delete) and your name.
 - **Heartbeat** — reminders and recurring tasks.
+- **Vault** — encrypted logins and cards; link another browser with a one-time code.
 
 ## Real-time voice
 
@@ -91,6 +175,7 @@ bash pod/restart.sh                  # (re)start the supervised server, detached
 `patch_flush.py` (a 0x05 "flush" frame for barge-in) — to both the repo and the installed
 `moshi` copy — and creates the voice-upload admin token in `pod/admin_token`. Paste that token
 into **Settings → Models & API keys → PersonaPlex admin token** so custom voices sync to the pod.
+**Never commit `pod/admin_token`.**
 
 `serve.sh` supervises the server and **restarts it on crash or OOM** (the model runs in bf16,
 ~19 GB on a 20 GB card); it's single-instance, and `restart.sh` restarts it safely. Set
@@ -102,29 +187,13 @@ restart, but a **Stop** wipes everything. Use a **network volume** for the repo 
 cache (`PP_ROOT=/workspace … bash pod/setup.sh`, `HF_HOME` on the volume), or re-run
 `pod/setup.sh` on a fresh pod (a few minutes).
 
-## Run it
+## Security notes for a public clone
 
-```bash
-npm install
-cp .env.example .env   # optional — fill in keys to go live; works empty
-npm run dev
-```
-
-Then open **http://localhost:5173**. The engine runs on `127.0.0.1:8799` and only answers
-requests addressed to localhost; for use from another device on a trusted network, set
-`HOST=0.0.0.0` and `ALLOWED_HOSTS=<that machine's IP or name>` (see `.env.example`).
-
-- `npm run dev` runs the engine (watch) + the web UI together.
-- `npm run start` runs just the engine.
-- `npm run typecheck` type-checks everything.
-- `node scripts/e2e-voice.mjs "build me a tip calculator" "what's my favorite color" …` drives
-  the real voice loop with typed turns and reports Jev's decisions, the tools, what PersonaPlex
-  actually said, and the workspace (`--persona <id>` to pick a persona, `--settle 60` to wait for
-  background work).
-- `npm run eval:cards` runs the card-skill library: about 120 things people say about the cards on
-  the board (close several, minimize all, start the timer, read the note, add eggs to the list…)
-  through the real router and tools on a throwaway board, and reports by skill
-  (`-- --only control,read`, `-- --route-only`, `-- --verbose`). It never touches the engine's data.
+- Copy `.env.example` → `.env`; leave secrets out of git.
+- Runtime auth (`data/auth.json`), the vault, SQLite, and generated media live under `data/` and are
+  ignored by git.
+- Do not paste live API keys, JWT cookies, or vault passphrases into issues or PRs.
+- The engine defaults to localhost-only binding; treat `HOST=0.0.0.0` as a trusted-LAN setting only.
 
 ## Status
 

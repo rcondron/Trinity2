@@ -1,0 +1,16 @@
+{
+  "about": "An Outlook-on-the-web-like inbox: each message is a list option named by its visible text (initials, sender, subject, time, preview — cut at 80 characters). Whether a message is unread is in the option's aria-label only, which the snapshot doesn't use for a control that has visible text: the page gives no unread marker.",
+  "url": "https://outlook.live.com/mail/0/",
+  "title": "Mail - Ryan Smith - Outlook",
+  "text": "Inbox Focused Other Filter Today SL Sam Lee Roadmap for Q1 9:42 AM Hi Ryan, attached is the draft roadmap for next quarter. Could you send comments by Friday? FB First National Bank Your October statement is ready 8:15 AM Your statement for the account ending 4821 is now available online. Yesterday DP Dana Park Lunch on Friday? Mon 3:05 PM Are you free around noon? I found a new place near the office. Last week ST Security Team Verify your account now Sat 11/7 We noticed unusual activity on your account. Click the link below to verify your account.",
+  "controls": [
+    { "ref": 1, "role": "button", "name": "New mail" },
+    { "ref": 2, "role": "button", "name": "Filter" },
+    { "ref": 3, "role": "tab", "name": "Focused" },
+    { "ref": 4, "role": "tab", "name": "Other" },
+    { "ref": 5, "role": "option", "name": "SL Sam Lee Roadmap for Q1 9:42 AM Hi Ryan, attached is the draft roadmap for next" },
+    { "ref": 6, "role": "option", "name": "FB First National Bank Your October statement is ready 8:15 AM Your statement fo" },
+    { "ref": 7, "role": "option", "name": "DP Dana Park Lunch on Friday? Mon 3:05 PM Are you free around noon? I found a ne" },
+    { "ref": 8, "role": "option", "name": "ST Security Team Verify your account now Sat 11/7 We noticed unusual activity on" }
+  ]
+}

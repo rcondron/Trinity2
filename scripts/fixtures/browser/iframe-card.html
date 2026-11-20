@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Pay — Framed Checkout</title>
+    <style>
+      body { font: 16px system-ui, sans-serif; margin: 24px; }
+      .card { display: block; width: 420px; padding: 16px; border: 1px solid #ccc; margin-bottom: 16px; }
+      .row { display: block; margin: 10px 0; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Pay for your order</h1>
+      <form id="order" class="card" action="/order" method="post">
+        <div class="row">
+          <label for="holder">Name on card</label>
+          <input id="holder" name="holder" autocomplete="cc-name" />
+        </div>
+        <div class="row">
+          <label for="mail">Email for the receipt</label>
+          <input id="mail" name="email" type="email" autocomplete="email" />
+        </div>
+        <!-- The card number, expiry and code are typed into a frame served by ANOTHER origin (a payment provider's). -->
+        <iframe id="cardframe" title="Card details" src="{{OTHER}}/card-frame.html" width="400" height="170"></iframe>
+        <p>Total due: $18.00</p>
+        <div class="row"><button type="submit" id="paybtn">Place order</button></div>
+      </form>
+    </main>
+    <script>
+      document.getElementById("order").addEventListener("submit", (e) => {
+        e.preventDefault();
+        document.getElementById("paybtn").textContent = "Ordered (test page: nothing was charged)";
+      });
+    </script>
+    <script type="module" src="/harness.js"></script>
+  </body>
+</html>

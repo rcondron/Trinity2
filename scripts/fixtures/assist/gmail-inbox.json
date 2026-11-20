@@ -1,0 +1,31 @@
+{
+  "about": "A Gmail-like inbox as the extension's snapshot gives it: the text of the page's main region with every run of white space made one space (so rows run together), and the controls by role and name (names cut at 80 characters). Each row is a link named by its subject and the start of its preview; nothing in the text says which rows are unread.",
+  "url": "https://mail.google.com/mail/u/0/#inbox",
+  "title": "Inbox (3) - ryan@example.com - Gmail",
+  "text": "Primary Promotions Social Updates Sam Lee Roadmap for Q1 - Hi Ryan, attached is the draft roadmap for next quarter. Could you send comments by Friday? 9:42 AM First National Bank Your October statement is ready - Your statement for the account ending 4821 is now available online. 8:15 AM Morning Brew Markets wrap: stocks slip as rates hold - Good morning. Here is what moved overnight and what to watch today. 6:30 AM Dana Park Lunch on Friday? - Are you free around noon? I found a new place near the office. Nov 9 Security Team Verify your account now - We noticed unusual activity on your account. Click the link below to verify your account. Nov 8 Sam Lee Re: Invoice 1042 - Thanks, got it. I will pay it this week. Nov 6 Priya Shah Offsite photos - Sharing the album from last month. Oct 30 1–7 of 7 Terms · Privacy · Program Policies Last account activity: 12 minutes ago",
+  "controls": [
+    { "ref": 1, "role": "button", "name": "Main menu" },
+    { "ref": 2, "role": "textbox", "name": "Search mail", "editable": true },
+    { "ref": 3, "role": "button", "name": "Compose" },
+    { "ref": 4, "role": "link", "name": "Inbox 3", "href": "https://mail.google.com/mail/u/0/#inbox" },
+    { "ref": 5, "role": "link", "name": "Starred", "href": "https://mail.google.com/mail/u/0/#starred" },
+    { "ref": 6, "role": "link", "name": "Sent", "href": "https://mail.google.com/mail/u/0/#sent" },
+    { "ref": 7, "role": "link", "name": "Drafts 1", "href": "https://mail.google.com/mail/u/0/#drafts" },
+    { "ref": 8, "role": "tab", "name": "Primary" },
+    { "ref": 9, "role": "tab", "name": "Promotions" },
+    { "ref": 10, "role": "button", "name": "Not starred" },
+    { "ref": 11, "role": "link", "name": "Roadmap for Q1 - Hi Ryan, attached is the draft roadmap for next quarter. Could" },
+    { "ref": 12, "role": "button", "name": "Not starred" },
+    { "ref": 13, "role": "link", "name": "Your October statement is ready - Your statement for the account ending 4821 is" },
+    { "ref": 14, "role": "button", "name": "Not starred" },
+    { "ref": 15, "role": "link", "name": "Markets wrap: stocks slip as rates hold - Good morning. Here is what moved over" },
+    { "ref": 16, "role": "button", "name": "Not starred" },
+    { "ref": 17, "role": "link", "name": "Lunch on Friday? - Are you free around noon? I found a new place near the offic" },
+    { "ref": 18, "role": "button", "name": "Not starred" },
+    { "ref": 19, "role": "link", "name": "Verify your account now - We noticed unusual activity on your account. Click th" },
+    { "ref": 20, "role": "button", "name": "Not starred" },
+    { "ref": 21, "role": "link", "name": "Re: Invoice 1042 - Thanks, got it. I will pay it this week." },
+    { "ref": 22, "role": "button", "name": "Not starred" },
+    { "ref": 23, "role": "link", "name": "Offsite photos - Sharing the album from last month." }
+  ]
+}

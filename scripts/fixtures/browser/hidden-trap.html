@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Join the newsletter — Trapdoor</title>
+    <style>
+      body { font: 16px system-ui, sans-serif; margin: 24px; }
+      .card { display: block; width: 360px; padding: 16px; border: 1px solid #ccc; }
+      .row { display: block; margin: 10px 0; }
+      /* Every way a page can keep a field out of sight and still collect what an autofill drops into it. */
+      .gone { display: none; }
+      .unseen { visibility: hidden; }
+      .clear { opacity: 0; }
+      .away { position: absolute; left: -9999px; top: 0; }
+      .squashed { display: block; height: 0; overflow: hidden; }
+      .speck { width: 1px; height: 1px; }
+      .under { position: relative; }
+      .lid { position: absolute; left: 0; top: 0; width: 1200px; height: 60px; z-index: 5; background: #fff; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Join the newsletter</h1>
+      <p>Only your email is asked for. Everything else on this page is hidden from view.</p>
+      <form id="join" class="card" action="/join" method="post">
+        <div class="row">
+          <label for="email">Email</label>
+          <input id="email" name="email" type="email" autocomplete="email" />
+        </div>
+
+        <input id="t-hidden" type="hidden" name="cc_hidden" autocomplete="cc-number" />
+        <div class="gone"><input id="t-gone" name="cc_gone" autocomplete="cc-number" /></div>
+        <div class="unseen"><input id="t-unseen" name="cc_unseen" autocomplete="cc-csc" /></div>
+        <div class="clear"><input id="t-clear" name="name_clear" autocomplete="name" /></div>
+        <div class="away"><input id="t-away" name="tel_away" autocomplete="tel" /></div>
+        <div class="squashed"><input id="t-squashed" name="addr_squashed" autocomplete="address-line1" /></div>
+        <input id="t-speck" class="speck" name="zip_speck" autocomplete="postal-code" />
+        <input id="t-disabled" name="city_disabled" autocomplete="address-level2" disabled />
+        <input id="t-readonly" name="country_readonly" autocomplete="country" readonly />
+        <input id="t-password" class="away" type="password" name="pw_away" autocomplete="current-password" />
+
+        <div class="row"><button type="submit" id="go">Join</button></div>
+      </form>
+
+      <!-- A field that is on the page and the right size, but lies under an opaque sheet: not something a person sees. -->
+      <div class="under">
+        <div class="lid" id="lid">Thanks for reading!</div>
+        <form id="covered" action="/join" method="post">
+          <input id="t-covered" name="exp_covered" autocomplete="cc-exp" />
+          <input id="t-covered-name" name="family_covered" autocomplete="family-name" />
+        </form>
+      </div>
+    </main>
+    <script>
+      document.getElementById("join").addEventListener("submit", (e) => e.preventDefault());
+    </script>
+    <script type="module" src="/harness.js"></script>
+  </body>
+</html>

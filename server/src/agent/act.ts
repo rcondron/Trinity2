@@ -24,6 +24,11 @@ export interface ActIO {
   minConfidence: number;
   /** The user's own words when a planner runs the tool for them (see ToolContext.userWords). */
   userWords?: string;
+  /**
+   * Who is asking: the user's own words (a call, a typed turn: the default), a planner working through steps for
+   * them, or a scheduled run. A tool marked `sensitive` runs for the user alone.
+   */
+  origin?: "user" | "planner" | "scheduled";
 }
 
 export interface Outcome {
@@ -34,6 +39,8 @@ export interface Outcome {
   speak?: string;
   /** Background work was started (a build, a new skill) or queued behind a running build; the reply must not claim it's finished. */
   inProgress?: "started" | "queued";
+  /** Nothing to say at all (see ToolResult.silent): no reply is spoken, written or shown. */
+  silent?: boolean;
   action: string;
   args: Record<string, unknown>;
 }
@@ -97,12 +104,24 @@ function showRender(toolName: string, html: string): void {
     workspace.showHtml(html, title);
     return;
   }
-  addCard({ kind: "widget", title: title.charAt(0).toUpperCase() + title.slice(1), text: title, status: "ready", html, w: 40, h: 60 });
+  try {
+    addCard({ kind: "widget", title: title.charAt(0).toUpperCase() + title.slice(1), text: title, status: "ready", html, w: 40, h: 60 });
+  } catch (err) {
+    // A full board (BoardLimitError): the result is still in the tool's own words; the card just isn't added.
+    console.warn(`[act] ${toolName}: no card added:`, (err as Error).message);
+  }
 }
 
 export async function act(d: Decision, utterance: string, io: ActIO): Promise<Outcome> {
   const tool = d.tool;
   if (!tool) return { ok: false, say: "I'm not sure what to do with that.", action: d.action, args: {} };
+  // The last gate for the vault, sign-in, payment and sending: only the user's own words start those. (They are
+  // also never offered to a planner or a scheduled run in the first place; this holds if one slips through.)
+  const origin = io.origin ?? (io.userWords !== undefined ? "planner" : "user");
+  if (tool.sensitive && origin !== "user") {
+    console.warn(`[act] refused ${tool.name}: asked for by a ${origin === "planner" ? "planner" : "scheduled run"}, not by the user`);
+    return { ok: false, say: "That one needs the user to ask for it themselves.", action: tool.name, args: {} };
+  }
   const preset = confidentOptions(d, io.minConfidence);
   const args = argModeOf(tool) === "llm" ? await extractArgs(tool, utterance, io.situation, preset) : { ...preset };
   io.emit({ type: "tool", tool: tool.name, args });
@@ -119,6 +138,7 @@ export async function act(d: Decision, utterance: string, io: ActIO): Promise<Ou
         utterance,
         memory: io.memory,
         situation: io.situation,
+        origin,
         ...(io.userWords ? { userWords: io.userWords } : {}),
       }),
       TOOL_TIMEOUT_MS,
@@ -136,13 +156,16 @@ export async function act(d: Decision, utterance: string, io: ActIO): Promise<Ou
   if (result.render) showRender(tool.name, result.render);
   noteResult(tool.name, result);
 
-  // A failed tool's own words (a decline, a clarifying question) come first.
+  // A failed tool's own words (a decline, a clarifying question) come first — and are spoken as it wrote them: the
+  // reply writer would "confirm" them as done. With no words of its own, the writer is told it failed (see ok).
   const say = result.ok ? (result.say ?? "Done.") : (result.say ?? `That didn't work: ${result.error ?? "unknown error"}`);
   return {
     ok: result.ok,
     say,
-    speak: result.ok ? result.speak : undefined,
+    speak: result.ok ? result.speak : (result.speak ?? result.say),
     inProgress: result.ok ? result.inProgress : undefined,
+    // (An older tool says "nothing" as a blank line to speak.)
+    silent: result.ok && (result.silent === true || (typeof result.speak === "string" && !result.speak.trim())) ? true : undefined,
     action: tool.name,
     args,
   };

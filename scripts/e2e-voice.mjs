@@ -6,9 +6,28 @@
 //
 //   node scripts/e2e-voice.mjs "let's start a new game" "a gritty pirate adventure" ...
 //   ENGINE=http://localhost:8799 node scripts/e2e-voice.mjs --persona game-master "..."
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 
 const ENGINE = process.env.ENGINE || "http://localhost:8799";
+// The engine answers a linked browser or the API key (server/src/auth.ts). A script uses the key: TRINITY_API_KEY, or
+// the one the engine keeps in its data folder.
+function apiKey() {
+  if (process.env.TRINITY_API_KEY) return process.env.TRINITY_API_KEY;
+  try {
+    const file = process.env.TRINITY_DATA_DIR
+      ? path.join(process.env.TRINITY_DATA_DIR, "auth.json")
+      : fileURLToPath(new URL("../data/auth.json", import.meta.url));
+    return JSON.parse(fs.readFileSync(file, "utf8")).apiKey;
+  } catch {
+    return "";
+  }
+}
+const KEY = apiKey();
+if (!KEY) console.error("(no API key found: start the engine once, or set TRINITY_API_KEY — requests will be refused)");
+const AUTH = KEY ? { Authorization: `Bearer ${KEY}` } : {};
 const WS = ENGINE.replace(/^http/, "ws");
 const args = process.argv.slice(2);
 let persona = null;
@@ -27,14 +46,16 @@ if (!turns.length) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const json = (path, opts = {}) =>
-  fetch(ENGINE + path, { ...opts, headers: { "Content-Type": "application/json", ...(opts.headers || {}) } }).then((r) => r.json());
+  fetch(ENGINE + path, { ...opts, headers: { "Content-Type": "application/json", ...AUTH, ...(opts.headers || {}) } }).then((r) => r.json());
 
 if (persona) {
   const r = await json(`/api/personas/${persona}/activate`, { method: "POST" });
   console.log(`persona → ${r.persona?.name ?? JSON.stringify(r)}`);
 }
 
-const ws = new WebSocket(`${WS}/call?standby=1`);
+const ws = new WebSocket(`${WS}/call?standby=1`, { headers: AUTH });
+// (Like a tab that has had a tap: unprompted lines are only said where they can be heard.)
+ws.on("open", () => ws.send(JSON.stringify({ type: "playback", on: true })));
 let ready = false;
 let spoken = "";
 let turnLog = [];

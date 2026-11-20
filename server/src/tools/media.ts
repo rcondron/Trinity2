@@ -4,8 +4,9 @@ import { getSpeechJob, requestSpeech } from "../services/speech.js";
 import { getVideoJob, requestVideo } from "../services/videos.js";
 import { live } from "../settings.js";
 import type { Tool, ToolResult } from "../types.js";
-import { addCard, boardBlocked, tagsFromText, updateCard } from "../workspace/board.js";
+import { boardBlocked, patchCard, tagsFromText, tryAddCard, type BoardCard, type CardPatch, type CardRetry } from "../workspace/board.js";
 import { workspace } from "../workspace/bus.js";
+import { holdCard } from "../workspace/card-jobs.js";
 import { registerTool } from "./registry.js";
 
 /**
@@ -68,8 +69,43 @@ const qualityInput = {
   },
 };
 
-function busy(n: number, text: string | null): void {
-  workspace.activity(`card:${n}`, text);
+/** The chip for work on a card, keyed by the card itself (its id), so a later card with the same number never clears it. */
+function busy(card: Pick<BoardCard, "id">, text: string | null): void {
+  workspace.activity(`card:${card.id}`, text);
+}
+
+const qualityArg = (v: unknown): Record<string, string> => (typeof v === "string" && v ? { quality: v.slice(0, 40) } : {});
+
+/** What "try again" needs to make this card again: the tool, the words, and the one subject this card shows. */
+function retryFor(tool: string, request: string, arg: string, value: string, quality: unknown): CardRetry {
+  return { tool, request: request.slice(0, 600), args: { [arg]: value.slice(0, 600), ...qualityArg(quality) } };
+}
+
+/**
+ * The job behind a loading card: it holds the card (by id) until the media is ready or has failed, then writes the
+ * result into that same card — or into nothing, if the card has gone meanwhile. A later card that happens to get the
+ * same number is never touched.
+ */
+function finishInto(card: BoardCard, done: Promise<{ status: string; url?: string | null; error?: string }>, failed: string): void {
+  const release = holdCard(card.id);
+  void done
+    .then((j) => {
+      busy(card, null);
+      const patch: CardPatch =
+        j.status === "ready" && j.url ? { status: "ready", url: j.url, model: undefined } : { status: "error", error: j.error ?? "unknown error", model: undefined };
+      const updated = patchCard(card.id, patch);
+      if (updated && updated.status === "error") workspace.toast(`Card ${updated.n}: ${failed}`, "error");
+    })
+    .catch((err: unknown) => {
+      busy(card, null);
+      console.warn(`[media] card ${card.id}: ${(err as Error).message}`);
+      try {
+        patchCard(card.id, { status: "error", error: (err as Error).message.slice(0, 160), model: undefined });
+      } catch {
+        /* the board can't take it: the card stays as it is and is settled later */
+      }
+    })
+    .finally(release);
 }
 
 const makeImage: Tool = {
@@ -102,7 +138,7 @@ const makeImage: Tool = {
         if (!cards.length) return { ok: false, say: `I couldn't make that picture: ${job.error ?? "unknown error"}.` };
         continue;
       }
-      const card = addCard({
+      const card = tryAddCard({
         kind: "image",
         title: `Picture: ${caption(subject)}`,
         text: subject,
@@ -110,19 +146,17 @@ const makeImage: Tool = {
         status: job?.status === "ready" && job.url ? "ready" : "pending",
         url: job?.status === "ready" ? job.url : null,
         model: pick.label,
+        retry: retryFor("make_image", ctx.utterance, "prompt", subject, args.quality),
       });
+      if (typeof card === "string") {
+        if (!cards.length) return { ok: false, say: card };
+        break; // the board is full: the pictures that did fit stay
+      }
       cards.push(card.n);
       if (card.status === "ready") continue;
       anyPending = true;
-      busy(card.n, `${pick.label} is painting card ${card.n}…`);
-      void done.then((j) => {
-        busy(card.n, null);
-        if (j.status === "ready" && j.url) updateCard(card.n, { status: "ready", url: j.url, model: undefined });
-        else {
-          updateCard(card.n, { status: "error", error: j.error ?? "unknown error", model: undefined });
-          workspace.toast(`Card ${card.n}: couldn't make the picture`, "error");
-        }
-      });
+      busy(card, `${pick.label} is painting card ${card.n}…`);
+      finishInto(card, done, "couldn't make the picture");
     }
     if (!cards.length) return { ok: false, say: "I couldn't start those pictures." };
     if (cards.length === 1) {
@@ -168,7 +202,7 @@ const makeAudio: Tool = {
     const { id, done } = requestSpeech(text, { model: pick.model });
     const job = getSpeechJob(id);
     if (job?.status === "error") return { ok: false, say: `I couldn't make that audio: ${job.error ?? "unknown error"}.` };
-    const card = addCard({
+    const card = tryAddCard({
       kind: "audio",
       title: `Audio: ${caption(text)}`,
       text,
@@ -176,19 +210,14 @@ const makeAudio: Tool = {
       status: job?.status === "ready" && job.url ? "ready" : "pending",
       url: job?.status === "ready" ? job.url : null,
       model: pick.label,
+      retry: retryFor("make_audio", ctx.utterance, "text", text, args.quality),
     });
+    if (typeof card === "string") return { ok: false, say: card };
     if (card.status === "ready") {
       return { ok: true, say: `Added card ${card.n} with that audio.`, data: { card: card.n } };
     }
-    busy(card.n, `${pick.label} is recording card ${card.n}…`);
-    void done.then((j) => {
-      busy(card.n, null);
-      if (j.status === "ready" && j.url) updateCard(card.n, { status: "ready", url: j.url, model: undefined });
-      else {
-        updateCard(card.n, { status: "error", error: j.error ?? "unknown error", model: undefined });
-        workspace.toast(`Card ${card.n}: couldn't make the audio`, "error");
-      }
-    });
+    busy(card, `${pick.label} is recording card ${card.n}…`);
+    finishInto(card, done, "couldn't make the audio");
     return {
       ok: true,
       say: `Card ${card.n} is on the board — ${pick.label} is recording into it now.`,
@@ -227,7 +256,7 @@ const makeVideo: Tool = {
         if (!cards.length) return { ok: false, say: `I couldn't make that video: ${job.error ?? "unknown error"}.` };
         continue;
       }
-      const card = addCard({
+      const card = tryAddCard({
         kind: "video",
         title: `Video: ${caption(subject)}`,
         text: subject,
@@ -235,19 +264,17 @@ const makeVideo: Tool = {
         status: job?.status === "ready" && job.url ? "ready" : "pending",
         url: job?.status === "ready" ? job.url : null,
         model: pick.label,
+        retry: retryFor("make_video", ctx.utterance, "prompt", subject, args.quality),
       });
+      if (typeof card === "string") {
+        if (!cards.length) return { ok: false, say: card };
+        break;
+      }
       cards.push(card.n);
       if (card.status === "ready") continue;
       anyPending = true;
-      busy(card.n, `${pick.label} is filming card ${card.n}…`);
-      void done.then((j) => {
-        busy(card.n, null);
-        if (j.status === "ready" && j.url) updateCard(card.n, { status: "ready", url: j.url, model: undefined });
-        else {
-          updateCard(card.n, { status: "error", error: j.error ?? "unknown error", model: undefined });
-          workspace.toast(`Card ${card.n}: couldn't make the video`, "error");
-        }
-      });
+      busy(card, `${pick.label} is filming card ${card.n}…`);
+      finishInto(card, done, "couldn't make the video");
     }
     if (!cards.length) return { ok: false, say: "I couldn't start those videos." };
     if (cards.length === 1) {
@@ -284,7 +311,7 @@ const makeText: Tool = {
     const text = String(args.text ?? "").trim() || ctx.utterance.replace(TEXT_LEAD, "").trim();
     if (!text) return { ok: false, say: "What should the text card say?" };
     if (boardBlocked()) return { ok: false, say: "A game is on the workspace right now — finish or clear it before I add text cards." };
-    const card = addCard({
+    const card = tryAddCard({
       kind: "text",
       title: `Note: ${caption(text)}`,
       text,
@@ -292,6 +319,7 @@ const makeText: Tool = {
       status: "ready",
       url: null,
     });
+    if (typeof card === "string") return { ok: false, say: card };
     return { ok: true, say: `Added card ${card.n} with that note.`, data: { card: card.n } };
   },
 };

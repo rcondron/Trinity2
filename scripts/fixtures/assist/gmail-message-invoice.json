@@ -1,0 +1,14 @@
+{
+  "about": "A short opened message. Its row in the list is named 'Re: Invoice 1042 - … I will pay it this week.': a name with a word the extension's guard holds (pay), though it is only a message to open.",
+  "url": "https://mail.google.com/mail/u/0/#inbox/FMfcgzQXKWgkInvoice1042",
+  "title": "Re: Invoice 1042 - ryan@example.com - Gmail",
+  "text": "Re: Invoice 1042 Inbox Sam Lee <sam@example.com> Nov 6, 2026, 2:14 PM to me Thanks, got it. I will pay it this week. Sam Reply Forward",
+  "controls": [
+    { "ref": 1, "role": "button", "name": "Back to Inbox" },
+    { "ref": 2, "role": "button", "name": "Archive" },
+    { "ref": 3, "role": "button", "name": "Delete" },
+    { "ref": 4, "role": "button", "name": "Reply" },
+    { "ref": 5, "role": "link", "name": "Reply" },
+    { "ref": 6, "role": "link", "name": "Forward" }
+  ]
+}

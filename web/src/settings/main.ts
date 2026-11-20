@@ -25,9 +25,10 @@ import {
   voicesRes,
 } from "./store.js";
 import { avatar, confirmAction, h, icon, setChildren, type Section } from "./ui.js";
+import { createVaultSection } from "./vault.js";
 import { createVoicesSection } from "./voices.js";
 
-type SectionId = "personas" | "models" | "voices" | "skills" | "memory" | "heartbeat" | "browser" | "games";
+type SectionId = "personas" | "models" | "voices" | "skills" | "memory" | "heartbeat" | "browser" | "vault" | "games";
 
 // Nav order. Saved games is last: only the Game Master persona uses it.
 const SECTIONS: Record<SectionId, { title: string; create: () => Section }> = {
@@ -38,6 +39,7 @@ const SECTIONS: Record<SectionId, { title: string; create: () => Section }> = {
   memory: { title: "Memory", create: createMemorySection },
   heartbeat: { title: "Heartbeat", create: createHeartbeatSection },
   browser: { title: "Browser extension", create: createBrowserSection },
+  vault: { title: "Vault", create: createVaultSection },
   games: { title: "Saved games", create: createGamesSection },
 };
 const ORDER = Object.keys(SECTIONS) as SectionId[];
@@ -55,6 +57,22 @@ let suppressUnloadPrompt = false;
 for (const el of document.querySelectorAll<HTMLElement>("[data-icon]")) {
   const name = el.dataset.icon ?? "";
   if (isIconName(name)) el.innerHTML = svgIcon(name);
+}
+
+// The Vault's entry in the sidebar, after "Browser extension" (the page's own markup lists the older sections).
+{
+  const nav = document.querySelector<HTMLElement>(".nav");
+  if (nav && !nav.querySelector('[data-section="vault"]')) {
+    const link = h(
+      "a",
+      { class: "nav-link", href: "#vault", "data-section": "vault" },
+      icon("shield"),
+      h("span", { class: "nav-label" }, "Vault"),
+      h("span", { class: "nav-badge", "data-badge": "vault" }),
+    );
+    const before = nav.querySelector('[data-section="browser"]')?.nextSibling ?? null;
+    nav.insertBefore(link, before);
+  }
 }
 
 // ─── Router ──────────────────────────────────────────────────────────────────

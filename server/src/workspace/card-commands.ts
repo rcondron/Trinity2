@@ -8,6 +8,7 @@
 import { nanoid } from "nanoid";
 import { applyCardLayout, boardActive } from "./board.js";
 import { workspace } from "./bus.js";
+import "./card-events.js"; // the rest of what the cards say back: heights, script errors, saved state, events
 
 export type CardOp =
   | "play"
@@ -125,9 +126,12 @@ workspace.onBoardEvent((evt) => {
     return;
   }
   if (evt.op === "layout") {
+    // The card by its id (the board sends it): a drag that lands after the card was replaced moves nothing. A window
+    // still running an older board template sends the number only.
+    const id = typeof evt.id === "string" && evt.id ? evt.id.slice(0, 40) : null;
     const n = Number(evt.n);
-    if (!Number.isInteger(n) || n < 1) return;
+    if (!id && (!Number.isInteger(n) || n < 1)) return;
     const h = evt.h === null || evt.h === undefined ? null : Number(evt.h);
-    applyCardLayout(n, { x: Number(evt.x), y: Number(evt.y), w: Number(evt.w), h: h !== null && Number.isFinite(h) ? h : null, z: Number(evt.z) });
+    applyCardLayout(id ?? n, { x: Number(evt.x), y: Number(evt.y), w: Number(evt.w), h: h !== null && Number.isFinite(h) ? h : null, z: Number(evt.z) });
   }
 });

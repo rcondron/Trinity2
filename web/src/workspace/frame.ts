@@ -641,8 +641,6 @@ listen(window, "load", function () { setTimeout(boot, 0); });
 
 const BOOT_TAG = "<script>window.__trinityBoot&&window.__trinityBoot();</script>";
 
-const FULL_DOCUMENT = /^\s*(?:<!--[\s\S]*?-->\s*)*<(?:!doctype|html)[\s>]/i;
-
 const LINE_SEP = String.fromCharCode(0x2028);
 const PARA_SEP = String.fromCharCode(0x2029);
 
@@ -691,8 +689,9 @@ function runtimeScript(kind: FrameKind, init?: { state: unknown }, nested = fals
 
 function headFor(kind: FrameKind, init?: { state: unknown }, nested = false): string {
   return (
-    '<meta charset="utf-8">' +
+    // The policy comes before anything else in the document (see compose()).
     `<meta http-equiv="Content-Security-Policy" content="${frameCsp()}">` +
+    '<meta charset="utf-8">' +
     // No DNS lookups ahead of the page's links: a host name can carry data out too.
     '<meta http-equiv="x-dns-prefetch-control" content="off">' +
     '<meta name="viewport" content="width=device-width, initial-scale=1">' +
@@ -706,31 +705,15 @@ function headFor(kind: FrameKind, init?: { state: unknown }, nested = false): st
   );
 }
 
-function insertAt(src: string, index: number, text: string): string {
-  return src.slice(0, index) + text + src.slice(index);
-}
-
-/** Merge our head/tail into a full document the payload brought along. */
-function intoDocument(src: string, head: string, tail: string): string {
-  let out = src;
-  const headTag = /<head(?:\s[^>]*)?>/i.exec(out);
-  if (headTag) {
-    out = insertAt(out, headTag.index + headTag[0].length, head);
-  } else {
-    const htmlTag = /<html(?:\s[^>]*)?>/i.exec(out);
-    if (htmlTag) {
-      out = insertAt(out, htmlTag.index + htmlTag[0].length, `<head>${head}</head>`);
-    } else {
-      const doctype = /<!doctype[^>]*>/i.exec(out);
-      out = insertAt(out, doctype ? doctype.index + doctype[0].length : 0, `<head>${head}</head>`);
-    }
-  }
-  if (!/^\s*<!doctype/i.test(out)) out = `<!doctype html>${out}`;
-  return out + tail;
-}
-
+/**
+ * The frame's document: ALWAYS Trinity's own doctype, <head> — the Content-Security-Policy first, then the runtime —
+ * and <body>, with the payload after them. The payload is never searched for a place to put the head in: a document
+ * of its own (<!doctype>, <html>, <head>, <body>) simply arrives inside this body, where the HTML parser ignores the
+ * stray doctype and <head> tags, folds the <html> and <body> attributes into these ones and runs its styles and
+ * scripts where they stand — all of it after, and under, the policy. (Looking for the payload's "<head>" let a
+ * payload put script before the policy by spelling "<head>" inside a <textarea>.)
+ */
 function compose(source: string, head: string, tail: string, bodyClass?: string): string {
-  if (FULL_DOCUMENT.test(source)) return intoDocument(source, head, tail);
   const body = bodyClass ? `<body class="${bodyClass}">` : "<body>";
   return `<!doctype html><html lang="en"><head>${head}</head>${body}${source}${tail}</body></html>`;
 }

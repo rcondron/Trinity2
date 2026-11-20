@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DATA_DIR } from "../config.js";
+import type { FormRequest } from "../vault/index.js";
 import { BUILD_PREVIEW_TEMPLATE } from "./build-preview.js";
 
 /**
@@ -71,8 +72,17 @@ export interface CardCommand {
   arg: unknown;
 }
 
+/**
+ * A secure form for the windows to draw in their own trusted page (vault/forms.ts): a descriptor — title, fields,
+ * where to post — and never a value. What is typed goes from the window to POST /api/vault/forms/<id>, not through here.
+ */
+export type SecureForm = FormRequest;
+export type SecureFormEnd = "submitted" | "approved" | "cancelled" | "expired";
+
 export type WorkspaceEvent =
   | { type: "snapshot"; snapshot: WorkspaceSnapshot }
+  | { type: "form"; form: SecureForm }
+  | { type: "form_closed"; id: string; status: SecureFormEnd }
   | { type: "command"; cmd: CardCommand }
   | { type: "state"; version: number; state: unknown; title: string }
   | { type: "template"; version: number; template: WorkspaceTemplate; state: unknown; title: string }
@@ -93,6 +103,8 @@ type Send = (e: WorkspaceEvent) => void;
 const STORE = path.join(DATA_DIR, "workspace.json");
 const STATE_DEBOUNCE_MS = 40;
 const STATE_MAX_WAIT_MS = 150;
+/** A change is on disk this long after it was made (and at once when the engine goes down — see flushSave). */
+const SAVE_DELAY_MS = 300;
 const EPOCH = `${Date.now().toString(36)}-${process.pid}`;
 
 /** A streaming BUILD's live preview: temporary, it never outlives the build showing it. */
@@ -112,7 +124,28 @@ export interface WorkspaceUndoEntry {
   template: WorkspaceTemplate | null;
   state: unknown | null;
   owner: string | null;
+  /**
+   * The screen as the change left it (the last write in the same turn as the push): with `state` it says exactly what
+   * the change did, so an undo can take back that and nothing else. Undefined when nothing was written.
+   */
+  after?: { mode: WorkspaceMode; owner: string | null; state: unknown | null };
+  /** No longer taking `after` (the change that pushed it is over). */
+  sealed?: boolean;
+  /** How many more writes belong to the change (it is sealed after the last). */
+  takes?: number;
 }
+
+/** What an undo makes of the screen when an owner (the card board) takes back one change instead of the whole screen. */
+export interface UndoMerge {
+  template: WorkspaceTemplate;
+  state: unknown;
+  title: string;
+  /** What was undone, as a sentence ("Brought back card 4."). */
+  say: string;
+}
+
+/** Returns the merged screen, "nothing" when the entry would change nothing (the next one is tried), or null to restore the whole screen as it was. */
+export type UndoMerger = (entry: WorkspaceUndoEntry, now: { mode: WorkspaceMode; owner: string | null; state: unknown | null }) => UndoMerge | "nothing" | null;
 
 const MAX_UNDO = 12;
 
@@ -159,9 +192,22 @@ export class WorkspaceBus {
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   /** The latest screen not yet on disk (never a build preview). */
   private unsaved: WorkspaceSnapshot | null = null;
+  /** A write to disk is under way (the next one waits for it). */
+  private saving = false;
   /** Recent screens that clear / remove can bring back. */
   private undoStack: WorkspaceUndoEntry[] = [];
   private boardListeners = new Set<(evt: Record<string, unknown>) => void>();
+  /** Owners whose state objects are never changed in place (the card board): an undo entry keeps the object itself, not a copy. */
+  private frozenOwners = new Set<string>();
+  private undoMerger: UndoMerger | null = null;
+  private undoListeners = new Set<() => void>();
+  /** Takes a freeform page (showHtml with no owner) as a card instead of the whole window; set by the card board. */
+  private htmlAdopter: ((html: string, title: string) => boolean) | null = null;
+  /**
+   * The secure forms open right now, for windows that connect later. Kept apart from `snap` on purpose: a form is
+   * never part of a snapshot, never in an undo entry and never written to workspace.json.
+   */
+  private forms = new Map<string, SecureForm>();
 
   constructor(private persistPath: string | null = STORE) {
     this.restore();
@@ -185,10 +231,11 @@ export class WorkspaceBus {
    * Remember the current screen so clear / remove / accidental wipes can be undone.
    * No-ops when empty or when a transient build preview is showing.
    */
-  pushUndo(reason: string): boolean {
+  pushUndo(reason: string, writes = Infinity): boolean {
     if (this.snap.mode === "empty") return false;
     if (isBuildPreview(this.snap)) return false;
     this.flushState();
+    const frozen = this.snap.owner !== null && this.frozenOwners.has(this.snap.owner);
     const entry: WorkspaceUndoEntry = {
       at: Date.now(),
       reason: reason.slice(0, 64),
@@ -196,41 +243,135 @@ export class WorkspaceBus {
       mode: this.snap.mode,
       title: this.snap.title,
       html: this.snap.html,
-      template: cloneJson(this.snap.template),
-      state: cloneJson(this.snap.state),
+      // (The board's template and state are never changed in place: the entry keeps them as they are, at no cost.)
+      template: frozen ? this.snap.template : cloneJson(this.snap.template),
+      state: frozen ? this.snap.state : cloneJson(this.snap.state),
       owner: this.snap.owner,
+      takes: writes,
     };
+    const open = this.undoStack[this.undoStack.length - 1];
+    if (open) open.sealed = true;
     this.undoStack.push(entry);
     if (this.undoStack.length > MAX_UNDO) this.undoStack.shift();
+    // What is written next is the change this entry undoes: the next `writes` writes when the change says how many it
+    // makes, else everything until it calls sealUndo() — and never anything past the end of this turn.
+    queueMicrotask(() => {
+      entry.sealed = true;
+    });
     return true;
+  }
+
+  /** The change that pushed the newest undo entry is over: later writes are not part of it. */
+  sealUndo(): void {
+    const top = this.undoStack[this.undoStack.length - 1];
+    if (top) top.sealed = true;
+  }
+
+  /** The screens an undo could still bring back, oldest first. */
+  undoEntries(): readonly WorkspaceUndoEntry[] {
+    return this.undoStack;
+  }
+
+  /** Drop the newest undo entry when it is this one (a change that turned out to be nothing). */
+  dropUndo(reason: string): void {
+    if (this.undoStack[this.undoStack.length - 1]?.reason === reason.slice(0, 64)) this.undoStack.pop();
+  }
+
+  /** States owned by `owner` are never changed in place, so undo entries may keep them without copying. */
+  freezeOwner(owner: string): void {
+    this.frozenOwners.add(owner);
+  }
+
+  /** How an undo takes back one change on a screen that can do better than "put the whole old screen back". */
+  setUndoMerger(fn: UndoMerger): void {
+    this.undoMerger = fn;
+  }
+
+  /** Called after every undo that changed the screen. Returns an unsubscribe. */
+  onUndo(cb: () => void): () => void {
+    this.undoListeners.add(cb);
+    return () => this.undoListeners.delete(cb);
+  }
+
+  /** A freeform page with no owner goes where this says (a card on the board) instead of taking the whole window. */
+  setHtmlAdopter(fn: (html: string, title: string) => boolean): void {
+    this.htmlAdopter = fn;
+  }
+
+  /** The newest undo entry, while its turn is still running, learns what the screen became. */
+  private noteWrite(): void {
+    const top = this.undoStack[this.undoStack.length - 1];
+    if (!top || top.sealed) return;
+    top.after = { mode: this.snap.mode, owner: this.snap.owner, state: this.snap.state };
+    top.takes = (top.takes ?? Infinity) - 1;
+    if (top.takes <= 0) top.sealed = true;
   }
 
   /**
    * Restore the most recent remembered screen. Returns a short say-line for the tool.
    */
   undo(): { ok: boolean; say: string; label?: string } {
-    const entry = this.undoStack.pop();
-    if (!entry) return { ok: false, say: "There's nothing to bring back — the undo stack is empty." };
-    this.cancelPendingState();
-    this.snap = {
-      ...this.snap,
-      mode: entry.mode,
-      title: entry.title,
-      html: entry.html,
-      template: entry.template,
-      state: entry.state,
-      owner: entry.owner,
-    };
-    this.bump();
-    this.broadcast({ type: "snapshot", snapshot: this.snapshot() });
-    return { ok: true, say: `Restored ${entry.label}.`, label: entry.label };
+    let skipped = 0;
+    for (let entry = this.undoStack.pop(); entry; entry = this.undoStack.pop()) {
+      entry.sealed = true;
+      let merged: UndoMerge | "nothing" | null = null;
+      try {
+        merged = this.undoMerger ? this.undoMerger(entry, { mode: this.snap.mode, owner: this.snap.owner, state: this.snap.state }) : null;
+      } catch (err) {
+        console.warn("[workspace] undo merge failed, restoring the whole screen:", (err as Error).message);
+      }
+      // An entry that would change nothing (what it holds is already there, or is gone for good): the one before it.
+      if (merged === "nothing") {
+        skipped++;
+        continue;
+      }
+      this.cancelPendingState();
+      if (merged) {
+        this.snap = { ...this.snap, mode: "app", title: merged.title, html: null, template: merged.template, state: merged.state, owner: entry.owner };
+      } else {
+        this.snap = {
+          ...this.snap,
+          mode: entry.mode,
+          title: entry.title,
+          html: entry.html,
+          template: entry.template,
+          state: entry.state,
+          owner: entry.owner,
+        };
+      }
+      this.bump();
+      this.broadcast({ type: "snapshot", snapshot: this.snapshot() });
+      for (const cb of this.undoListeners) {
+        try {
+          cb();
+        } catch (err) {
+          console.warn("[workspace] undo listener failed:", (err as Error).message);
+        }
+      }
+      return merged ? { ok: true, say: merged.say, label: entry.label } : { ok: true, say: `Restored ${entry.label}.`, label: entry.label };
+    }
+    return { ok: false, say: skipped ? "There's nothing left to bring back." : "There's nothing to bring back — the undo stack is empty." };
   }
 
   /** Subscribe a window; it receives the full snapshot immediately. */
   subscribe(send: Send): () => void {
     this.subs.add(send);
     this.safeSend(send, { type: "snapshot", snapshot: this.snapshot() });
+    // The secure forms waiting for the user, replayed after the snapshot (a window that reconnects keeps the ones it gets again).
+    for (const form of this.forms.values()) this.safeSend(send, { type: "form", form });
     return () => this.subs.delete(send);
+  }
+
+  /** A secure form for every window to draw (descriptor only — see SecureForm). */
+  openForm(form: SecureForm): void {
+    this.forms.set(form.id, form);
+    this.broadcast({ type: "form", form });
+  }
+
+  /** That form is over (submitted, approved, cancelled or lapsed): windows take it down. */
+  closeForm(id: string, status: SecureFormEnd): void {
+    if (!this.forms.delete(id)) return;
+    this.broadcast({ type: "form_closed", id, status });
   }
 
   /** A command for one card, to every open window (the first answer wins — see card-commands.ts). */
@@ -258,8 +399,20 @@ export class WorkspaceBus {
 
   /** Freeform UI (a BUILD): replace the workspace with an HTML fragment. */
   showHtml(html: string, title: string, owner: string | null = null): void {
+    // A page nobody owns (a skill's output, the test route) is one more card on the board, not the whole window: only
+    // an owner that really has the window (a game and its error screen) replaces what is on it.
+    if (owner === null && this.htmlAdopter) {
+      try {
+        if (this.htmlAdopter(html, title)) return;
+      } catch (err) {
+        console.warn("[workspace] could not add that page as a card:", (err as Error).message);
+        this.toast((err as Error).message.slice(0, 200), "warn");
+        return;
+      }
+    }
     this.cancelPendingState();
     this.snap = { ...this.snap, mode: "html", html, title, template: null, state: null, owner };
+    this.noteWrite();
     const version = this.bump();
     this.broadcast({ type: "html", version, title, html });
   }
@@ -268,6 +421,7 @@ export class WorkspaceBus {
   showApp(template: WorkspaceTemplate, state: unknown, title: string, owner: string | null = null): void {
     this.cancelPendingState();
     this.snap = { ...this.snap, mode: "app", template, state, title, html: null, owner };
+    this.noteWrite();
     const version = this.bump();
     this.broadcast({ type: "template", version, template, state, title });
   }
@@ -298,6 +452,7 @@ export class WorkspaceBus {
   setState(state: unknown, owner?: string): boolean {
     if (this.snap.mode !== "app" || (owner !== undefined && owner !== this.snap.owner)) return false;
     this.snap = { ...this.snap, state };
+    this.noteWrite();
     if (!this.stateDirty) {
       this.stateDirty = true;
       this.firstDirtyAt = Date.now();
@@ -334,9 +489,10 @@ export class WorkspaceBus {
   }
 
   clear(): void {
-    this.pushUndo("clear");
+    this.pushUndo("clear", 1);
     this.cancelPendingState();
     this.snap = { ...this.snap, mode: "empty", html: null, template: null, state: null, owner: null, title: "Workspace" };
+    this.noteWrite();
     this.bump();
     this.broadcast({ type: "snapshot", snapshot: this.snapshot() });
   }
@@ -464,22 +620,73 @@ export class WorkspaceBus {
     // A build preview is temporary: the screen it covers stays on disk, so a restart
     // mid-build never comes back to a half-written page that nothing will finish.
     if (!isBuildPreview(this.snap)) this.unsaved = { ...this.snap };
-    if (this.saveTimer || !this.unsaved) return;
+    if (this.saveTimer || this.saving || !this.unsaved) return;
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
-      const snap = this.unsaved;
-      this.unsaved = null;
-      if (!snap) return;
-      try {
-        fs.mkdirSync(path.dirname(this.persistPath!), { recursive: true });
-        const tmp = `${this.persistPath}.tmp`;
-        const { activities: _a, ...rest } = snap;
-        fs.writeFileSync(tmp, JSON.stringify(rest));
-        fs.renameSync(tmp, this.persistPath!);
-      } catch (err) {
-        console.warn("[workspace] could not persist snapshot:", (err as Error).message);
+      void this.saveNow();
+    }, SAVE_DELAY_MS);
+  }
+
+  /**
+   * Write the latest screen to disk without making the engine wait for the disk: a board can be several megabytes,
+   * and a voice call must not stall on it. One write at a time; a change made meanwhile is written right after.
+   */
+  private async saveNow(): Promise<void> {
+    const snap = this.unsaved;
+    if (!snap || this.saving || !this.persistPath) return;
+    this.unsaved = null;
+    this.saving = true;
+    const file = this.persistPath;
+    const tmp = `${file}.tmp`;
+    try {
+      const { activities: _a, ...rest } = snap;
+      const json = JSON.stringify(rest);
+      await fs.promises.mkdir(path.dirname(file), { recursive: true });
+      await fs.promises.writeFile(tmp, json);
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await fs.promises.rename(tmp, file);
+          break;
+        } catch (err) {
+          // Windows can hold the file for a moment (a scanner, an indexer): tried again shortly.
+          const code = (err as NodeJS.ErrnoException).code;
+          if (attempt >= 5 || (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES")) throw err;
+          await new Promise((r) => setTimeout(r, 25 * (attempt + 1)));
+        }
       }
-    }, 500);
+    } catch (err) {
+      console.warn("[workspace] could not persist snapshot:", (err as Error).message);
+    } finally {
+      this.saving = false;
+      if (this.unsaved) this.scheduleSave();
+    }
+  }
+
+  /**
+   * Put the screen on disk NOW, synchronously — for when the process is about to go (exit, Ctrl+C, a stop signal), so
+   * the last changes are not lost with the timer that would have written them. Does nothing when everything is saved.
+   */
+  flushSave(): void {
+    if (!this.persistPath) return;
+    if (this.saveTimer) clearTimeout(this.saveTimer);
+    this.saveTimer = null;
+    // Something is not on disk yet: a change waiting for the timer, a state not yet pushed to the windows (it is
+    // saved when it is pushed), or a write under way (which never finishes once the process goes). What is written is
+    // the screen as it is NOW — never a build preview: the screen it covers is what stays on disk.
+    if (!this.unsaved && !this.stateDirty && !this.saving) return;
+    const snap = isBuildPreview(this.snap) ? this.unsaved : { ...this.snap };
+    this.unsaved = null;
+    if (!snap) return;
+    try {
+      // (A data folder that has been taken away — a test's throwaway one — is not made again on the way out.)
+      if (!fs.existsSync(path.dirname(this.persistPath))) return;
+      const tmp = `${this.persistPath}.exit.tmp`;
+      const { activities: _a, ...rest } = snap;
+      fs.writeFileSync(tmp, JSON.stringify(rest));
+      fs.renameSync(tmp, this.persistPath);
+    } catch (err) {
+      console.warn("[workspace] could not persist snapshot on the way out:", (err as Error).message);
+    }
   }
 
   private restore(): void {
@@ -510,3 +717,19 @@ export class WorkspaceBus {
 
 /** The single shared workspace. */
 export const workspace = new WorkspaceBus();
+
+// The engine runs under `tsx watch` and is restarted on every save of a source file; whatever was changed in the last
+// moments before it goes is written first. (A restart that kills the process outright — as on Windows — can't be
+// caught; then at most SAVE_DELAY_MS of changes are lost, and the board settles what was mid-flight at the next boot.)
+process.on("exit", () => workspace.flushSave());
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"] as const) {
+  try {
+    process.on(signal, () => {
+      workspace.flushSave();
+      // With no other listener the process would have gone down on this signal: it still does.
+      if (process.listenerCount(signal) <= 1) process.exit(signal === "SIGINT" ? 130 : signal === "SIGTERM" ? 143 : 129);
+    });
+  } catch {
+    /* a signal this platform doesn't have */
+  }
+}

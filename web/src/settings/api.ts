@@ -5,6 +5,7 @@
 // (Express answers those with an HTML "Cannot GET" 404) are flagged
 // `notAvailable`, so sections can show a friendly "not available yet" state.
 
+import { ensureSession } from "../auth.js";
 import type { HeartbeatTask as WireHeartbeatTask, Persona } from "../protocol.js";
 import type { GameView } from "../../../server/src/game/types.js";
 import { toast } from "./ui.js";
@@ -50,6 +51,16 @@ export interface PublicEndpoints {
   kimiModel?: string;
   /** The problem solver behind figure_out. */
   plannerModel?: string;
+  /** Writes what Trinity says when no tool is needed (blank = the Brain), and the model that steps in when it is slow. */
+  chatModel?: string;
+  chatBackupModel?: string;
+  /** The user's webmail and web calendar, opened in their own signed-in browser through the extension. */
+  mailUrl?: string;
+  calendarUrl?: string;
+  /** "polished": the voice only speaks words it is given; "free": it improvises small talk. */
+  talkStyle?: "polished" | "free";
+  /** Configured models the gateway no longer serves, and what is used instead ("" = nothing could stand in). */
+  modelIssues?: { key: string; configured: string; using: string }[];
   coderDefault?: "glm" | "kimi";
   replyModel: string;
   fastModel: string;
@@ -74,23 +85,109 @@ export interface PublicEndpoints {
   [key: string]: unknown;
 }
 
+/** A tab as Settings shows it: its title and host — never its full address. */
 export interface BrowserTabInfo {
   id: number;
   title: string;
-  url: string;
+  host: string;
   active: boolean;
+  /** One of Trinity's own pages (she never reads, changes or closes those). */
+  own?: boolean;
 }
 
-/** GET /browser — the Chrome extension's connection, its tabs and the pairing token (Settings → Browser extension). */
+/** GET /browser — the Chrome extension's connection, its tabs and whether it is paired (Settings → Browser extension). No key, no code. */
 export interface BrowserInfo {
   connected: boolean;
   since: number;
   version: string;
   chrome: string;
-  caps: { userScripts: boolean; pageCapture: boolean };
+  caps: { userScripts: boolean; pageCapture: boolean; fill?: boolean };
   tabs: BrowserTabInfo[];
-  token: string;
+  paired: boolean;
+  /** The paired extension's id, and when it was paired. */
+  extensionId: string | null;
+  pairedAt: number | null;
+  /** A pairing code is waiting to be typed into the extension until then (the code itself is only in the answer that made it). */
+  codeExpiresAt: number | null;
   extensionDir: string;
+}
+
+/** POST /browser/pairing-code — a one-time code for the extension's popup: 8 characters, ten minutes, five tries. */
+export interface BrowserPairingCode {
+  code: string;
+  expiresAt: number;
+  tries: number;
+}
+
+// ─── Vault (Settings → Vault) ────────────────────────────────────────────────
+
+export type VaultKind = "login" | "card" | "identity" | "secret";
+
+export interface VaultStatus {
+  /** empty: nothing saved; locked: needs its key (the passphrase, when that is the lock); unlocked: ready. */
+  state: "empty" | "locked" | "unlocked";
+  lock: "device" | "passphrase";
+  items: number;
+  /** Why the vault can't be used at all right now. */
+  blocked?: string;
+}
+
+/** What may be shown about a saved item: never a secret. */
+export interface VaultItem {
+  id: string;
+  kind: VaultKind;
+  label: string;
+  hosts: string[];
+  usernameHint?: string;
+  brand?: string;
+  last4?: string;
+  expMonth?: number;
+  expYear?: number;
+  hasTotp?: boolean;
+  hasCvc?: boolean;
+  createdAt: number;
+  updatedAt: number;
+  lastUsedAt: number | null;
+}
+
+/** One input of the form an item is typed into (the same fields the secure form in the workspace shows). */
+export interface VaultField {
+  name: string;
+  label: string;
+  type: "text" | "password" | "email" | "tel" | "card-number" | "expiry" | "cvc" | "otp-secret" | "checkbox";
+  required?: boolean;
+  placeholder?: string;
+  autocomplete?: string;
+  value?: string;
+}
+
+/** GET /vault — status, the items' metadata, settings, and the fields each kind of item has. Never a secret. */
+export interface VaultInfo {
+  status: VaultStatus;
+  items: VaultItem[];
+  settings: { spendingLimit: number };
+  /** This computer can lock the vault by itself (Windows DPAPI). */
+  keyStore: boolean;
+  /** After too many wrong passphrases: how long until the next try. */
+  retryAfterMs: number;
+  fields: Record<VaultKind, VaultField[]>;
+}
+
+/** PUT /vault/settings body. Passphrases are write-only. */
+export interface VaultSettingsPatch {
+  lock?: "device" | "passphrase";
+  passphrase?: string;
+  currentPassphrase?: string;
+  spendingLimit?: number;
+}
+
+/** A browser that may talk to the engine (GET /auth/browsers). */
+export interface LinkedBrowser {
+  id: string;
+  createdAt: number;
+  lastSeenAt: number;
+  /** What the browser called itself when it was linked. */
+  agent: string;
 }
 
 /** Model ids for the Models card's suggestions (GET /settings/models, when the engine has it). */
@@ -229,6 +326,24 @@ export interface Skill {
   examples?: Record<string, unknown>[];
   /** Why a skill Trinity created can't be used right now (e.g. its module no longer loads). */
   problem?: string;
+  // ── The improvement loop (skills Trinity created; engines that count them) ──
+  /** "active", "disabled" (switched off by you, or after repairs failed) or "archived" (unused for a month). */
+  state?: string;
+  /** "module" (code in the sandbox) or "procedure" (a plan the problem solver replays). */
+  kind?: string;
+  /** 1 for the first module; each repair, re-make or rollback installs the next. */
+  version?: number;
+  /** Earlier versions that can be installed again, newest first. */
+  versions?: number[];
+  uses?: number;
+  fails?: number;
+  /** Repairs that failed in a row (two switch the skill off). */
+  failedRepairs?: number;
+  lastError?: string;
+  lastUsedAt?: number;
+  /** Why it was switched off without being asked. */
+  disabledWhy?: string;
+  notes?: string[];
 }
 
 /** A skill Trinity created that waits for approval (skillApproval "manual"). */
@@ -264,6 +379,8 @@ export type ForgeResult = { ok: true; skill: Skill } | { ok: false; reason: stri
 /** A heartbeat task. `once` marks a one-time reminder: it runs once, then stays as a finished item (enabled = false). */
 export interface HeartbeatTask extends WireHeartbeatTask {
   once: boolean;
+  /** Weekdays a recurring task keeps to (0 = Sunday … 6 = Saturday); absent = every day. */
+  days?: number[];
 }
 
 /** POST /heartbeat: a recurring task (intervalSec) or a one-time reminder (once + runAt). `runAt` is the first run (epoch ms). */
@@ -381,13 +498,19 @@ export async function request<T>(method: string, path: string, body?: unknown, o
   const timer = window.setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 15_000);
   let res: Response;
   try {
-    res = await fetch(`/api${path}`, {
-      method,
-      headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-      signal: ctrl.signal,
-      cache: "no-store",
-    });
+    // The engine answers only a linked browser (auth.ts). (Unreachable: the fetch below says so.)
+    await ensureSession();
+    const send = () =>
+      fetch(`/api${path}`, {
+        method,
+        headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal: ctrl.signal,
+        cache: "no-store",
+      });
+    res = await send();
+    // Unlinked meanwhile (e.g. from another browser's Settings): link again, once, and repeat the request.
+    if (res.status === 401 && (await ensureSession())) res = await send();
   } catch (cause) {
     window.clearTimeout(timer);
     const timedOut = ctrl.signal.aborted;
@@ -628,6 +751,21 @@ function normalizeSkill(raw: unknown): Skill {
     skill.problem = problem;
     skill.enabled = false; // it can't run, whatever its switch said
   }
+  // The improvement loop's fields, when the engine sends them.
+  const state = optStr(r.state);
+  if (state) skill.state = state;
+  const kind = optStr(r.kind);
+  if (kind) skill.kind = kind;
+  for (const key of ["version", "uses", "fails", "failedRepairs", "lastUsedAt"] as const) {
+    const n = optNum(r[key]);
+    if (n !== undefined) skill[key] = n;
+  }
+  if (Array.isArray(r.versions)) skill.versions = r.versions.filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+  const lastError = optStr(r.lastError);
+  if (lastError) skill.lastError = lastError;
+  const disabledWhy = optStr(r.disabledWhy);
+  if (disabledWhy) skill.disabledWhy = disabledWhy;
+  if (Array.isArray(r.notes)) skill.notes = r.notes.map((x) => str(x)).filter(Boolean);
   return skill;
 }
 
@@ -680,6 +818,7 @@ function normalizeTask(raw: unknown): HeartbeatTask {
     lastRunAt: lastRunAt ?? null,
     enabled: Boolean(r.enabled),
     once: r.once === true || r.once === 1,
+    ...(Array.isArray(r.days) && r.days.length ? { days: r.days.filter((d): d is number => typeof d === "number" && d >= 0 && d <= 6) } : {}),
   };
 }
 
@@ -768,7 +907,31 @@ export const api = {
 
   browser: {
     get: (opts: RequestOptions = {}) => request<BrowserInfo>("GET", "/browser", undefined, { action: "load the browser extension's state", ...opts }),
-    rotateToken: (opts: RequestOptions = {}) => request<{ token: string }>("POST", "/browser/token", {}, { action: "make a new token", ...opts }),
+    /** A fresh pairing code (the one before it stops working). */
+    pairingCode: (opts: RequestOptions = {}) => request<BrowserPairingCode>("POST", "/browser/pairing-code", {}, { action: "make a pairing code", ...opts }),
+    /** Forget the paired extension: it is disconnected and must pair again. */
+    unpair: (opts: RequestOptions = {}) => request<{ ok: boolean; wasPaired: boolean }>("DELETE", "/browser/pairing", undefined, { action: "forget the extension", ...opts }),
+  },
+
+  /** The vault. Bodies may hold secrets (what is typed into the Vault page); no answer ever does. */
+  vault: {
+    get: (opts: RequestOptions = {}) => request<VaultInfo>("GET", "/vault", undefined, { action: "load the vault", ...opts }),
+    addItem: (kind: VaultKind, values: Record<string, string | boolean>, opts: RequestOptions = {}) =>
+      request<{ ok: boolean; item: VaultItem }>("POST", "/vault/items", { kind, values }, { action: "save that in the vault", ...opts }),
+    removeItem: (id: string) => request<{ ok: boolean }>("DELETE", `/vault/items/${enc(id)}`, undefined, { action: "remove that from the vault" }),
+    lock: () => request<{ ok: boolean; status: VaultStatus }>("POST", "/vault/lock", {}, { action: "lock the vault" }),
+    unlock: (passphrase: string, opts: RequestOptions = {}) =>
+      request<{ ok: boolean; status: VaultStatus }>("POST", "/vault/unlock", { passphrase }, { action: "unlock the vault", ...opts }),
+    settings: (patch: VaultSettingsPatch, opts: RequestOptions = {}) =>
+      request<VaultInfo & { ok: boolean }>("PUT", "/vault/settings", patch, { action: "change the vault's settings", ...opts }),
+  },
+
+  /** The browsers linked to this engine (server/src/auth.ts), and the code that links another. */
+  linked: {
+    browsers: (opts: RequestOptions = {}) =>
+      request<{ browsers: LinkedBrowser[] }>("GET", "/auth/browsers", undefined, { action: "load the linked browsers", ...opts }),
+    code: () => request<{ code: string; expiresAt: number }>("POST", "/auth/code", {}, { action: "make a link code" }),
+    unlink: (id: string) => request<{ ok: boolean }>("DELETE", `/auth/browsers/${enc(id)}`, undefined, { action: "unlink that browser" }),
   },
 
   heartbeat: {

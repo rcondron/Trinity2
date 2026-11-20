@@ -273,21 +273,102 @@ export function openFallback(utterance: string): OpenTarget | null {
 
 // ─── Tabs ─────────────────────────────────────────────────────────────────────
 
-export type TabsAction = "close" | "close_others" | "next" | "previous" | "switch" | "back" | "forward" | "reload" | "zoom_in" | "zoom_out" | "zoom_reset" | "list" | "new";
+export type TabsAction =
+  | "close"
+  | "close_others"
+  | "next"
+  | "previous"
+  | "switch"
+  | "back"
+  | "forward"
+  | "reload"
+  | "zoom_in"
+  | "zoom_out"
+  | "zoom_reset"
+  | "list"
+  | "new"
+  | "new_window"
+  | "close_window"
+  | "minimize_window"
+  | "maximize_window"
+  | "move"
+  | "duplicate"
+  | "pin"
+  | "unpin"
+  | "mute"
+  | "unmute"
+  | "group"
+  | "ungroup"
+  | "reopen"
+  | "wait";
 
 export interface TabsAsk {
   action: TabsAction;
-  /** Words naming a tab, for close / switch. */
+  /** Words naming a tab, for close / switch / pin / mute / move / duplicate / group. */
   target?: string;
+  /** Where a tab is moved. */
+  where?: "left" | "right" | "start" | "end" | "new_window";
+  /** A name for a tab group. */
+  name?: string;
 }
 
 const TAB_TARGET = /\b(?:close|switch to|go to|bring up|show|open|select|jump to|focus)\s+(?:the\s+|my\s+)?(.+?)\s+tab\b/;
+/** Words that point at the tab in front rather than name one. */
+const THIS_TAB = /^(?:this|that|the|current|the current|active|the active|it|a|my)?$/;
+/** "the tab with / about / showing X": what names it comes after the word "tab". */
+const TAB_AFTER = String.raw`tabs?\s+(?:with|about|on|for|showing|called|named|titled|that(?:'s| is| has| says| shows))\s+(?:the\s+|my\s+)?(.+)$`;
+/** "<verb> [this | the X] tab": the words naming it, or undefined for the tab in front. */
+function tabNamed(t: string, verb: string): { target?: string } | null {
+  let m = new RegExp(String.raw`\b(?:${verb})\s+(?:the\s+|that\s+|my\s+)?${TAB_AFTER}`).exec(t);
+  if (m) return { target: m[1]! };
+  m = new RegExp(String.raw`\b(?:${verb})\s+(?:(.+?)\s+)?tabs?\b`).exec(t);
+  if (!m) return null;
+  const words = (m[1] ?? "").replace(/^(?:the|my|that)\s+/, "").trim();
+  return THIS_TAB.test(words) ? {} : { target: words };
+}
 
 export function parseTabs(utterance: string): TabsAsk | null {
   const t = normalize(utterance);
+  // Windows.
+  if (/\b(?:open|make|create|start|give me)\s+(?:a\s+|another\s+)?new\s+(?:browser\s+|chrome\s+)?window\b|^(?:a\s+)?new window$/.test(t)) return { action: "new_window" };
+  if (/\b(?:close|shut)\s+(?:this|the|that|the current)\s+(?:browser\s+|chrome\s+)?window\b|^close window$/.test(t)) return { action: "close_window" };
+  if (/\bminimi[sz]e\s+(?:this\s+|the\s+|that\s+)?(?:browser|window|chrome)\b/.test(t)) return { action: "minimize_window" };
+  if (/\bmaximi[sz]e\s+(?:this\s+|the\s+|that\s+)?(?:browser|window|chrome)\b/.test(t)) return { action: "maximize_window" };
+  // A tab that was closed.
+  if (/\b(?:re-?open|restore|bring back|un-?close)\s+(?:the\s+|that\s+|my\s+)?(?:last\s+)?(?:closed\s+)?tab\b|\bre-?open\s+(?:the\s+)?(?:last|closed)\s+(?:one|tab)\b|\bundo\s+(?:closing|the\s+close[d]?)\b/.test(t)) return { action: "reopen" };
+  if (/\bwait\s+(?:for|until|till)\s+(?:the\s+|this\s+)?(?:page|tab|site|it)\s+(?:to\s+)?(?:finish(?:es)?\s+loading|loads?|is\s+(?:loaded|ready|done)|has\s+loaded)\b/.test(t)) return { action: "wait" };
   if (/\b(?:close|shut)\s+(?:all\s+)?(?:the\s+)?other\s+tabs?\b|\bclose\s+(?:all\s+)?(?:the\s+)?tabs?\s+(?:except|but|other than)\b|\bclose\s+everything\s+else\b/.test(t)) return { action: "close_others" };
+  // "Close the tab with the recipe": the words after "tab" name it — it is not "close the tab" (the one in front).
+  let m = new RegExp(String.raw`\b(?:close|shut|kill|get rid of)\s+(?:the\s+|that\s+|my\s+)?${TAB_AFTER}`).exec(t);
+  if (m) return { action: "close", target: m[1]! };
+  m = new RegExp(String.raw`\b(?:switch to|go to|show|bring up|open|jump to|focus|select)\s+(?:the\s+|that\s+|my\s+)?${TAB_AFTER}`).exec(t);
+  if (m) return { action: "switch", target: m[1]! };
+  // One tab: pinned, muted, copied, moved; several: grouped.
+  m = /\bmove\s+(?:(.+?)\s+)?tab\s+(?:over\s+)?(?:to\s+(?:the\s+)?|into\s+)?(left|right|start|beginning|front|end|back|(?:a\s+|its\s+own\s+|another\s+)?(?:new\s+)?window)\b/.exec(t);
+  if (m) {
+    const words = (m[1] ?? "").replace(/^(?:the|my|that)\s+/, "").trim();
+    const w = m[2]!;
+    const where = /window/.test(w) ? "new_window" : w === "left" || w === "right" ? w : /start|beginning|front/.test(w) ? "start" : "end";
+    return { action: "move", where, ...(THIS_TAB.test(words) ? {} : { target: words }) };
+  }
+  let named = tabNamed(t, "un-?pin");
+  if (named) return { action: "unpin", ...named };
+  named = tabNamed(t, "pin");
+  if (named) return { action: "pin", ...named };
+  named = tabNamed(t, "un-?mute");
+  if (named) return { action: "unmute", ...named };
+  named = tabNamed(t, "mute|silence");
+  if (named) return { action: "mute", ...named };
+  named = tabNamed(t, "duplicate|clone|copy");
+  if (named) return { action: "duplicate", ...named };
+  if (/\bun-?group\b/.test(t) && /\btabs?\b/.test(t)) {
+    named = tabNamed(t, "un-?group");
+    return { action: "ungroup", ...(named ?? {}) };
+  }
+  m = /\bgroup\s+(?:all\s+)?(?:of\s+)?(?:the\s+|my\s+|these\s+|those\s+)?(?:(.+?)\s+)?tabs(?:\s+together)?(?:\s+(?:as|into|under|called|named)\s+(.+))?$/.exec(t);
+  if (m) return { action: "group", ...(m[1] && !THIS_TAB.test(m[1]) ? { target: m[1] } : {}), ...(m[2] ? { name: m[2] } : {}) };
   if (/\b(?:close|shut|kill|dismiss|get rid of)\s+(?:this|the current|that|the)\s+tab\b|\bclose\s+tab\b|\bclose\s+(?:this|it)$/.test(t)) return { action: "close" };
-  let m = /\b(?:close|shut|kill|get rid of)\s+(?:the\s+|my\s+)?(.+?)\s+tab\b/.exec(t);
+  m = /\b(?:close|shut|kill|get rid of)\s+(?:the\s+|my\s+)?(.+?)\s+tab\b/.exec(t);
   if (m && !/^(?:this|current|that|the)$/.test(m[1]!)) return { action: "close", target: m[1]! };
   if (/\b(?:next|following)\s+tab\b|\bswitch\s+tabs?\b|\bother\s+tab\b|\btab\s+(?:over|forward)\b/.test(t)) return { action: "next" };
   if (/\b(?:previous|prior|last)\s+tab\b|\btab\s+back\b|\bback\s+a\s+tab\b/.test(t)) return { action: "previous" };
@@ -308,7 +389,13 @@ export function parseTabs(utterance: string): TabsAsk | null {
 
 /** The open tab the words mean ("the youtube tab", "amazon", "the one about muffins"). */
 export function matchTab<T extends { title: string; url: string }>(tabs: T[], words: string): T | null {
-  const w = words.toLowerCase().replace(/\b(?:the|my|that|one|about|with|on)\b/g, " ").replace(/\s+/g, " ").trim();
+  // Words that point ("this tab", "the current one") name nothing: only what's left can match a title or a host.
+  const w = words
+    .toLowerCase()
+    .replace(/\b(?:the|my|that|this|these|those|current|one|about|with|on|for|showing|called|named|tab|tabs|page|site|website)\b/g, " ")
+    .replace(/[^\p{L}\p{N}.\s-]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
   if (!w) return null;
   const tokens = w.split(" ").filter((x) => x.length > 1);
   let best: { tab: T; score: number } | null = null;
@@ -339,8 +426,11 @@ export interface Interactive {
   role?: string;
   type?: string;
   href?: string;
-  value?: string;
   disabled?: boolean;
+  /** The frame it is in, when not the top document (the extension's frame id). */
+  frame?: number;
+  /** Its name carries a guard word: "button" for something that acts, "link" for a plain link. */
+  guarded?: "button" | "link";
 }
 
 export interface ActAsk {
@@ -358,22 +448,32 @@ export interface ActAsk {
 const KEYS: Record<string, string> = { enter: "Enter", return: "Enter", escape: "Escape", esc: "Escape", tab: "Tab", space: " ", backspace: "Backspace", delete: "Delete", "page down": "PageDown", "page up": "PageUp", home: "Home", end: "End", "arrow down": "ArrowDown", "arrow up": "ArrowUp", "arrow left": "ArrowLeft", "arrow right": "ArrowRight", down: "ArrowDown", up: "ArrowUp", left: "ArrowLeft", right: "ArrowRight" };
 const unquote = (s: string) => s.replace(/^["'“‘]+|["'”’]+$/g, "").trim();
 
+/** Words found in the lowered sentence, as the user said them — what is typed keeps its capitals ("type Ryan …"). */
+function asSaid(utterance: string, lowered: string): string {
+  const flat = utterance.replace(/\s+/g, " ");
+  const low = flat.toLowerCase();
+  const at = lowered && low.length === flat.length ? low.indexOf(lowered) : -1;
+  return at >= 0 ? flat.slice(at, at + lowered.length) : lowered;
+}
+
 export function parseAct(utterance: string): ActAsk | null {
   const t = normalize(utterance);
+  const typed = (words: string) => unquote(asSaid(utterance, words));
   let m = /\bscroll\s+(?:(?:all the way\s+|back\s+)?(?:to\s+)?(?:the\s+)?(top|bottom|end|start)|(down|up))\b|\b(?:page|go)\s+(down|up)\b|\b(top|bottom)\s+of\s+the\s+page\b/.exec(t);
   if (m) {
     const word = (m[1] ?? m[2] ?? m[3] ?? m[4] ?? "down").toLowerCase();
     const direction = word === "end" ? "bottom" : word === "start" ? "top" : (word as ActAsk["direction"]);
     return { action: "scroll", direction };
   }
-  m = /\b(?:press|hit|push)\s+(?:the\s+)?(enter|return|escape|esc|tab|space|backspace|delete|page down|page up|home|end|arrow down|arrow up|arrow left|arrow right)(?:\s+key)?\b/.exec(t);
-  if (m) return { action: "press", key: KEYS[m[1]!] ?? m[1]! };
+  m = /\b(?:press|hit|push)\s+(?:the\s+)?(enter|return|escape|esc|tab|space|backspace|delete|page down|page up|home|end|arrow down|arrow up|arrow left|arrow right|(?:down|up|left|right)(?=\s+arrow\b))(?:\s+(?:arrow|key|bar))*\b/.exec(t);
+  // ("Type hello and press enter" is typing, with Enter after it — not a key press on its own.)
+  if (m && !/\b(?:type|write|input|paste)\s.+\band\s+(?:then\s+)?(?:press|hit|push)\b/.test(t)) return { action: "press", key: KEYS[m[1]!] ?? m[1]! };
   m = /\b(?:type|enter|write|put|fill in|input|paste)\s+(.+?)\s+(?:in|into|in to|on)\s+(?:the\s+)?(.+?)(?:\s+(?:box|field|input|bar|form|area))?(?:\s+and\s+(?:press\s+enter|search|submit|go))?$/.exec(t);
-  if (m) return { action: "type", text: unquote(m[1]!), target: m[2]!, submit: /\band\s+(?:press\s+enter|search|submit|go)$/.test(t) || /\bsearch\b/.test(m[2]!) };
+  if (m) return { action: "type", text: typed(m[1]!), target: m[2]!, submit: /\band\s+(?:press\s+enter|search|submit|go)$/.test(t) || /\bsearch\b/.test(m[2]!) };
   m = /\b(?:search|look)\s+(?:for\s+|up\s+)?(.+?)\s+(?:on|in)\s+(?:this|the)\s+(?:page|site|website)$|\bsearch\s+(?:this|the)\s+(?:page|site|website)\s+for\s+(.+)$/.exec(t);
-  if (m) return { action: "type", text: unquote(m[1] ?? m[2]!), target: "search", submit: true };
+  if (m) return { action: "type", text: typed(m[1] ?? m[2]!), target: "search", submit: true };
   m = /\b(?:type|enter|write|input)\s+(.+)$/.exec(t);
-  if (m) return { action: "type", text: unquote(m[1]!), submit: /\band\s+(?:press\s+enter|search|submit|go)$/.test(t) };
+  if (m) return { action: "type", text: typed(m[1]!.replace(/\s+and\s+(?:press\s+enter|search|submit|go)$/, "")), submit: /\band\s+(?:press\s+enter|search|submit|go)$/.test(t) };
   m = /\b(?:select|choose|pick|set)\s+(.+?)\s+(?:in|from|for|as|on)\s+(?:the\s+)?(.+?)(?:\s+(?:dropdown|menu|list|select|box|field))?$/.exec(t);
   if (m) return { action: "select", text: unquote(m[1]!), target: m[2]! };
   m = /\b(?:click|tap|press|hit|push|choose|select|open|follow|activate)\s+(?:on\s+)?(?:the\s+|that\s+|this\s+)?(.+?)(?:\s+(?:button|link|tab|menu|option|icon|checkbox|toggle|item))?$/.exec(t);
@@ -422,22 +522,112 @@ export function searchBox(items: Interactive[]): Interactive | null {
   );
 }
 
-/**
- * Buttons that spend money, send things or destroy things: clicked only when the user's own words
- * name the action ("yes, place the order" — not "click the big yellow button").
+/*
+ * The guard on controls that spend, send, destroy or consent — whether they'd be pressed by a click, by Enter or by
+ * "type … and submit". The control's name (for Enter: the name of the form's submit button) is tested against these
+ * words, whole words only ("book", never "facebook"):
+ *   money — buy, purchase, pay, order, checkout, book, reserve, subscribe, donate, bid, transfer;
+ *   say   — send, post, publish, delete, remove, confirm, authorize, allow, grant, accept, agree, approve, submit,
+ *           unsubscribe, sign out, log out, apply, proceed, complete.
+ * A guarded control is pressed only when the user's own words asked for it; a money control that acts (a button, not a
+ * plain link) only after a spoken yes to a question naming the site and the total. The extension keeps the same list
+ * (extension/page.js) and holds any guarded press the engine hasn't approved by its exact name.
+ * [word as it's said back, the pattern for it — in a control's name and in the user's words alike]
  */
-const DANGEROUS =
-  /\b(?:buy|purchase|order|place (?:your|my|the)?\s*order|pay|checkout|check out|confirm|submit|send|post|publish|delete|remove|unsubscribe|sign out|log out|logout|transfer|book|reserve|apply|accept|agree|subscribe|donate|bid|proceed|continue to payment|complete)\b/i;
+const MONEY_TERMS: [string, string][] = [
+  ["buy", "buy(?:s|ing)?"],
+  ["purchase", "purchas(?:e|es|ed|ing)"],
+  ["pay", "pay(?:s|ing|ment|ments)?"],
+  ["order", "(?:re)?order(?:s|ed|ing)?"],
+  ["check out", "checkout|check out"],
+  ["book", "book(?:s|ed|ing)?"],
+  ["reserve", "reserv(?:e|es|ed|ing|ation)"],
+  ["subscribe", "subscrib(?:e|es|ed|ing)"],
+  ["donate", "donat(?:e|es|ed|ing|ion)"],
+  ["bid", "bid(?:s|ding)?"],
+  ["transfer", "transfer(?:s|red|ring)?"],
+];
+const SAY_TERMS: [string, string][] = [
+  ["send", "send(?:s|ing)?"],
+  ["post", "post(?:s|ed|ing)?"],
+  ["publish", "publish(?:es|ed|ing)?"],
+  ["delete", "delet(?:e|es|ed|ing)"],
+  ["remove", "remov(?:e|es|ed|ing)"],
+  ["confirm", "confirm(?:s|ed|ing)?"],
+  ["authorize", "authori[sz](?:e|es|ed|ing)"],
+  ["allow", "allow(?:s|ed|ing)?"],
+  ["grant", "grant(?:s|ed|ing)?"],
+  ["accept", "accept(?:s|ed|ing)?"],
+  ["agree", "agree(?:s|d|ing)?"],
+  ["approve", "approv(?:e|es|ed|ing)"],
+  ["submit", "submit(?:s|ted|ting)?"],
+  ["unsubscribe", "unsubscrib(?:e|es|ed|ing)"],
+  ["sign out", "sign out"],
+  ["log out", "log out|logout"],
+  ["apply", "apply"],
+  ["proceed", "proceed"],
+  ["complete", "complete"],
+];
+const whole = (pattern: string) => new RegExp(String.raw`\b(?:${pattern})\b`, "i");
+const GUARD_TERMS = [...MONEY_TERMS.map(([word, p]) => ({ word, re: whole(p), money: true })), ...SAY_TERMS.map(([word, p]) => ({ word, re: whole(p), money: false }))];
+/** Any guard word, whole — the same test the extension makes (page.js GUARD). */
+export const GUARD = whole([...MONEY_TERMS, ...SAY_TERMS].map(([, p]) => p).join("|"));
 
-export function clickNeedsSayingSo(elementName: string): boolean {
-  return DANGEROUS.test(elementName);
+export interface Guard {
+  /** money: it spends — a spoken yes to a question naming the site and total; say: the user's own words must ask for it. */
+  kind: "money" | "say";
+  /** The guard words in the control's name, as they'd be said: "Place your order" → ["order"]. */
+  words: string[];
+  /** For a money control: the words a spoken yes must contain ("place", "order"). */
+  require: string[];
+  /** …and how to say them: "place order". */
+  phrase: string;
 }
 
-/** The user said the dangerous word (or its stem) themselves. */
+/**
+ * The guard on a control with this name, or null when it has none. `acts` is false for a plain link (it goes
+ * somewhere; it doesn't spend), which is then only ever a "say" control.
+ */
+export function guardOf(name: string, acts = true): Guard | null {
+  const hits = GUARD_TERMS.filter((t) => t.re.test(name));
+  if (!hits.length) return null;
+  const money = acts ? hits.find((t) => t.money) : undefined;
+  const words = hits.map((t) => t.word);
+  if (!money) return { kind: "say", words, require: [], phrase: words[0]! };
+  const phrase = money.word === "order" && /\bplace\b/i.test(name) ? "place order" : money.word;
+  return { kind: "money", words, require: phrase.split(" "), phrase };
+}
+
+/** The user's own words name what the control does ("yes, place the order" — not "click the big yellow button"). */
+export function saidSo(guard: Guard, utterance: string): boolean {
+  return GUARD_TERMS.some((t) => guard.words.includes(t.word) && t.re.test(utterance));
+}
+
+export function clickNeedsSayingSo(elementName: string): boolean {
+  return GUARD.test(elementName);
+}
+
+/** The user said the guarded word (in any of its forms, as a whole word) themselves. */
 export function clickSaidSo(elementName: string, utterance: string): boolean {
-  const u = utterance.toLowerCase();
-  const words = elementName.toLowerCase().match(/[a-z]+/g) ?? [];
-  return words.some((w) => w.length >= 3 && DANGEROUS.test(w) && u.includes(w.replace(/(?:ing|ed|s)$/, "")));
+  const guard = guardOf(elementName);
+  return guard === null || saidSo(guard, utterance);
+}
+
+/** "$1,234.50" / "1.234,50 €" / "USD 20" → the number and how it was written; null for anything that isn't an amount. */
+export function parseAmount(text: string): { amount: number; text: string } | null {
+  const t = text.replace(/\s+/g, " ").trim();
+  if (!t || t.length > 24 || !/^[\d.,\s $€£¥₹A-Za-zł]+$/.test(t)) return null;
+  const m = /\d[\d.,\s ]*/.exec(t);
+  if (!m) return null;
+  let digits = m[0].replace(/[\s ]/g, "").replace(/[.,]+$/, "");
+  const lastDot = digits.lastIndexOf(".");
+  const lastComma = digits.lastIndexOf(",");
+  const decimalAt = Math.max(lastDot, lastComma);
+  // The last separator is the decimal point when one or two digits follow it; otherwise it only groups thousands.
+  if (decimalAt >= 0 && /^\d{1,2}$/.test(digits.slice(decimalAt + 1))) digits = `${digits.slice(0, decimalAt).replace(/[.,]/g, "")}.${digits.slice(decimalAt + 1)}`;
+  else digits = digits.replace(/[.,]/g, "");
+  const amount = Number(digits);
+  return Number.isFinite(amount) ? { amount, text: t } : null;
 }
 
 // ─── Changing the page ────────────────────────────────────────────────────────

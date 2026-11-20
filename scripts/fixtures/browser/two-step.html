@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Sign in to Stepwise</title>
+    <style>
+      body { font: 16px system-ui, sans-serif; margin: 24px; }
+      .card { display: block; width: 360px; padding: 16px; border: 1px solid #ccc; }
+      .row { display: block; margin: 10px 0; }
+      .digit { width: 32px; }
+      /* A class that sets display would otherwise show a [hidden] element again. */
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Sign in to Stepwise</h1>
+      <!-- Step 1: who are you? No password box on the page yet. -->
+      <form id="step1" class="card" action="/identify" method="post">
+        <div class="row">
+          <label for="ident">Email or phone</label>
+          <input id="ident" name="identifier" type="email" />
+        </div>
+        <div class="row"><button type="submit" id="next1">Next</button></div>
+      </form>
+      <!-- Step 2: the password. Shown once step 1 is submitted. -->
+      <form id="step2" class="card" action="/password" method="post" hidden>
+        <p id="who"></p>
+        <div class="row">
+          <label for="pw">Enter your password</label>
+          <input id="pw" name="pw" type="password" />
+        </div>
+        <div class="row"><button type="submit" id="next2">Sign in</button></div>
+      </form>
+      <!-- Step 3: a one-time code, one digit per box. -->
+      <form id="step3" class="card" action="/verify" method="post" hidden>
+        <p>Enter the 6-digit verification code from your authenticator app.</p>
+        <div class="row" id="digits">
+          <input class="digit" name="code1" inputmode="numeric" maxlength="1" autocomplete="one-time-code" aria-label="Digit 1" />
+          <input class="digit" name="code2" inputmode="numeric" maxlength="1" autocomplete="one-time-code" aria-label="Digit 2" />
+          <input class="digit" name="code3" inputmode="numeric" maxlength="1" autocomplete="one-time-code" aria-label="Digit 3" />
+          <input class="digit" name="code4" inputmode="numeric" maxlength="1" autocomplete="one-time-code" aria-label="Digit 4" />
+          <input class="digit" name="code5" inputmode="numeric" maxlength="1" autocomplete="one-time-code" aria-label="Digit 5" />
+          <input class="digit" name="code6" inputmode="numeric" maxlength="1" autocomplete="one-time-code" aria-label="Digit 6" />
+        </div>
+        <div class="row"><button type="submit" id="verify">Verify</button></div>
+      </form>
+      <p id="done" hidden>Signed in.</p>
+    </main>
+    <script>
+      // The steps swap in place, the way single-page sign-ins do (no navigation between them).
+      const show = (id) => {
+        for (const s of ["step1", "step2", "step3", "done"]) document.getElementById(s).hidden = s !== id;
+      };
+      document.getElementById("step1").addEventListener("submit", (e) => {
+        e.preventDefault();
+        document.getElementById("who").textContent = "Signing in as " + document.getElementById("ident").value.replace(/(.).*(@.*)/, "$1…$2");
+        setTimeout(() => show("step2"), 300);
+      });
+      document.getElementById("step2").addEventListener("submit", (e) => {
+        e.preventDefault();
+        setTimeout(() => show("step3"), 300);
+      });
+      document.getElementById("step3").addEventListener("submit", (e) => {
+        e.preventDefault();
+        show("done");
+      });
+    </script>
+    <script type="module" src="/harness.js"></script>
+  </body>
+</html>

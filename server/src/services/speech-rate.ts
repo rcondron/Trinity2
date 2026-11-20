@@ -14,7 +14,9 @@ type Listener = (rate: number) => void;
 const listeners = new Set<Listener>();
 
 export function getSpeechRate(): number {
-  const raw = Number(getSetting("speech_rate"));
+  // (Never set is the default. Number(null) is 0, which would clamp to the slowest rate.)
+  const stored = getSetting("speech_rate");
+  const raw = stored === null || stored.trim() === "" ? NaN : Number(stored);
   if (!Number.isFinite(raw)) return SPEECH_RATE_DEFAULT;
   return clampRate(raw);
 }

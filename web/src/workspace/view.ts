@@ -13,11 +13,18 @@
  *    agent trail (every Jev decision / tool / reply), the notice (a render error, or a link
  *    a page asks to open — it opens only once the viewer OKs the URL there), and (with chrome)
  *    a title bar with focus / full-screen controls.
+ *  - Secure forms (the vault): a sheet over the stage, drawn here in the trusted page — never in a
+ *    frame — while the frames are inert. What is typed goes to POST /api/vault/forms/<id> on this
+ *    page's own origin and nowhere else: not the socket, not a frame, not the diagnostics.
  */
+import { ensureSession } from "../auth.js";
 import "./workspace.css";
 import { buildFrameDoc, type FrameKind } from "./frame.js";
 import type {
   AgentKind,
+  FormEnd,
+  FormField,
+  FormRequest,
   FrameToHost,
   HostToFrame,
   ToastTone,
@@ -77,6 +84,8 @@ export interface WorkspaceStats {
   activities: string[];
   /** The last few ui_event payloads from templates. */
   uiEvents: unknown[];
+  /** Secure forms open in this view (a count: nothing typed into them is ever part of the diagnostics). */
+  secureForms: number;
 }
 
 export interface WorkspaceHandle {
@@ -131,6 +140,38 @@ const LINK_ARM_MS = 1000;
 /** A pointer move onto the Open button counts as a deliberate move only once the notice has settled. */
 const LINK_MOVE_MS = 300;
 const ACTIVITY_DONE_MS = 900;
+/** A secure form's Approve button ignores a click this soon after the sheet appears (a click that was already on its way to something else). */
+const SHEET_ARM_MS = 800;
+/** After the socket reconnects, a sheet the engine doesn't announce again within this long is no longer open. */
+const SHEET_SWEEP_MS = 1500;
+const SHEET_NOTE = "Typed here, this goes straight into Trinity's vault. Trinity and its models never see it.";
+const SHEET_CONFIRM_NOTE = "Asked by Trinity's own window, not by a page: your answer goes straight to the engine. No model sees it or can give it for you.";
+const FORM_PURPOSES: readonly FormRequest["purpose"][] = ["save-login", "save-card", "save-identity", "save-secret", "one-time", "confirm", "unlock"];
+const FIELD_TYPES: readonly FormField["type"][] = ["text", "password", "email", "tel", "card-number", "expiry", "cvc", "otp-secret", "checkbox"];
+/** Draws a plain text field as dots. */
+const TEXT_MASK = "-webkit-text-security";
+
+/**
+ * Whether a text field can be drawn masked here. A type=password field is the browser's password manager's business:
+ * it may offer to save what was typed into it, even with no <form> around it. Where a text field can be masked
+ * instead, a secret is typed into one, and the manager never sees a password field on the sheet.
+ */
+function canMaskText(): boolean {
+  try {
+    return typeof CSS !== "undefined" && typeof CSS.supports === "function" && CSS.supports(TEXT_MASK, "disc");
+  } catch {
+    return false;
+  }
+}
+/**
+ * The engine's media files by the exact names its routes serve (services/images.ts, speech.ts, videos.ts). Only these
+ * are ever fetched for a frame: an address with ".." or anything else in it could reach another route of the API with
+ * this page's session, and hand what came back to the frame.
+ */
+const ASSET_FILE =
+  "(?:images/[A-Za-z0-9_-]{6,40}\\.(?:png|jpg|webp|gif)|audio/[A-Za-z0-9_-]{6,40}\\.(?:mp3|wav|ogg|webm|flac|aac|m4a)|videos/[A-Za-z0-9_-]{6,40}\\.mp4)";
+const ASSET_PATH = new RegExp(`^/api/${ASSET_FILE}$`);
+const INLINE_IMAGE_FILE = "/api/images/[A-Za-z0-9_-]{6,40}\\.(?:png|jpg|webp|gif)(?![A-Za-z0-9_.%/-])";
 const RESYNC_MIN_GAP_MS = 2000;
 const DEFAULT_TITLE = "Workspace";
 const TONES: readonly ToastTone[] = ["info", "success", "warn", "error"];
@@ -199,6 +240,21 @@ function h<K extends keyof HTMLElementTagNameMap>(
   if (className) el.className = className;
   if (attrs) for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
   return el;
+}
+
+/**
+ * Open one of the engine's own pages (a file) in a new tab, keeping this page's address as the referrer — the file
+ * route wants it — and cutting the new tab's link back to this one. False when the browser held it back.
+ */
+function openTab(url: string): boolean {
+  const tab = window.open(url, "_blank");
+  if (!tab) return false;
+  try {
+    tab.opener = null;
+  } catch {
+    /* already cut */
+  }
+  return true;
 }
 
 function restartClass(el: Element, cls: string): void {
@@ -293,6 +349,126 @@ function agentLabel(kind: AgentKind, tool: string, text: string, ok?: boolean, c
   return clip(text || pretty);
 }
 
+// ─── Secure forms: pieces ─────────────────────────────────────────────────────
+
+interface SheetField {
+  field: FormField;
+  input: HTMLInputElement;
+  /** The whole row (label, input, message): hidden when the field doesn't apply. */
+  row: HTMLElement;
+  error: HTMLElement | null;
+}
+
+interface Sheet {
+  form: FormRequest;
+  el: HTMLDivElement;
+  fields: SheetField[];
+  error: HTMLElement;
+  submit: HTMLButtonElement;
+  cancel: HTMLButtonElement;
+  busy: boolean;
+  /** When it came to the front. */
+  shownAt: number;
+  /** Announced again by the engine since the socket last reconnected. */
+  confirmed: boolean;
+  timers: number[];
+}
+
+/** A form descriptor from the socket, kept to what this window can draw — or null. */
+function cleanForm(raw: unknown): FormRequest | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const text = (v: unknown, max: number): string => (typeof v === "string" ? v.slice(0, max) : "");
+  const id = typeof r.id === "string" && /^[A-Za-z0-9_-]{20,100}$/.test(r.id) ? r.id : "";
+  const purpose = FORM_PURPOSES.find((p) => p === r.purpose);
+  if (!id || !purpose) return null;
+  const fields: FormField[] = [];
+  for (const f of Array.isArray(r.fields) ? (r.fields as unknown[]).slice(0, 16) : []) {
+    if (!f || typeof f !== "object") continue;
+    const x = f as Record<string, unknown>;
+    const type = FIELD_TYPES.find((t) => t === x.type);
+    const name = typeof x.name === "string" && /^[A-Za-z][A-Za-z0-9_]{0,39}$/.test(x.name) ? x.name : "";
+    if (!type || !name || fields.some((k) => k.name === name)) continue;
+    const plain = type === "text" || type === "email" || type === "tel" || type === "checkbox";
+    fields.push({
+      name,
+      type,
+      label: text(x.label, 80) || name,
+      required: x.required === true,
+      placeholder: text(x.placeholder, 80),
+      // A value may only come filled in for a field that isn't secret.
+      value: plain ? text(x.value, 200) : "",
+    });
+  }
+  const host = typeof r.host === "string" && /^[a-z0-9.-]{1,253}$/.test(r.host) ? r.host : "";
+  return {
+    id,
+    purpose,
+    title: text(r.title, 100) || "Secure form",
+    detail: text(r.detail, 400),
+    ...(host ? { host } : {}),
+    fields: purpose === "confirm" ? [] : fields,
+    submitLabel: text(r.submitLabel, 40) || (purpose === "confirm" ? "Approve" : "Save"),
+    expiresAt: typeof r.expiresAt === "number" && Number.isFinite(r.expiresAt) ? r.expiresAt : Date.now() + 10 * 60_000,
+  };
+}
+
+/** A padlock, built node by node (the sheet never takes markup from anywhere). */
+function lockIcon(): SVGSVGElement {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  for (const [k, v] of Object.entries({ viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "1.8", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" })) svg.setAttribute(k, v);
+  const body = document.createElementNS(NS, "rect");
+  for (const [k, v] of Object.entries({ x: "5", y: "10.5", width: "14", height: "9.5", rx: "2.2" })) body.setAttribute(k, v);
+  const shackle = document.createElementNS(NS, "path");
+  shackle.setAttribute("d", "M8 10.5V7.6a4 4 0 0 1 8 0v2.9");
+  svg.append(body, shackle);
+  return svg;
+}
+
+/** The card's brand from its first digits (the engine decides for real when it saves: vault/items.ts). */
+export function cardBrandOf(digits: string): string {
+  const n = (len: number): number => Number(digits.slice(0, len));
+  if (digits.length < 1) return "";
+  if (/^4/.test(digits)) return "Visa";
+  if (digits.length >= 2 && ((n(2) >= 51 && n(2) <= 55) || (digits.length >= 4 && n(4) >= 2221 && n(4) <= 2720))) return "Mastercard";
+  if (/^3[47]/.test(digits)) return "American Express";
+  if (digits.length >= 4 && n(4) >= 3528 && n(4) <= 3589) return "JCB";
+  if ((digits.length >= 3 && n(3) >= 300 && n(3) <= 305) || /^3[689]/.test(digits)) return "Diners Club";
+  if (/^6011/.test(digits) || /^65/.test(digits) || (digits.length >= 3 && n(3) >= 644 && n(3) <= 649)) return "Discover";
+  if (/^62/.test(digits)) return "UnionPay";
+  if (/^(?:50|5[6-9]|6304|67)/.test(digits)) return "Maestro";
+  return "";
+}
+
+/** The Luhn check every card number passes. */
+export function luhnValid(digits: string): boolean {
+  if (!/^\d{12,19}$/.test(digits)) return false;
+  let sum = 0;
+  for (let i = digits.length - 1, double = false; i >= 0; i--, double = !double) {
+    let d = digits.charCodeAt(i) - 48;
+    if (double && (d *= 2) > 9) d -= 9;
+    sum += d;
+  }
+  return sum % 10 === 0;
+}
+
+/** "4242424242424242" → "4242 4242 4242 4242" (at most nineteen digits). */
+export function groupCardNumber(typed: string): string {
+  return typed
+    .replace(/\D/g, "")
+    .slice(0, 19)
+    .replace(/(.{4})(?=.)/g, "$1 ");
+}
+
+/** What was typed for an expiry, tidied as it is typed: "0827" → "08/27"; "8/27" stays as it is. */
+export function tidyExpiry(typed: string): string {
+  const split = /^\s*(\d{0,2})\s*[/\-. ]\s*(\d{0,4})/.exec(typed);
+  if (split) return `${split[1]}/${split[2]}`;
+  const d = typed.replace(/\D/g, "").slice(0, 6);
+  return d.length >= 3 ? `${d.slice(0, 2)}/${d.slice(2)}` : d;
+}
+
 class WorkspaceView {
   readonly root: HTMLDivElement;
   private readonly opts: MountWorkspaceOptions;
@@ -350,8 +526,11 @@ class WorkspaceView {
   private static readonly AGENT_TTL_MS = 14_000;
   private noticeTimer = 0;
   private dismissedNoticeFor: Frame | null = null;
-  /** A link a page asked to open, waiting in the notice for the viewer's OK; it goes when that page does. */
-  private linkAsk: { href: string; at: number; frame: Frame } | null = null;
+  /**
+   * A link a page asked to open, waiting in the notice for the viewer's OK; it goes when that page does. `file`: a file
+   * from the board's file card whose pop-up the browser held back (its name) — opened from here instead.
+   */
+  private linkAsk: { href: string; at: number; frame: Frame; file?: string } | null = null;
   /** A real pointer move (or a deliberate touch or pen press) has landed on the Open button since this question appeared (a click needs one). */
   private linkMoved = false;
   /** When a press last landed on the Open button (a burst of taps never counts as a deliberate one). */
@@ -360,6 +539,19 @@ class WorkspaceView {
   private focusBeforeFullscreen: boolean | null = null;
   private peekTimer = 0;
   private wakeLock: { release(): Promise<void> } | null = null;
+
+  // Secure forms (see "Secure forms" below)
+  private readonly sheetLayer: HTMLDivElement;
+  /** The forms open here, oldest first; the newest is the one on show. */
+  private readonly sheets = new Map<string, Sheet>();
+  private sheetSeq = 0;
+  private sheetSweep = 0;
+  /** A socket has just (re)connected: its first snapshot settles which sheets are still open. */
+  private freshSocket = false;
+  /** Where the focus was before the first sheet took it. */
+  private sheetReturn: HTMLElement | null = null;
+  /** "Secure form open", in the title bar (the standalone window). */
+  private sheetFlag: HTMLElement | null = null;
 
   // Diagnostics
   private readonly counters = {
@@ -449,11 +641,26 @@ class WorkspaceView {
     });
     this.notice.append(noticeIcon, noticeBody, this.noticeOpen, this.noticeClose);
 
-    this.overlay.append(this.bootEl, this.activityBox, this.agentBox, this.toastBox, this.notice, float);
+    // Secure forms: one layer over everything else on the stage — a scrim, and the sheet on it.
+    this.sheetLayer = h("div", "tw-sheet-layer");
+    this.sheetLayer.hidden = true;
+    const scrim = h("div", "tw-sheet-scrim", { "aria-hidden": "true" });
+    this.sheetLayer.append(scrim);
+    this.sheetLayer.addEventListener("keydown", (e) => this.onSheetKey(e, true));
+    // A click beside the sheet neither closes it (what was typed would be lost) nor takes the focus out of it.
+    this.sheetLayer.addEventListener("mousedown", (e) => {
+      if (e.target !== this.sheetLayer && e.target !== scrim) return;
+      e.preventDefault();
+      const top = this.topSheet();
+      if (top && !top.el.contains(document.activeElement)) this.focusSheet(top);
+    });
+
+    this.overlay.append(this.bootEl, this.activityBox, this.agentBox, this.toastBox, this.notice, float, this.sheetLayer);
     this.stage.append(this.overlay);
     root.append(this.stage);
     container.append(root);
 
+    this.on(document, "keydown", (e) => this.onSheetKey(e as KeyboardEvent, false));
     this.on(window, "message", (e) => this.onFrameMessage(e as MessageEvent));
     this.on(window, "online", () => this.retryNow());
     this.on(document, "visibilitychange", () => {
@@ -472,6 +679,9 @@ class WorkspaceView {
     window.clearTimeout(this.reconnectTimer);
     window.clearTimeout(this.noticeTimer);
     window.clearTimeout(this.peekTimer);
+    window.clearTimeout(this.sheetSweep);
+    // Secure forms leave with the view: what was typed is wiped. (They stay open in the engine for another window.)
+    for (const id of [...this.sheets.keys()]) this.closeSheet(id);
     const ws = this.ws;
     this.ws = null;
     try {
@@ -539,6 +749,7 @@ class WorkspaceView {
       toasts: this.toasts.filter((t) => !t.leaving).length,
       activities: [...this.activities.entries()].filter(([, a]) => !a.done).map(([id]) => id),
       uiEvents: [...this.uiEvents],
+      secureForms: this.sheets.size,
     };
   }
 
@@ -579,7 +790,12 @@ class WorkspaceView {
     title.textContent = DEFAULT_TITLE;
     const kind = h("span", "tw-kind");
     kind.hidden = true;
-    heading.append(title, kind);
+    // Lit while a secure form is up. It sits in the window's own bar, where no page in the frame can draw.
+    const flag = h("span", "tw-sheet-flag");
+    flag.textContent = "Secure form open";
+    flag.hidden = true;
+    this.sheetFlag = flag;
+    heading.append(title, kind, flag);
 
     const actions = h("div", "tw-actions");
     const focusBtn = this.iconButton(ICONS.focus, "Focus mode — hide this bar (F)");
@@ -628,6 +844,15 @@ class WorkspaceView {
     if (this.destroyed) return;
     window.clearTimeout(this.reconnectTimer);
     this.reconnectTimer = 0;
+    // The engine answers only a linked browser (auth.ts): link this one first, then open the socket.
+    void ensureSession().then((linked) => {
+      if (linked) this.openSocket();
+      else this.scheduleReconnect();
+    });
+  }
+
+  private openSocket(): void {
+    if (this.destroyed || this.ws) return;
     let ws: WebSocket;
     try {
       ws = new WebSocket(this.wsUrl);
@@ -639,6 +864,7 @@ class WorkspaceView {
     this.connects++;
     ws.onopen = () => {
       if (this.ws !== ws) return;
+      this.freshSocket = true;
       this.rawSend(ws, { type: "hello" });
       for (const evt of this.outbox.splice(0)) this.rawSend(ws, evt);
     };
@@ -754,6 +980,17 @@ class WorkspaceView {
     switch (evt.type) {
       case "snapshot":
         this.applySnapshot(evt.snapshot, false);
+        // On a socket that has just connected, the engine announces its open forms right after this snapshot.
+        if (this.freshSocket) {
+          this.freshSocket = false;
+          this.sweepSheets();
+        }
+        return;
+      case "form":
+        this.openSheet(evt.form);
+        return;
+      case "form_closed":
+        this.endSheet(evt.id, evt.status);
         return;
       case "state": {
         this.counters.statesReceived++;
@@ -960,6 +1197,8 @@ class WorkspaceView {
     el.setAttribute("aria-hidden", "true");
     el.tabIndex = -1;
     el.title = this.frameTitle();
+    // While a secure form is up, no frame can take the focus or a click.
+    if (this.sheets.size) el.inert = true;
 
     if (this.pending) this.dropFrame(this.pending);
     this.pending = frame;
@@ -1013,10 +1252,16 @@ class WorkspaceView {
 
   private readonly assetBlobs = new Map<string, Promise<Blob | null>>();
 
+  /** One of the engine's media files, by the exact name its routes serve — the only thing fetched for a frame. */
+  private isAssetUrl(url: string): boolean {
+    return url.startsWith(`${this.httpOrigin}/`) && ASSET_PATH.test(url.slice(this.httpOrigin.length));
+  }
+
   private assetBlob(url: string): Promise<Blob | null> {
+    if (!this.isAssetUrl(url)) return Promise.resolve(null);
     let p = this.assetBlobs.get(url);
     if (!p) {
-      p = fetch(url)
+      p = fetch(url, { redirect: "error" })
         .then((r) => (r.ok ? r.blob() : null))
         .catch(() => null);
       this.assetBlobs.set(url, p);
@@ -1027,13 +1272,14 @@ class WorkspaceView {
 
   private sendAssets(frame: Frame, mapped: unknown): void {
     // (Engine images, and the audio clips make_audio records: the frame can't load either itself.)
-    const prefixes = [`${this.httpOrigin}/api/images/`, `${this.httpOrigin}/api/audio/`, `${this.httpOrigin}/api/videos/`];
+    // Only whole file names the engine's own routes serve: "/api/images/../anything" is never fetched (it would be
+    // read with this page's session and its bytes handed to the frame).
     // Images embedded in a widget card's HTML (a content card's hero) travel the same way; the frame inlines them.
-    const inlineImages = new RegExp(`${escapeRegExp(this.httpOrigin)}/api/images/[A-Za-z0-9_.-]+`, "g");
+    const inlineImages = new RegExp(`${escapeRegExp(this.httpOrigin)}${INLINE_IMAGE_FILE}`, "g");
     const found = new Set<string>();
     const walk = (v: unknown, depth: number): void => {
       if (typeof v === "string") {
-        if (prefixes.some((p) => v.startsWith(p))) found.add(v);
+        if (this.isAssetUrl(v)) found.add(v);
         else if (v.length > 24 && v.includes("/api/images/")) for (const m of v.matchAll(inlineImages)) found.add(m[0]);
       } else if (v && typeof v === "object" && depth < 64) {
         for (const x of Array.isArray(v) ? v : Object.values(v as Record<string, unknown>)) walk(x, depth + 1);
@@ -1185,9 +1431,10 @@ class WorkspaceView {
   }
 
   private onUiEvent(frame: Frame, evt: unknown): void {
-    this.uiEvents.push(evt);
-    if (this.uiEvents.length > 20) this.uiEvents.shift();
     const internal = evt && typeof evt === "object" ? (evt as { __trinity?: unknown }).__trinity : undefined;
+    // (The diagnostics keep what kind of event it was, not what a card kept or said.)
+    this.uiEvents.push(internal === "board" ? { __trinity: "board", op: (evt as { op?: unknown }).op } : evt);
+    if (this.uiEvents.length > 20) this.uiEvents.shift();
     if (internal === "alert") {
       const text = String((evt as { text?: unknown }).text ?? "").trim();
       if (text) this.toast(text, "info");
@@ -1195,6 +1442,11 @@ class WorkspaceView {
     }
     if (internal === "link") {
       this.askToOpen(frame, String((evt as { href?: unknown }).href ?? ""));
+      return;
+    }
+    // A file card's Open or Download: done from this page (the board's frame can't download or send the session).
+    if (internal === "file") {
+      if (frame.kind === "app" && isBoardTemplate(frame.template)) this.openFile(frame, evt as Record<string, unknown>);
       return;
     }
     // The card board's own events (a command's answer, a card moved or resized by hand) go to the engine — and only
@@ -1235,7 +1487,40 @@ class WorkspaceView {
     if (e && e.detail > 0 && !this.linkMoved) return;
     this.linkAsk = null;
     this.linkMoved = false;
-    window.open(ask.href, "_blank", "noopener,noreferrer");
+    if (ask.file) openTab(ask.href);
+    else window.open(ask.href, "_blank", "noopener,noreferrer");
+    this.renderNotice();
+  }
+
+  /**
+   * Open or download the file on one of the board's "file" cards. The board says only which card and what to do; the
+   * file's address is built here from that card as the engine sent it (its file id and its name) — never from the
+   * message — and opened from this page, so the browser sends the session and this page's address with it (the file
+   * route wants both). A pop-up the browser holds back is offered in the notice, to open from there.
+   */
+  private openFile(frame: Frame, evt: Record<string, unknown>): void {
+    const cardId = typeof evt.card === "string" ? evt.card : "";
+    const action = evt.action === "download" ? "download" : evt.action === "open" ? "open" : "";
+    if (!cardId || !action) return;
+    const cards = (frame.rawState as { cards?: unknown } | null)?.cards;
+    const card = Array.isArray(cards) ? (cards as Record<string, unknown>[]).find((c) => c && typeof c === "object" && c.id === cardId && c.kind === "file") : undefined;
+    const data = card?.data as { id?: unknown; name?: unknown } | undefined;
+    const id = typeof data?.id === "string" && /^[0-9a-f]{16}$/.test(data.id) ? data.id : "";
+    const name = typeof data?.name === "string" && data.name.length <= 160 && !/[\\/]/.test(data.name) ? data.name : "";
+    if (!id || !name) return;
+    const url = `/api/files/${id}/${encodeURIComponent(name)}`;
+    if (action === "download") {
+      const a = h("a", undefined, { href: `${url}?download=1`, download: name, rel: "noopener" });
+      a.hidden = true;
+      document.body.append(a);
+      a.click();
+      a.remove();
+      return;
+    }
+    if (openTab(url)) return;
+    if (this.linkAsk) return;
+    this.linkAsk = { href: new URL(url, location.href).href, at: Date.now(), frame, file: name };
+    this.linkMoved = false;
     this.renderNotice();
   }
 
@@ -1249,8 +1534,8 @@ class WorkspaceView {
     if (ask) {
       // A link waiting for the viewer's OK comes first; a render error shows again once it's answered.
       this.notice.classList.add("is-warn");
-      this.noticeTitle.textContent = "This page wants to open a link";
-      this.noticeMsg.textContent = ask.href;
+      this.noticeTitle.textContent = ask.file ? `Open “${ask.file}”?` : "This page wants to open a link";
+      this.noticeMsg.textContent = ask.file ? "The browser held it back as a pop-up. Open it from here." : ask.href;
       this.noticeMsg.title = ask.href;
       this.notice.hidden = false;
       return;
@@ -1271,6 +1556,443 @@ class WorkspaceView {
     this.noticeMsg.title = f.error;
     this.notice.hidden = false; // (re)appearing from display:none replays its entrance animation
     if (!isApp) this.noticeTimer = window.setTimeout(() => (this.notice.hidden = true), HTML_NOTICE_MS);
+  }
+
+  // ── Secure forms ─────────────────────────────────────────────────────────
+  // The vault's forms (server/src/vault/forms.ts). The engine sends a descriptor — a title, the fields, never a value —
+  // and this page draws the form itself: here, in the trusted host page, over the stage, never inside a frame (a frame
+  // is where generated and web-derived pages run). While a sheet is up the frames are inert, so nothing in them can
+  // take the focus, be clicked, or pass for the form. What is typed leaves this page in exactly one way: the body of
+  // POST /api/vault/forms/<id> on this page's own origin. It is never sent over the socket, never posted into a frame,
+  // never kept in the diagnostics, and it is wiped from the inputs before the sheet is taken down.
+  // Built with createElement / textContent only: nothing in a descriptor is ever treated as markup.
+
+  private topSheet(): Sheet | null {
+    let top: Sheet | null = null;
+    for (const s of this.sheets.values()) top = s;
+    return top;
+  }
+
+  private openSheet(raw: unknown): void {
+    const form = cleanForm(raw);
+    if (!form || this.destroyed) return;
+    const known = this.sheets.get(form.id);
+    if (known) {
+      known.confirmed = true; // announced again after a reconnect: it stays, with what was typed
+      return;
+    }
+    // What is typed is posted to this page's own origin only — so a form is drawn only for the engine this page came from.
+    if (this.httpOrigin !== location.origin) {
+      this.toast("A secure form is waiting. Open Trinity's own workspace window to fill it in.", "warn");
+      return;
+    }
+    if (this.sheets.size >= 8) return;
+    const sheet = this.buildSheet(form);
+    this.sheets.set(form.id, sheet);
+    this.sheetLayer.append(sheet.el);
+    // The engine says when a form lapses; this is only for a window that has lost the engine.
+    sheet.timers.push(window.setTimeout(() => this.closeSheet(form.id, "That secure form timed out."), Math.max(0, form.expiresAt - Date.now()) + 5000));
+    this.syncSheets();
+  }
+
+  /** The engine closed a form (it was submitted or cancelled somewhere, or it lapsed). */
+  private endSheet(rawId: unknown, status: FormEnd): void {
+    const id = typeof rawId === "string" ? rawId : "";
+    if (!this.sheets.has(id)) return;
+    this.closeSheet(id, status === "expired" ? "That secure form timed out. Ask Trinity again when you're ready." : undefined);
+  }
+
+  /** After a reconnect: sheets the engine doesn't announce again are no longer open there (it restarted, or they ended). */
+  private sweepSheets(): void {
+    if (!this.sheets.size) return;
+    for (const s of this.sheets.values()) s.confirmed = false;
+    window.clearTimeout(this.sheetSweep);
+    this.sheetSweep = window.setTimeout(() => {
+      for (const [id, s] of [...this.sheets]) if (!s.confirmed) this.closeSheet(id, "That secure form is no longer open. Ask Trinity again.");
+    }, SHEET_SWEEP_MS);
+  }
+
+  private buildSheet(form: FormRequest): Sheet {
+    const seq = ++this.sheetSeq;
+    const titleId = `tw-sheet-${seq}-title`;
+    const detailId = `tw-sheet-${seq}-detail`;
+    const el = h("div", "tw-sheet", { role: "dialog", "aria-modal": "true", "aria-labelledby": titleId });
+    el.dataset.purpose = form.purpose;
+
+    const head = h("div", "tw-sheet-head");
+    const mark = h("span", "tw-sheet-mark", { "aria-hidden": "true" });
+    mark.append(lockIcon());
+    const title = h("h2", "tw-sheet-title", { id: titleId });
+    title.textContent = form.title;
+    head.append(mark, title);
+    el.append(head);
+
+    if (form.detail) {
+      const detail = h("p", "tw-sheet-detail", { id: detailId });
+      detail.textContent = form.detail;
+      el.setAttribute("aria-describedby", detailId);
+      el.append(detail);
+    }
+    if (form.host) {
+      const host = h("p", "tw-sheet-host");
+      const where = h("strong");
+      where.textContent = form.host;
+      host.append("For ", where);
+      el.append(host);
+    }
+
+    const fields = form.fields.map((f, i) => this.buildSheetField(f, `tw-sheet-${seq}-f${i}`));
+    if (fields.length) {
+      const box = h("div", "tw-sheet-fields");
+      for (const f of fields) box.append(f.row);
+      el.append(box);
+      // "Keep the security code" decides whether there is a security code to type at all.
+      const keep = fields.find((f) => f.field.type === "checkbox" && f.field.name === "keepCvc");
+      const code = fields.find((f) => f.field.type === "cvc");
+      if (keep && code) {
+        const sync = (): void => {
+          code.row.hidden = !keep.input.checked;
+          if (!keep.input.checked) code.input.value = "";
+        };
+        keep.input.addEventListener("change", sync);
+        sync();
+      }
+    }
+
+    const error = h("p", "tw-sheet-error", { role: "alert" });
+    error.hidden = true;
+    const actions = h("div", "tw-sheet-actions");
+    const cancel = h("button", "tw-sheet-btn", { type: "button" });
+    cancel.textContent = "Cancel";
+    const submit = h("button", "tw-sheet-btn tw-sheet-primary", { type: "button" });
+    submit.textContent = form.submitLabel;
+    actions.append(cancel, submit);
+    const note = h("p", "tw-sheet-note");
+    note.textContent = fields.length ? SHEET_NOTE : SHEET_CONFIRM_NOTE;
+    el.append(error, actions, note);
+
+    const sheet: Sheet = { form, el, fields, error, submit, cancel, busy: false, shownAt: Date.now(), confirmed: true, timers: [] };
+    cancel.addEventListener("click", () => this.cancelSheet(sheet));
+    submit.addEventListener("click", (e) => void this.submitSheet(sheet, e));
+    return sheet;
+  }
+
+  private buildSheetField(f: FormField, id: string): SheetField {
+    if (f.type === "checkbox") {
+      const row = h("label", "tw-sheet-check");
+      const input = h("input", "tw-sheet-box", { type: "checkbox", id });
+      input.checked = f.value === "true";
+      const text = h("span");
+      text.textContent = f.label;
+      row.append(input, text);
+      return { field: f, input, row, error: null };
+    }
+    const masked = f.type === "password" || f.type === "cvc" || f.type === "otp-secret";
+    const numeric = f.type === "card-number" || f.type === "expiry" || f.type === "cvc";
+    const errorId = `${id}-error`;
+    const row = h("div", "tw-sheet-field");
+    const label = h("label", "tw-sheet-label", { for: id });
+    label.textContent = f.label;
+    const control = h("div", "tw-sheet-control");
+    // Masked as dots on a plain text field where the browser can draw one so (see canMaskText); a password field otherwise.
+    const maskText = masked && canMaskText();
+    const input = h("input", "tw-sheet-input", {
+      id,
+      type: masked && !maskText ? "password" : f.type === "email" ? "email" : f.type === "tel" ? "tel" : "text",
+      // Keep the browser's own password and card managers out of it: nothing here is theirs to fill in or to keep.
+      autocomplete: masked && !maskText ? "new-password" : "off",
+      autocapitalize: "off",
+      autocorrect: "off",
+      spellcheck: "false",
+      "data-lpignore": "true",
+      "data-1p-ignore": "true",
+      "data-bwignore": "true",
+      "data-form-type": "other",
+      "aria-describedby": errorId,
+    });
+    if (maskText) input.style.setProperty(TEXT_MASK, "disc");
+    if (f.required) input.setAttribute("aria-required", "true");
+    if (f.placeholder) input.placeholder = f.placeholder;
+    if (numeric) input.inputMode = "numeric";
+    input.maxLength = f.type === "card-number" ? 23 : f.type === "expiry" ? 7 : f.type === "cvc" ? 4 : f.type === "password" || f.type === "otp-secret" ? 1000 : 320;
+    if (!masked && !numeric && f.value) input.value = f.value;
+    control.append(input);
+
+    const error = h("p", "tw-sheet-field-error", { id: errorId });
+    error.hidden = true;
+    const clear = (): void => {
+      if (error.hidden) return;
+      error.hidden = true;
+      error.textContent = "";
+      row.classList.remove("is-invalid");
+      input.removeAttribute("aria-invalid");
+    };
+
+    if (masked) {
+      const toggle = h("button", "tw-sheet-toggle", { type: "button", "aria-pressed": "false", "aria-label": `Show ${f.label}` });
+      toggle.textContent = "Show";
+      toggle.addEventListener("click", () => {
+        const show = maskText ? input.style.getPropertyValue(TEXT_MASK) !== "none" : input.type === "password";
+        if (maskText) input.style.setProperty(TEXT_MASK, show ? "none" : "disc");
+        else input.type = show ? "text" : "password";
+        toggle.textContent = show ? "Hide" : "Show";
+        toggle.setAttribute("aria-pressed", String(show));
+        toggle.setAttribute("aria-label", `${show ? "Hide" : "Show"} ${f.label}`);
+        input.focus();
+      });
+      control.append(toggle);
+    }
+    if (f.type === "card-number") {
+      const brand = h("span", "tw-sheet-brand", { "aria-live": "polite" });
+      control.append(brand);
+      input.addEventListener("input", () => {
+        const before = input.value;
+        const caret = input.selectionStart ?? before.length;
+        const digitsBefore = before.slice(0, caret).replace(/\D/g, "").length;
+        const grouped = groupCardNumber(before);
+        if (grouped !== before) {
+          input.value = grouped;
+          // The caret stays after the same digit it was after.
+          let pos = 0;
+          for (let seen = 0; pos < grouped.length && seen < digitsBefore; pos++) if (/\d/.test(grouped.charAt(pos))) seen++;
+          try {
+            input.setSelectionRange(pos, pos);
+          } catch {
+            /* not a text selection */
+          }
+        }
+        brand.textContent = cardBrandOf(grouped.replace(/\D/g, ""));
+        clear();
+      });
+    } else if (f.type === "expiry") {
+      input.addEventListener("input", () => {
+        const tidy = tidyExpiry(input.value);
+        if (tidy !== input.value) input.value = tidy;
+        clear();
+      });
+    } else if (f.type === "cvc") {
+      input.addEventListener("input", () => {
+        const digits = input.value.replace(/\D/g, "").slice(0, 4);
+        if (digits !== input.value) input.value = digits;
+        clear();
+      });
+    } else {
+      input.addEventListener("input", clear);
+    }
+    row.append(label, control, error);
+    return { field: f, input, row, error };
+  }
+
+  /** The newest sheet on show, the others behind it; the frames inert while any is up; the focus kept in the sheet. */
+  private syncSheets(): void {
+    const top = this.topSheet();
+    for (const s of this.sheets.values()) {
+      const front = s === top;
+      if (s.el.hidden === front) {
+        s.el.hidden = !front;
+        if (front) s.shownAt = Date.now();
+      }
+    }
+    this.sheetLayer.hidden = !top;
+    this.root.classList.toggle("tw-has-sheet", Boolean(top));
+    if (this.sheetFlag) this.sheetFlag.hidden = !top;
+    for (const f of [this.current, this.pending, ...this.leaving]) if (f) f.el.inert = Boolean(top);
+    if (top) {
+      const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      if (!active || !top.el.contains(active)) {
+        if (!this.sheetReturn && active && active !== document.body && !this.sheetLayer.contains(active)) this.sheetReturn = active;
+        if (active && this.frameFor((active as HTMLIFrameElement).contentWindow ?? null)) active.blur();
+        this.focusSheet(top);
+      }
+    } else if (this.sheetReturn) {
+      const back = this.sheetReturn;
+      this.sheetReturn = null;
+      if (back.isConnected) back.focus({ preventScroll: true });
+    }
+  }
+
+  /** What can take the focus in a sheet right now, in order. */
+  private sheetFocusables(sheet: Sheet): HTMLElement[] {
+    return [...sheet.el.querySelectorAll<HTMLElement>("input, button")].filter((el) => !(el as HTMLInputElement).disabled && !el.closest("[hidden]"));
+  }
+
+  /** A form to type into starts in its first field; a question to approve starts on Cancel, so a stray Enter approves nothing. */
+  private focusSheet(sheet: Sheet): void {
+    const first = sheet.form.fields.length ? this.sheetFocusables(sheet).find((el) => el.tagName === "INPUT") : null;
+    (first ?? sheet.cancel).focus({ preventScroll: true });
+  }
+
+  /** Keys while a sheet is up: Escape cancels it, Tab stays inside it, Enter in a field submits it. */
+  private onSheetKey(e: KeyboardEvent, inside: boolean): void {
+    const sheet = this.topSheet();
+    if (!sheet) return;
+    if (inside) {
+      e.stopPropagation(); // a modal: the page's own shortcuts stay out of it
+    } else {
+      // From elsewhere on the page: only when nothing else has the focus (or something in this view does).
+      const active = document.activeElement;
+      if (active && active !== document.body && !this.root.contains(active)) return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      this.cancelSheet(sheet);
+      return;
+    }
+    if (!inside) return;
+    if (e.key === "Tab") {
+      const items = this.sheetFocusables(sheet);
+      e.preventDefault();
+      if (!items.length) return;
+      const at = items.indexOf(document.activeElement as HTMLElement);
+      const next = e.shiftKey ? (at <= 0 ? items[items.length - 1] : items[at - 1]) : at < 0 || at === items.length - 1 ? items[0] : items[at + 1];
+      next?.focus();
+      return;
+    }
+    const target = e.target as HTMLInputElement | null;
+    if (e.key === "Enter" && !e.isComposing && target && target.tagName === "INPUT" && target.type !== "checkbox") {
+      e.preventDefault();
+      void this.submitSheet(sheet);
+    }
+  }
+
+  private sheetError(sheet: Sheet, message: string, fieldName?: string): void {
+    const f = fieldName ? sheet.fields.find((x) => x.field.name === fieldName && x.error && !x.row.hidden) : undefined;
+    if (f?.error) {
+      f.error.textContent = message;
+      f.error.hidden = false;
+      f.row.classList.add("is-invalid");
+      f.input.setAttribute("aria-invalid", "true");
+      sheet.error.hidden = true;
+      sheet.error.textContent = "";
+      f.input.focus();
+      return;
+    }
+    sheet.error.textContent = message;
+    sheet.error.hidden = false;
+  }
+
+  private setSheetBusy(sheet: Sheet, busy: boolean): void {
+    sheet.busy = busy;
+    sheet.submit.disabled = busy;
+    sheet.cancel.disabled = busy;
+    sheet.el.setAttribute("aria-busy", String(busy));
+  }
+
+  /** What was typed, by field name — or null when something is plainly missing or wrong (and says so in the sheet). */
+  private sheetValues(sheet: Sheet): Record<string, string | boolean> | null {
+    const values: Record<string, string | boolean> = {};
+    for (const f of sheet.fields) {
+      if (f.row.hidden) continue;
+      const t = f.field.type;
+      if (t === "checkbox") {
+        values[f.field.name] = f.input.checked;
+        continue;
+      }
+      const masked = t === "password" || t === "cvc" || t === "otp-secret";
+      // A password is sent exactly as typed; everything else without the spaces around it.
+      const value = t === "card-number" ? f.input.value.replace(/\D/g, "") : masked ? f.input.value : f.input.value.trim();
+      const needed = f.field.required === true || (t === "cvc" && !f.row.hidden && sheet.fields.some((x) => x.field.name === "keepCvc"));
+      if (needed && !value.trim()) {
+        this.sheetError(sheet, "Fill this in.", f.field.name);
+        return null;
+      }
+      if (t === "card-number" && value && !luhnValid(value)) {
+        this.sheetError(sheet, "That card number doesn't look right. Check the digits.", f.field.name);
+        return null;
+      }
+      values[f.field.name] = value;
+    }
+    return values;
+  }
+
+  /** The one way out for what was typed: this page's own origin, by a relative address, in the request body. */
+  private sendForm(id: string, values: Record<string, string | boolean>): Promise<Response> {
+    return fetch(`/api/vault/forms/${encodeURIComponent(id)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ values }),
+      cache: "no-store",
+      credentials: "same-origin",
+      redirect: "error",
+    });
+  }
+
+  private async submitSheet(sheet: Sheet, click?: MouseEvent): Promise<void> {
+    const id = sheet.form.id;
+    if (sheet.busy || this.sheets.get(id) !== sheet) return;
+    // A pointer click on Approve that lands as the sheet appears was on its way to something else.
+    if (sheet.form.purpose === "confirm" && click && click.detail > 0 && Date.now() - sheet.shownAt < SHEET_ARM_MS) return;
+    sheet.error.hidden = true;
+    const values = this.sheetValues(sheet);
+    if (!values) return;
+    this.setSheetBusy(sheet, true);
+    let res: Response | null = null;
+    try {
+      res = await this.sendForm(id, values);
+      // Unlinked meanwhile: link this browser again, once, and send it again.
+      if (res.status === 401 && (await ensureSession())) res = await this.sendForm(id, values);
+    } catch {
+      res = null;
+    } finally {
+      for (const k of Object.keys(values)) values[k] = "";
+    }
+    if (this.destroyed || this.sheets.get(id) !== sheet) return; // it was closed meanwhile
+    this.setSheetBusy(sheet, false);
+    if (!res) {
+      this.sheetError(sheet, "Couldn't reach Trinity's engine. What you typed is still here: try again.");
+      return;
+    }
+    if (res.ok) {
+      const purpose = sheet.form.purpose;
+      this.closeSheet(id);
+      if (purpose === "unlock") this.toast("The vault is unlocked.", "success");
+      else if (purpose.startsWith("save-")) this.toast("Saved in the vault.", "success");
+      return;
+    }
+    let body: Record<string, unknown> | null = null;
+    try {
+      body = (await res.json()) as Record<string, unknown> | null;
+    } catch {
+      body = null;
+    }
+    const code = typeof body?.code === "string" ? body.code : "";
+    if (code === "gone" || res.status === 404) {
+      this.closeSheet(id, "That secure form is no longer open. Ask Trinity again.");
+      return;
+    }
+    // (The engine's messages are fixed sentences; they are shown as text.)
+    const message = typeof body?.error === "string" && body.error.length <= 300 ? body.error : "That didn't go through. Try again.";
+    if (code === "wrong-passphrase" || code === "wait") for (const f of sheet.fields) if (f.input.type !== "checkbox") f.input.value = "";
+    this.sheetError(sheet, message, typeof body?.field === "string" ? body.field : code === "wrong-passphrase" ? sheet.fields[0]?.field.name : undefined);
+    const wait = code === "wait" && typeof body?.retryAfterMs === "number" ? Math.min(body.retryAfterMs, 15 * 60_000) : 0;
+    if (wait > 0) {
+      sheet.submit.disabled = true;
+      sheet.timers.push(window.setTimeout(() => (sheet.submit.disabled = sheet.busy), wait));
+    }
+  }
+
+  /** Cancel: tell the engine (so whatever waits on the form knows) and take the sheet down. */
+  private cancelSheet(sheet: Sheet): void {
+    if (this.sheets.get(sheet.form.id) !== sheet) return;
+    void fetch(`/api/vault/forms/${encodeURIComponent(sheet.form.id)}`, { method: "DELETE", cache: "no-store", credentials: "same-origin", redirect: "error" }).catch(() => undefined);
+    this.closeSheet(sheet.form.id);
+  }
+
+  /** Take a sheet down. What was typed is wiped from its inputs first. */
+  private closeSheet(id: string, why?: string): void {
+    const sheet = this.sheets.get(id);
+    if (!sheet) return;
+    this.sheets.delete(id);
+    for (const t of sheet.timers) window.clearTimeout(t);
+    sheet.timers = [];
+    for (const f of sheet.fields) {
+      if (f.input.type === "checkbox") f.input.checked = false;
+      else f.input.value = "";
+    }
+    sheet.el.remove();
+    if (why && !this.destroyed) this.toast(why, "info");
+    this.syncSheets();
   }
 
   // ── Toasts ───────────────────────────────────────────────────────────────

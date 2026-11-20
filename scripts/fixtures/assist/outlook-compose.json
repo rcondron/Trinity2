@@ -1,0 +1,16 @@
+{
+  "about": "Outlook's new-message pane: To, Add a subject, Message body, Send. Pressing Send closes the pane and shows no confirmation.",
+  "url": "https://outlook.live.com/mail/0/",
+  "title": "Mail - Ryan Smith - Outlook",
+  "text": "Inbox Focused Other Filter Today SL Sam Lee Roadmap for Q1 9:42 AM Hi Ryan, attached is the draft roadmap for next quarter. Could you send comments by Friday? FB First National Bank Your October statement is ready 8:15 AM Your statement for the account ending 4821 is now available online.",
+  "controls": [
+    { "ref": 1, "role": "button", "name": "New mail" },
+    { "ref": 2, "role": "option", "name": "SL Sam Lee Roadmap for Q1 9:42 AM Hi Ryan, attached is the draft roadmap for next" },
+    { "ref": 3, "role": "button", "name": "Send" },
+    { "ref": 4, "role": "button", "name": "Discard" },
+    { "ref": 5, "role": "textbox", "name": "To", "editable": true },
+    { "ref": 6, "role": "button", "name": "Cc" },
+    { "ref": 7, "role": "textbox", "name": "Add a subject", "editable": true },
+    { "ref": 8, "role": "textbox", "name": "Message body, press Alt+F10 to exit", "editable": true }
+  ]
+}

@@ -70,12 +70,20 @@ const webSearch: Tool = {
 
 const getTime: Tool = {
   name: "get_time",
-  description: "Get the current date and time.",
+  description: "Tell the current time, date or day of the week (what time is it, what's today's date).",
   input: {},
+  // At the end of the sentence ("what time is it in…" may go on), and answered in words as they are: no rewrite.
+  argMode: "raw",
   source: "builtin",
-  async run() {
+  async run(_args, ctx) {
     const now = new Date();
-    return { ok: true, say: `It's ${now.toLocaleString()}.`, data: { iso: now.toISOString() } };
+    const time = now.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+    const date = now.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+    const asked = (ctx.userWords ?? ctx.utterance).toLowerCase();
+    const wantsDate = /\b(date|day|today)\b/.test(asked);
+    const wantsTime = /\btime\b/.test(asked) || !wantsDate;
+    const say = wantsTime && wantsDate ? `It's ${time} on ${date}.` : wantsDate ? `It's ${date}.` : `It's ${time}.`;
+    return { ok: true, say, speak: say, data: { iso: now.toISOString() } };
   },
 };
 

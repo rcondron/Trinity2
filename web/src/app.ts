@@ -1,6 +1,7 @@
 import "./styles.css";
 import { Speech } from "./speech.js";
 import { AudioIO } from "./audio.js";
+import { ensureSession } from "./auth.js";
 import { LiveCall, type CallEvent, type CallState } from "./call.js";
 import { CLARITY_KEY, clarityPreferred } from "./voice-chain.js";
 import { mountWorkspace, type WorkspaceHandle } from "./workspace/view.js";
@@ -59,14 +60,19 @@ function voiceMode(): VoiceMode {
 
 // ─── Control channel (/ws) ─────────────────────────────────────────────────────
 function connect() {
-  ws = new WebSocket(`${proto}://${location.host}/ws`);
-  ws.onopen = () => send({ type: "hello" });
-  ws.onclose = () => {
-    // The control channel went (the engine restarted): a loan can't have outlived it, so the reconnect warms up as usual.
-    if (lent) setLent(false);
-    setTimeout(connect, 1200);
-  };
-  ws.onmessage = (e) => handle(JSON.parse(e.data) as ServerEvent);
+  // The engine answers only a linked browser (auth.ts): link this one first — at once for the first browser, with the
+  // pairing code otherwise.
+  void ensureSession().then((linked) => {
+    if (!linked) return void setTimeout(connect, 1200);
+    ws = new WebSocket(`${proto}://${location.host}/ws`);
+    ws.onopen = () => send({ type: "hello" });
+    ws.onclose = () => {
+      // The control channel went (the engine restarted): a loan can't have outlived it, so the reconnect warms up as usual.
+      if (lent) setLent(false);
+      setTimeout(connect, 1200);
+    };
+    ws.onmessage = (e) => handle(JSON.parse(e.data) as ServerEvent);
+  });
 }
 function send(obj: unknown) {
   if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
@@ -437,6 +443,9 @@ function handleCallEvent(e: CallEvent) {
     }
     case "reply":
       if (e.error) renderEvent("status", "reply", s("error"));
+      // A reply the talking brain wrote: how soon its first sentence was ready, and which model wrote it.
+      else if (e.talk === "said" && e.first_ms != null)
+        renderEvent("route", "talk", `${(n("first_ms") / 1000).toFixed(1)}s to the first words${s("model") ? ` · ${s("model")}` : ""}`);
       break;
     case "memory":
       renderEvent("memory", e.op === "write" ? "remember" : "recall", ((e.doc ?? {}) as { text?: string }).text ?? "");
@@ -867,7 +876,7 @@ window.addEventListener("storage", (e) => {
 // ─── Go ───────────────────────────────────────────────────────────────────────
 initSpeech();
 mountEmbedded();
-void populatePersonas();
+void ensureSession().then(() => populatePersonas());
 connect();
 // speechSynthesis voices load async in some browsers
 if ("speechSynthesis" in window) window.speechSynthesis.onvoiceschanged = () => {};

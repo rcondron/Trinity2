@@ -1,16 +1,20 @@
 // Memory: what Trinity remembers about you. "About you" holds the name she
-// calls you by; below it, every memory — facts, preferences, events, notes —
-// searchable, editable inline, and deletable, plus a form to add one yourself.
-// Trinity saves memories when you ask her to remember something and curates
-// them from your conversations; she uses them to personalize answers.
+// calls you by and the two short profile texts she always has in mind (who you
+// are; standing notes for her); below it, every memory — facts, preferences,
+// events, notes — searchable, editable inline, and deletable, plus a form to
+// add one yourself; then the conversation history: how long it is kept, and
+// the buttons to delete one conversation or all of them.
+// Trinity saves memories when you ask her to remember something and reflects
+// on each conversation when it ends; she uses them to personalize answers.
 
-import { api, isNotAvailable, type Memory, type MemoryInput, type MemoryType, type Profile, type ProfileSaved } from "./api.js";
+import { api, isNotAvailable, request, type Memory, type MemoryInput, type MemoryType, type Profile, type ProfileSaved } from "./api.js";
 import { announce } from "./channel.js";
 import { profileRes } from "./store.js";
 import {
   autoGrow,
   badge,
   button,
+  confirmAction,
   debounce,
   emptyState,
   errorState,
@@ -126,6 +130,20 @@ export function createMemorySection(): Section {
   let savedName = "";
   let profileAvailable = true;
 
+  // The two profile texts: always in Trinity's prompt (memories are looked up; these are simply known). Each is
+  // short on purpose — the engine refuses a text over its limit, or one that reads as instructions to the model.
+  const userText = profileText("user", {
+    label: "Who you are",
+    hint: "One line each: your people and places, work, diet, lasting likes and dislikes. Trinity adds to this when you tell her about yourself, and always has it in mind.",
+    placeholder: "The user lives in Austin.\nThe user's sister Maya is a paramedic.\nThe user is vegetarian.",
+  });
+  const notesText = profileText("notes", {
+    label: "Standing notes for Trinity",
+    hint: "How you want her to behave, every time: units, tone, things to avoid.",
+    placeholder: "Use Celsius for temperatures.\nKeep answers short.",
+  });
+  const profileTexts = h("div", { class: "profile-texts", hidden: true }, userText.el, notesText.el);
+
   const profileCard = h(
     "div",
     { class: "card profile-card" },
@@ -137,11 +155,83 @@ export function createMemorySection(): Section {
         "div",
         { class: "card-head-text" },
         h("h2", { class: "card-title" }, "About you"),
-        h("p", { class: "card-sub" }, "What Trinity knows about you directly."),
+        h("p", { class: "card-sub" }, "What Trinity knows about you directly — always in mind, not looked up."),
       ),
     ),
-    h("div", { class: "card-pad" }, fName.el),
+    h("div", { class: "card-pad" }, fName.el, profileTexts),
   );
+
+  /** One of the profile texts: a textarea with its length against the limit, saved as a whole. */
+  function profileText(part: "user" | "notes", o: { label: string; hint: string; placeholder: string }) {
+    const ta = h("textarea", { class: "textarea", rows: 4, placeholder: o.placeholder, spellcheck: true });
+    autoGrow(ta, 360);
+    const counter = h("span", { class: "muted small" });
+    const save = button("Save", { variant: "primary", icon: "check", size: "sm", disabled: true });
+    const f = field({ label: o.label, control: ta, hint: o.hint, extra: counter });
+    let saved = "";
+    let limit = part === "user" ? 1500 : 2200;
+    const sync = () => {
+      counter.textContent = `${ta.value.length.toLocaleString()} / ${limit.toLocaleString()}`;
+      counter.classList.toggle("field-error", ta.value.length > limit);
+      save.disabled = ta.value.trim() === saved.trim();
+    };
+    ta.addEventListener("input", () => {
+      f.setError(null);
+      sync();
+    });
+    save.addEventListener("click", () => {
+      void (async () => {
+        f.setError(null);
+        try {
+          const r = await withBusy(save, () => request<ProfileTexts>("PUT", "/profile", { [part]: ta.value }, { quiet: true }), "Saving…");
+          // (The engine stores one entry per line; show the text as it keeps it.)
+          saved = "";
+          ta.value = "";
+          showTexts(r);
+          announce("memory");
+          toast(part === "user" ? "Saved — Trinity knows that about you now." : "Saved — Trinity will keep to that.", "success");
+          // A name written into (or taken out of) this text is the name now.
+          void profileRes.refresh().catch(() => {});
+        } catch (err) {
+          // Too long, or an entry the engine won't keep: it says which and why.
+          f.setError((err as Error).message || "That couldn't be saved.");
+        }
+      })();
+    });
+    return {
+      el: h("div", { class: "profile-text" }, f.el, h("div", { class: "form-actions" }, h("span", { class: "spacer" }), save)),
+      /** Show the stored text — never over something typed and not saved yet. */
+      set(text: string, max: number) {
+        limit = max;
+        if (ta.value.trim() === saved.trim()) ta.value = text;
+        saved = text;
+        sync();
+      },
+      dirty: () => !save.disabled,
+    };
+  }
+
+  interface ProfileTexts {
+    user?: string;
+    notes?: string;
+    limits?: { user?: number; notes?: number };
+  }
+
+  function showTexts(p: ProfileTexts): void {
+    // An engine without the profile texts sends neither: the fields stay hidden.
+    if (typeof p.user !== "string" || typeof p.notes !== "string") return;
+    profileTexts.hidden = false;
+    userText.set(p.user, p.limits?.user ?? 1500);
+    notesText.set(p.notes, p.limits?.notes ?? 2200);
+  }
+
+  async function loadTexts(): Promise<void> {
+    try {
+      showTexts(await request<ProfileTexts>("GET", "/profile", undefined, { quiet: true }));
+    } catch {
+      /* the name field above already says when the profile can't be loaded */
+    }
+  }
 
   function renderProfile(p: Profile | undefined): void {
     profileAvailable = p?.available ?? true;
@@ -175,6 +265,8 @@ export function createMemorySection(): Section {
       profileRes.set({ name: p.name, available: p.available });
       // The engine also rewrote (or removed) the memory that holds the name: show it.
       nameMemoryChanged(p);
+      // …and the name's entry in "Who you are" follows the name.
+      void loadTexts();
       loadWhenFree();
       announce("memory");
       toast(p.name ? `Trinity will call you ${p.name}.` : "Trinity won't use a name for you.", "success");
@@ -269,6 +361,178 @@ export function createMemorySection(): Section {
     listBody,
   );
 
+  // ── Conversation history ──
+  // What was said is kept (searchable, so "what did we say about…" has an answer) for as long as the setting
+  // says; one conversation, or all of them, can be deleted here.
+
+  interface HistoryStats {
+    sessions: number;
+    turns: number;
+    oldest: number | null;
+    retentionDays: number;
+  }
+  interface HistorySession {
+    id: string;
+    kind: string;
+    startedAt: number;
+    turns: number;
+    preview: string;
+  }
+  const RETENTION = [
+    { days: 30, label: "30 days" },
+    { days: 90, label: "90 days" },
+    { days: 180, label: "180 days" },
+    { days: 365, label: "1 year" },
+    { days: 0, label: "Forever" },
+  ];
+  const KIND_LABEL: Record<string, string> = { call: "Call", text: "Typed", scheduled: "Scheduled" };
+  let historyAvailable = true;
+  const historyCount = h("span", { class: "count", hidden: true });
+  const historyNote = h("span", { class: "muted small" });
+  const retention = h("select", { class: "select select-sm", "aria-label": "Keep conversations for" }, RETENTION.map((r) => h("option", { value: String(r.days) }, r.label)));
+  const reflectBtn = button("Reflect now", { icon: "sparkles", size: "sm", variant: "subtle", title: "Go over the conversations that ended and keep what is worth remembering (this also happens by itself, after each call and at night)" });
+  const tidyBtn = button("Merge duplicates", { icon: "brain", size: "sm", variant: "subtle", title: "Merge memories that say the same thing" });
+  const wipeBtn = button("Delete all history", { icon: "trash", size: "sm", variant: "danger" });
+  const historyBody = h("div", { class: "mem-body" });
+  const historyCard = h(
+    "div",
+    { class: "card mem-card", hidden: true },
+    h(
+      "div",
+      { class: "card-head" },
+      h("span", { class: "card-icon" }, icon("calendar")),
+      h(
+        "div",
+        { class: "card-head-text" },
+        h("h2", { class: "card-title" }, "Conversation history", historyCount),
+        h("p", { class: "card-sub" }, "What was said, kept so Trinity can pick a conversation up again and answer “what did we say about…”. Passwords, card numbers and anything from the vault are never stored."),
+      ),
+    ),
+    h("div", { class: "mem-toolbar" }, h("span", { class: "muted small" }, "Keep for"), retention, historyNote, h("span", { class: "spacer" }), reflectBtn, tidyBtn, wipeBtn),
+    historyBody,
+  );
+
+  function renderHistory(stats: HistoryStats, sessions: HistorySession[]): void {
+    historyCard.hidden = false;
+    historyCount.hidden = !stats.sessions;
+    historyCount.textContent = String(stats.sessions);
+    retention.value = String(RETENTION.some((r) => r.days === stats.retentionDays) ? stats.retentionDays : 180);
+    historyNote.textContent = stats.oldest ? `going back to ${fullDateTime(stats.oldest)}` : "";
+    wipeBtn.disabled = !stats.turns;
+    if (!sessions.length) {
+      setChildren(historyBody, h("div", { class: "card-pad muted" }, "No conversations are stored yet."));
+      return;
+    }
+    setChildren(
+      historyBody,
+      h(
+        "div",
+        { class: "mem-list" },
+        sessions.map((s) =>
+          h(
+            "div",
+            { class: "mem-row", dataset: { session: s.id } },
+            h("span", { class: "mem-type mem-type-event", title: KIND_LABEL[s.kind] ?? s.kind }, icon("calendar")),
+            h(
+              "div",
+              { class: "mem-main" },
+              h("div", { class: "mem-text" }, s.preview || "(nothing said)"),
+              h(
+                "div",
+                { class: "mem-meta" },
+                h("span", { class: "mem-kind" }, KIND_LABEL[s.kind] ?? s.kind),
+                h("span", { class: "mem-date", title: fullDateTime(s.startedAt) }, relTime(s.startedAt)),
+                h("span", { class: "muted small" }, `${s.turns} ${s.turns === 1 ? "line" : "lines"}`),
+              ),
+            ),
+            h("div", { class: "mem-actions" }, button(null, { icon: "trash", size: "sm", variant: "danger", title: "Delete this conversation", onclick: () => void removeSession(s) })),
+          ),
+        ),
+      ),
+    );
+  }
+
+  async function loadHistory(): Promise<void> {
+    if (!historyAvailable) return;
+    try {
+      const [stats, sessions] = await Promise.all([
+        request<HistoryStats>("GET", "/history", undefined, { quiet: true }),
+        request<HistorySession[]>("GET", "/history/sessions?limit=30", undefined, { quiet: true }),
+      ]);
+      renderHistory(stats, Array.isArray(sessions) ? sessions : []);
+    } catch (err) {
+      // An engine without the conversation log: the card simply isn't shown.
+      if (isNotAvailable(err)) historyAvailable = false;
+    }
+  }
+
+  async function removeSession(s: HistorySession): Promise<void> {
+    try {
+      await request<{ ok: boolean }>("DELETE", `/history/sessions/${encodeURIComponent(s.id)}`, undefined, { action: "delete the conversation" });
+      toast("Conversation deleted", "success");
+      void loadHistory();
+    } catch {
+      /* the request toasted why */
+    }
+  }
+
+  retention.addEventListener("change", () => {
+    void request<HistoryStats>("PUT", "/history/settings", { retentionDays: Number(retention.value) }, { action: "change how long history is kept" })
+      .then(() => {
+        toast(Number(retention.value) ? `Conversations are kept for ${RETENTION.find((r) => String(r.days) === retention.value)?.label ?? "a while"}; older ones were deleted.` : "Conversations are kept until you delete them.", "info");
+        void loadHistory();
+      })
+      .catch(() => void loadHistory());
+  });
+  wipeBtn.addEventListener("click", () => {
+    void (async () => {
+      const ok = await confirmAction({
+        title: "Delete all conversation history?",
+        message: "Every stored conversation is deleted and can't be brought back. Memories and your profile stay.",
+        confirmLabel: "Delete all history",
+        danger: true,
+      });
+      if (!ok) return;
+      try {
+        await withBusy(wipeBtn, () => request<{ ok: boolean }>("DELETE", "/history", undefined, { action: "delete the history" }), "Deleting…");
+        toast("All conversation history was deleted", "success");
+      } catch {
+        /* the request toasted why */
+      }
+      void loadHistory();
+    })();
+  });
+  reflectBtn.addEventListener("click", () => {
+    void (async () => {
+      try {
+        const r = await withBusy(reflectBtn, () => request<{ added: number; replaced: number; removed: number; profile: number }>("POST", "/reflect", {}, { action: "reflect on the conversations", timeoutMs: 180_000 }), "Reflecting…");
+        const changes = r.added + r.replaced + r.removed + r.profile;
+        toast(changes ? `Kept ${changes} ${changes === 1 ? "thing" : "things"} from your conversations.` : "Nothing new worth keeping.", changes ? "success" : "info");
+        if (changes) {
+          announce("memory");
+          void loadTexts();
+          loadWhenFree();
+        }
+      } catch {
+        /* the request toasted why */
+      }
+    })();
+  });
+  tidyBtn.addEventListener("click", () => {
+    void (async () => {
+      try {
+        const r = await withBusy(tidyBtn, () => request<{ merged: number }>("POST", "/memory/consolidate", {}, { action: "merge duplicate memories" }), "Merging…");
+        toast(r.merged ? `Merged ${r.merged} duplicate ${r.merged === 1 ? "memory" : "memories"}.` : "No duplicates found.", r.merged ? "success" : "info");
+        if (r.merged) {
+          announce("memory");
+          loadWhenFree();
+        }
+      } catch {
+        /* the request toasted why */
+      }
+    })();
+  });
+
   const el = h(
     "section",
     { class: "section", "aria-labelledby": "sec-memory" },
@@ -277,7 +541,7 @@ export function createMemorySection(): Section {
       title: "Memory",
       lede: "What Trinity remembers about you — your name, preferences, people, plans, and facts — so every persona can personalize what it says and does. Edit or delete anything here.",
     }),
-    h("div", { class: "memory-stack" }, profileCard, listCard),
+    h("div", { class: "memory-stack" }, profileCard, listCard, historyCard),
   );
 
   function setReadOnly(): void {
@@ -603,9 +867,11 @@ export function createMemorySection(): Section {
 
   profileRes.subscribe((p) => renderProfile(p));
 
-  /** The name and memories as stored now (e.g. saved by voice since) — the list waits while a form is open. */
+  /** The name, profile texts, memories and history as stored now (e.g. saved by voice since) — the list waits while a form is open. */
   function reload(): void {
     void profileRes.refresh().catch(() => {});
+    void loadTexts();
+    void loadHistory();
     loadWhenFree();
   }
 
@@ -620,10 +886,12 @@ export function createMemorySection(): Section {
           (p) => renderProfile(p),
           () => setChildren(nameState, badge("Couldn't load", "warn")),
         );
+        void loadTexts();
+        void loadHistory();
         void load();
       } else reload();
     },
-    isDirty: () => Boolean(adding?.dirty() || (editing && editForm?.dirty()) || !nameSave.disabled),
+    isDirty: () => Boolean(adding?.dirty() || (editing && editForm?.dirty()) || !nameSave.disabled || userText.dirty() || notesText.dirty()),
     refresh() {
       if (started) reload();
     },

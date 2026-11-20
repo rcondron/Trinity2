@@ -6,7 +6,7 @@ import { getActivePersona } from "../db/sqlite.js";
 import { workspace, type WorkspaceTemplate } from "../workspace/bus.js";
 import { getActiveGameId, getCustomTemplate, getGame, setCustomTemplate, subscribeGameChanges } from "./store.js";
 import type { Game } from "./types.js";
-import { toView } from "./view.js";
+import { missingViewParts, toView } from "./view.js";
 
 /**
  * Puts games on the shared workspace. The first present of a game sends its template
@@ -93,9 +93,16 @@ export function hardenCustomTemplate(src: string): string {
   return s;
 }
 
+/** A custom screen is used only if it draws every required part of the game (view.ts): the turn order, the roll being waited for, the quests… */
+export function customTemplateUsable(source: string): boolean {
+  return missingViewParts(source).length === 0;
+}
+
 function chooseTemplate(game: Game): Chosen {
   const custom = getCustomTemplate(game.id);
-  if (custom) {
+  // A screen generated before the board showed turns and pending rolls (or one that left them out) would hide
+  // half the game: the default table is shown instead.
+  if (custom && customTemplateUsable(custom)) {
     const source = hardenCustomTemplate(custom);
     const id = customTemplateId(game.id, source);
     if (!workspace.isTemplateBad(id)) {
@@ -283,7 +290,7 @@ function errorCard(title: string, message: string): string {
 </div>`;
 }
 
-// ─── Built-in fallback template (template contract v1) ───────────────────────
+// ─── Built-in fallback template (template contract v2) ───────────────────────
 
 export const FALLBACK_TEMPLATE = `<style>
 :root{--bg:#13100d;--panel:#1e1914;--ink:#f2e8d5;--muted:#b6a487;--accent:#d9a441;--accent2:#c0643b;--danger:#e0574c;--good:#7cbf6e;--font:Georgia,'Iowan Old Style','Palatino Linotype',serif}
@@ -333,15 +340,19 @@ var s=state||{},t=s.theme||{},p=t.palette||{},L=t.labels||{},r=document.document
 for(var k in p){if(/^#[0-9a-f]{3,8}$/i.test(String(p[k])))r.setProperty("--"+k,p[k]);}
 r.setProperty("--font",FONTS[t.font]||FONTS.serif);
 var items={};O(s.items).forEach(function(it){if(it&&it.id)items[it.id]=it;});
-var h='<header class="full card"><h1>'+esc(s.title||"New Adventure")+'</h1><div class="chips">'+(s.genre?'<span class="chip">'+esc(s.genre)+'</span>':'')+(s.tone?'<span class="chip dim">'+esc(s.tone)+'</span>':'')+'<span class="chip">'+(s.phase==="playing"?"Playing \\u00b7 Round "+esc(s.round||1):"Setup")+'</span>'+A(s.busy).map(function(b){return'<span class="chip dim">'+esc(b)+'</span>';}).join("")+'</div>'+(s.setting?'<p class="muted" style="margin:10px 0 0">'+esc(s.setting)+'</p>':'')+'</header>';
-if(s.phase!=="playing"&&s.setup){h+='<section class="full card"><h2>'+o+' Setting up your adventure</h2><div class="steps">'+O(s.setup.steps).map(function(x){return'<span'+(x.done?'':' class="muted"')+'>'+(x.done?"\\u2713":"\\u25CB")+" "+esc(x.label)+'</span>';}).join("")+'</div>'+(s.setup.next?'<div class="next"><b>Next:</b> '+esc(s.setup.next)+'</div>':'')+'</section>';}
+var h='<header class="full card"><h1>'+esc(s.title||"New Adventure")+'</h1><div class="chips">'+(s.genre?'<span class="chip">'+esc(s.genre)+'</span>':'')+(s.tone?'<span class="chip dim">'+esc(s.tone)+'</span>':'')+'<span class="chip">'+esc(s.phase==="playing"?(s.combat?"Combat \\u00b7 Round "+((s.combat||{}).round||1):"Playing"):s.phase==="paused"?"Paused":s.phase==="ended"?"Ended":"Setup")+'</span>'+A(s.busy).map(function(b){return'<span class="chip dim">'+esc(b)+'</span>';}).join("")+'</div>'+(s.setting?'<p class="muted" style="margin:10px 0 0">'+esc(s.setting)+'</p>':'')+'</header>';
+if((s.phase||"setup")==="setup"&&s.setup){h+='<section class="full card"><h2>'+o+' Setting up your adventure</h2><div class="steps">'+O(s.setup.steps).map(function(x){return'<span'+(x.done?'':' class="muted"')+'>'+(x.done?"\\u2713":"\\u25CB")+" "+esc(x.label)+'</span>';}).join("")+'</div>'+(s.setup.next?'<div class="next"><b>Next:</b> '+esc(s.setup.next)+'</div>':'')+'</section>';}
+if(s.pendingCheck||s.pendingQuestion){h+='<section class="full card"><div class="next"><b>Waiting for:</b> '+esc((s.pendingCheck||{}).text||s.pendingQuestion)+'</div></section>';}
+if(s.combat){h+='<section class="full card"><h2>'+o+' Initiative \\u00b7 Round '+esc(s.combat.round||1)+'</h2><div class="chips">'+O(s.combat.order).map(function(c){return'<span class="chip'+(c.current?'':' dim')+'">'+esc(c.name)+' '+esc(c.init)+'</span>';}).join("")+'</div></section>';}
+var tk=s.turn&&s.turn.kind==="turn"?"Turn":"Spotlight";
 h+='<section class="card"><h2>'+o+' '+esc(L.party||"Party")+'</h2>'+(O(s.players).length?O(s.players).map(function(pl){
 if(pl.pending)return'<div class="hero"><div class="pic shimmer"></div><div><b>'+esc(pl.name||"New hero")+'</b><div class="muted small">A new hero approaches\\u2026</div></div></div>';
 var pct=pl.maxHp>0?Math.max(0,Math.min(100,Math.round(pl.hp/pl.maxHp*100))):0,col=pct>50?"var(--good)":pct>25?"var(--accent)":"var(--danger)",st=pl.stats||{};
-return'<div class="hero'+(pl.id===s.activePlayerId?' on':'')+'">'+pic(pl.portrait,pl.name,"pic")+'<div style="min-width:0"><b>'+esc(pl.name)+'</b> <span class="muted small">'+esc([pl.race,pl.className].filter(Boolean).join(" "))+' \\u00b7 Lv '+esc(pl.level)+'</span><div class="muted small">HP '+esc(pl.hp)+'/'+esc(pl.maxHp)+' \\u00b7 AC '+esc(pl.ac)+' \\u00b7 '+["str","dex","con","int","wis","cha"].map(function(k){return k.toUpperCase()+" "+mod(st[k]);}).join(" ")+'</div><div class="bar"><i style="width:'+pct+'%;background:'+col+'"></i></div>'+(A(pl.conditions).length?'<div class="chips">'+A(pl.conditions).map(function(c){return'<span class="chip dim">'+esc(c)+'</span>';}).join("")+'</div>':'')+(A(pl.inventory).length?'<div class="muted small" style="margin-top:4px">'+A(pl.inventory).map(function(id){return esc((items[id]||{}).name||"");}).filter(Boolean).join(" \\u00b7 ")+'</div>':'')+'</div></div>';
+var ds=pl.deathSaves||{},cs=O(pl.conditionInfo).length?O(pl.conditionInfo):A(pl.conditions).map(function(c){return{name:c};});
+return'<div class="hero'+(pl.isTurn?' on':'')+'">'+pic(pl.portrait,pl.name,"pic")+'<div style="min-width:0"><b>'+esc(pl.name)+'</b> '+(pl.isTurn?'<span class="chip">'+tk+'</span> ':'')+'<span class="muted small">'+esc([pl.race,pl.className].filter(Boolean).join(" "))+' \\u00b7 Lv '+esc(pl.level)+(pl.playerName?' \\u00b7 '+esc(pl.playerName):'')+'</span><div class="muted small">'+(pl.dead?'Dead':'HP '+esc(pl.hp)+'/'+esc(pl.maxHp)+(pl.tempHp?' +'+esc(pl.tempHp):''))+' \\u00b7 AC '+esc(pl.ac)+(pl.hp<=0&&!pl.dead?(pl.stable?' \\u00b7 stable':' \\u00b7 death saves '+esc(ds.successes||0)+'\\u2713 '+esc(ds.failures||0)+'\\u2717'):'')+' \\u00b7 '+["str","dex","con","int","wis","cha"].map(function(k){return k.toUpperCase()+" "+mod(st[k]);}).join(" ")+'</div><div class="bar"><i style="width:'+pct+'%;background:'+col+'"></i></div>'+(O(pl.slots).length?'<div class="muted small">Slots '+O(pl.slots).map(function(x){return'L'+esc(x.level)+' '+esc(Math.max(0,x.max-x.used))+'/'+esc(x.max);}).join(' \\u00b7 ')+'</div>':'')+(cs.length?'<div class="chips">'+cs.map(function(c){return'<span class="chip dim">'+esc(c.name)+(c.rounds?' \\u00b7 '+esc(c.rounds):'')+'</span>';}).join("")+'</div>':'')+(A(pl.inventory).length?'<div class="muted small" style="margin-top:4px">'+A(pl.inventory).map(function(id){return esc((items[id]||{}).name||"");}).filter(Boolean).join(" \\u00b7 ")+'</div>':'')+'</div></div>';
 }).join(""):'<p class="muted">No heroes yet.</p>')+'</section>';
 var sc=s.scene;h+='<section class="card"><h2>'+o+' '+esc(L.scene||"Scene")+'</h2>'+(sc?pic(sc.image,"","art")+'<h3>'+esc(sc.title)+'</h3><p class="read">'+esc(sc.description)+'</p>':'<p class="muted">The story has not begun.</p>')+'<h2 style="margin-top:16px">'+o+' '+esc(L.log||"Adventure Log")+'</h2><div class="log">'+O(s.log).slice(-40).reverse().map(function(e){return'<div>'+(ICON[e.kind]||"\\u2022")+' '+esc(e.text)+'</div>';}).join("")+'</div></section>';
-var lr=s.lastRoll;h+='<section class="card">'+(lr?'<h2>'+o+' Last roll</h2><div class="roll">'+esc(lr.total)+'</div><div class="muted small">'+esc((lr.who||"Game Master")+(lr.label?" \\u00b7 "+lr.label:"")+" \\u00b7 "+lr.notation+" ["+A(lr.rolls).join(", ")+"]")+'</div>':'')+'<h2 style="margin-top:14px">'+o+' '+esc(L.npcs||"NPCs")+'</h2>'+(O(s.npcs).map(function(n){return'<div class="hero">'+pic(n.portrait,n.name,"pic")+'<div style="min-width:0"><b>'+esc(n.name)+'</b><div class="muted small">'+esc([n.role,n.attitude].filter(Boolean).join(" \\u00b7 "))+'</div></div></div>';}).join("")||'<p class="muted">None yet.</p>')+'<h2 style="margin-top:14px">'+o+' '+esc(L.items||"Items & Loot")+'</h2>'+(O(s.items).map(function(it){return'<div class="small" style="padding:3px 0"><b>'+esc(it.name)+'</b> <span class="muted">\\u00b7 '+esc(it.rarity)+'</span></div>';}).join("")||'<p class="muted">Nothing yet.</p>')+'</section>';
+var lr=s.lastRoll;h+='<section class="card">'+(lr?'<h2>'+o+' Last roll</h2><div class="roll">'+esc(lr.total)+'</div><div class="muted small">'+esc((lr.who||"Game Master")+(lr.label?" \\u00b7 "+lr.label:"")+" \\u00b7 "+lr.notation+" ["+A(lr.rolls).join(", ")+"]"+(lr.adv?" \\u00b7 "+(lr.adv==="adv"?"advantage":"disadvantage"):"")+(lr.natural===20?" \\u00b7 natural 20":lr.natural===1?" \\u00b7 natural 1":"")+(lr.outcome?" \\u00b7 "+lr.outcome+(lr.dc!=null?" vs "+lr.dc:""):""))+'</div>':'')+(O(s.quests).length?'<h2 style="margin-top:14px">'+o+' Quests</h2>'+O(s.quests).map(function(q){return'<div class="small" style="padding:3px 0">'+(q.status==="done"?"\\u2713 ":q.status==="failed"?"\\u2717 ":"\\u25CB ")+esc(q.title)+'</div>';}).join(""):'')+'<h2 style="margin-top:14px">'+o+' '+esc(L.npcs||"NPCs")+'</h2>'+(O(s.npcs).map(function(n){var gone=n.status&&n.status!=="alive";return'<div class="hero'+(n.isTurn?' on':'')+'"'+(gone?' style="opacity:.55"':'')+'>'+pic(n.portrait,n.name,"pic")+'<div style="min-width:0"><b>'+(gone?'<s>'+esc(n.name)+'</s>':esc(n.name))+'</b><div class="muted small">'+esc([n.role,gone?n.status:n.attitude,gone?null:n.health].concat(O(n.conditionInfo).map(function(c){return c.name+(c.rounds?" ("+c.rounds+")":"");})).filter(Boolean).join(" \\u00b7 "))+'</div></div></div>';}).join("")||'<p class="muted">None yet.</p>')+'<h2 style="margin-top:14px">'+o+' '+esc(L.items||"Items & Loot")+'</h2>'+(O(s.items).map(function(it){return'<div class="small" style="padding:3px 0"><b>'+esc(it.name)+'</b> <span class="muted">\\u00b7 '+esc(it.rarity)+'</span></div>';}).join("")||'<p class="muted">Nothing yet.</p>')+'</section>';
 document.getElementById("app").innerHTML=h;
 };
 })();

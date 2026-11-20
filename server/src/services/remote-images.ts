@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { IMAGES_DIR } from "./images.js";
+import { allowedByTestSwitch, safeFetch, type SafeFetchOptions } from "./safe-fetch.js";
 
 /*
  * Pictures from elsewhere (a product thumbnail, a hotel photo, an airline logo from a live search)
@@ -9,6 +10,8 @@ import { IMAGES_DIR } from "./images.js";
  * data: URLs the host inlines — so each remote picture is fetched once here, checked (an image type by
  * header and by its first bytes, under a size cap, from a public host) and kept in the image store
  * beside the generated ones. Same URL → same file; a failure → no picture (the card shows a tile).
+ * "A public host" is decided by the safe fetcher (services/safe-fetch.ts): the addresses the name resolves to, checked
+ * when the connection is made and again on every redirect — not by how the host is spelled.
  */
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
@@ -61,40 +64,36 @@ export function remoteImageUrl(id: string, ext: string): string {
   return `/api/images/${id}.${ext}`;
 }
 
-/** Fetch one remote picture into the image store; its engine URL, or null when it can't be used. */
-export async function cacheRemoteImage(url: string, opts: { timeoutMs?: number } = {}): Promise<string | null> {
+/** Fetch one remote picture into the image store; its engine URL, or null when it can't be used. (`lookup` and `allowAddress` are for tests.) */
+export async function cacheRemoteImage(url: string, opts: { timeoutMs?: number } & Pick<SafeFetchOptions, "lookup" | "allowAddress"> = {}): Promise<string | null> {
   let u: URL;
   try {
     u = new URL(url);
   } catch {
     return null;
   }
-  if (!publicHost(u)) return null;
+  // (A host:port pair the test switch names — a suite's own fixture server — passes the spelling check too.)
+  if (!publicHost(u) && !((u.protocol === "http:" || u.protocol === "https:") && allowedByTestSwitch(u.hostname, Number(u.port) || (u.protocol === "https:" ? 443 : 80)))) return null;
   const id = idFor(u.href);
   for (const ext of EXTS) if (fs.existsSync(path.join(IMAGES_DIR, `${id}.${ext}`))) return remoteImageUrl(id, ext);
   const pending = inflight.get(id);
   if (pending) return pending;
   const job = (async (): Promise<string | null> => {
     try {
-      const res = await fetch(u.href, {
+      // The safe fetcher resolves the host and refuses private addresses at connect time, on every redirect
+      // hop, and stops at the size cap (a spelling check alone let a public name point at localhost).
+      const res = await safeFetch(u.href, {
         headers: { "User-Agent": UA, Accept: "image/*" },
-        signal: AbortSignal.timeout(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
-        redirect: "follow",
+        timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        maxBytes: MAX_BYTES,
+        ...(opts.lookup ? { lookup: opts.lookup } : {}),
+        ...(opts.allowAddress ? { allowAddress: opts.allowAddress } : {}),
       });
       if (!res.ok) return null;
-      let final: URL;
-      try {
-        final = new URL(res.url || u.href);
-      } catch {
-        return null;
-      }
-      if (!publicHost(final)) return null;
       const type = (res.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
       const ext = EXT[type];
       if (!ext) return null;
-      const declared = Number(res.headers.get("content-length"));
-      if (Number.isFinite(declared) && declared > MAX_BYTES) return null;
-      const buf = Buffer.from(await res.arrayBuffer());
+      const buf = res.bytes;
       if (!buf.length || buf.length > MAX_BYTES || !magicOk(buf, ext)) return null;
       fs.mkdirSync(IMAGES_DIR, { recursive: true });
       const dest = path.join(IMAGES_DIR, `${id}.${ext}`);

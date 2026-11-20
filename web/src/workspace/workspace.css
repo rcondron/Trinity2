@@ -609,6 +609,247 @@
   height: 14px;
 }
 
+/* ── Secure form (the vault's sheet): over everything on the stage, drawn by the page itself ── */
+.tw-sheet-flag {
+  flex: 0 0 auto;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(34, 211, 238, 0.5);
+  background: rgba(34, 211, 238, 0.12);
+  color: #a5f3fc;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.tw-sheet-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  overflow: hidden;
+  pointer-events: auto;
+}
+.tw-sheet-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(6, 6, 12, 0.74);
+  backdrop-filter: blur(4px);
+  animation: tw-fade-in-full 0.2s ease both;
+}
+.tw-sheet {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(460px, 100%);
+  max-height: 100%;
+  /* The fields scroll (below); the title, the buttons and the note stay in view. */
+  overflow: hidden;
+  padding: 20px 20px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(103, 232, 249, 0.34);
+  background: #15151f;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(0, 0, 0, 0.4);
+  color: var(--tw-text);
+  font-size: 14px;
+  line-height: 1.45;
+  animation: tw-notice-in 0.24s var(--tw-ease) both;
+}
+.tw-sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.tw-sheet-mark {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  border-radius: 10px;
+  background: rgba(34, 211, 238, 0.14);
+  color: var(--tw-accent-2);
+}
+.tw-sheet-mark svg {
+  width: 19px;
+  height: 19px;
+}
+.tw-sheet-title {
+  margin: 0;
+  min-width: 0;
+  font-size: 17px;
+  font-weight: 650;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.tw-sheet-detail,
+.tw-sheet-host {
+  margin: 0;
+  color: #c3c3d8;
+  overflow-wrap: anywhere;
+}
+.tw-sheet-host {
+  padding: 7px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--tw-line-2);
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 13px;
+}
+.tw-sheet-host strong {
+  color: var(--tw-text);
+  font: 600 13px/1.4 ui-monospace, "Cascadia Code", Consolas, Menlo, monospace;
+}
+.tw-sheet > * {
+  flex: 0 0 auto;
+}
+.tw-sheet-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+.tw-sheet > .tw-sheet-fields {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* Room for the focus ring and the scrollbar, so neither is clipped or sits on the inputs. */
+  margin: -3px -8px -3px -3px;
+  padding: 3px 8px 3px 3px;
+}
+.tw-sheet-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.tw-sheet-label {
+  color: #c3c3d8;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.tw-sheet-control {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tw-root .tw-sheet-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 38px;
+  padding: 0 11px;
+  border-radius: 9px;
+  border: 1px solid var(--tw-line-2);
+  background: #0f0f18;
+  color: var(--tw-text);
+  font: inherit;
+  font-size: 14.5px;
+}
+.tw-root .tw-sheet-input::placeholder {
+  color: #6f6f8c;
+}
+.tw-root .tw-sheet-input:focus-visible {
+  outline: 2px solid var(--tw-accent);
+  outline-offset: 1px;
+  border-color: transparent;
+}
+.tw-sheet-field.is-invalid .tw-sheet-input {
+  border-color: rgba(248, 113, 113, 0.7);
+}
+.tw-sheet-toggle {
+  flex: 0 0 auto;
+  height: 38px;
+  min-width: 56px;
+  padding: 0 10px;
+  border-radius: 9px;
+  border: 1px solid var(--tw-line-2);
+  background: transparent;
+  color: var(--tw-muted);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.tw-sheet-toggle:hover {
+  color: var(--tw-text);
+}
+.tw-sheet-brand {
+  flex: 0 0 auto;
+  min-width: 0;
+  color: var(--tw-accent-2);
+  font-size: 12.5px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.tw-sheet-brand:empty {
+  display: none;
+}
+.tw-sheet-check {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #c3c3d8;
+  font-size: 13.5px;
+  cursor: pointer;
+}
+.tw-sheet-box {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  flex: 0 0 auto;
+  accent-color: var(--tw-accent);
+}
+.tw-sheet-error,
+.tw-sheet-field-error {
+  margin: 0;
+  color: #fca5a5;
+  font-size: 12.5px;
+}
+.tw-sheet-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 2px;
+}
+.tw-sheet-btn {
+  height: 38px;
+  padding: 0 16px;
+  border-radius: 10px;
+  border: 1px solid var(--tw-line-2);
+  background: transparent;
+  color: var(--tw-text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.tw-sheet-btn:hover {
+  border-color: var(--tw-accent);
+}
+.tw-sheet-btn.tw-sheet-primary {
+  border-color: transparent;
+  background: var(--tw-accent);
+  color: #fff;
+}
+.tw-sheet-btn.tw-sheet-primary:hover {
+  background: #9d75f8;
+}
+.tw-sheet-btn:disabled,
+.tw-sheet-btn.tw-sheet-primary:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.tw-sheet-note {
+  margin: 2px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--tw-line);
+  color: var(--tw-muted);
+  font-size: 12px;
+}
+
 /* Boot screen until the first snapshot arrives (appears only if connecting takes a moment). */
 .tw-boot {
   position: absolute;

@@ -29,6 +29,8 @@ import {
 } from "../workspace/board.js";
 import { cardName, cardOptions, cardsLabel, impliedCard, selectCards } from "../workspace/card-select.js";
 import { isBuildPreview, workspace } from "../workspace/bus.js";
+import { cancelCardForms, cancelFormCard, reconcileFormCards } from "../vault/forms.js";
+import { removeFormCard } from "../workspace/board.js";
 import { registerTool } from "./registry.js";
 
 /**
@@ -169,17 +171,25 @@ const clearWorkspace: Tool = {
   description:
     "Clear, wipe, blank, reset, or empty the workspace / screen / board / window — including every floating card and any page or app on it. Use this whenever the user wants the screen cleared, not remove_card (that's one numbered card). Prefer this only when they clearly want everything gone — they can undo_workspace if it was a mistake.",
   input: {},
+  // At the end of the sentence, not mid-way: "clear the screen… except the timer" isn't a wipe.
+  argMode: "raw",
   source: "builtin",
   async run() {
+    // A secure form whose card is on the board ends with it (cancelled, its card gone first: an undo can't bring it back).
+    const forms = cancelCardForms();
     const s = workspace.snapshot();
-    if (s.mode === "empty") return { ok: true, say: "The workspace is already empty." };
+    if (s.mode === "empty") return { ok: true, say: forms ? "Closed the secure form. The workspace is empty now." : "The workspace is already empty." };
     const cards = boardActive() ? listCards().length : 0;
     workspace.clear();
+    const closed = forms ? ` I closed the secure form${forms === 1 ? "" : "s"} too; nothing typed there was kept.` : "";
     return {
       ok: true,
-      say: cards
-        ? `Cleared the workspace and removed ${cards} card${cards === 1 ? "" : "s"}. Say undo if you want them back.`
-        : `Cleared the workspace; it was showing ${s.title}. Say undo if you want it back.`,
+      say:
+        (cards
+          ? `Cleared the workspace and removed ${cards} card${cards === 1 ? "" : "s"}. Say undo if you want them back.`
+          : forms
+            ? "Cleared the workspace."
+            : `Cleared the workspace; it was showing ${s.title}. Say undo if you want it back.`) + closed,
     };
   },
 };
@@ -187,7 +197,7 @@ const clearWorkspace: Tool = {
 const undoWorkspace: Tool = {
   name: "undo_workspace",
   description:
-    "Undo the last change to the board — a clear, a remove, a move, a resize, an arrangement, a rename or a note edit — bringing back what was there. Use when the user says undo, put it back, bring it back, go back, or oops that was a mistake. (Restoring a card that is still on the board — maximized, minimized, resized — is resize_card.)",
+    "Undo the last change to the board — a clear, a remove, a move or a drag (by voice or by hand), a re-layering, a resize, an arrangement, a copy, a rename or a note edit — taking back just that change: cards made since stay. Use when the user says undo, put it back, bring it back, go back, or oops that was a mistake. (Restoring a card that is still on the board — maximized, minimized, resized — is resize_card.)",
   input: {},
   source: "builtin",
   available: () => workspace.canUndo(),
@@ -209,6 +219,8 @@ const undoWorkspace: Tool = {
       }
     }
     const result = workspace.undo();
+    // The board that came back may hold the placeholder of a secure form that is long over: it goes again.
+    if (result.ok) reconcileFormCards();
     return { ok: result.ok, say: result.say, speak: result.ok ? result.say : undefined };
   },
 };
@@ -242,16 +254,24 @@ const removeCardTool: Tool = {
     if (!boardActive()) return { ok: false, say: "There aren't any floating cards on the board right now." };
     const s = selectCards(ctx.utterance, { hint: args.card });
     if (!s.cards.length) return { ok: false, say: s.missing.length ? missingLine(s.missing) : "Which card should I remove — a number, or say what it shows?" };
-    const removed = removeCards(s.cards.map((c) => c.n));
-    if (!removed.length) return { ok: false, say: "Those cards aren't on the board any more." };
+    // A secure form's placeholder: removing it cancels the form (no undo: the form can't come back, only be asked for again).
+    const formCards = s.cards.filter((c) => c.kind === "form");
+    for (const c of formCards) if (!cancelFormCard(c.n)) removeFormCard(c.n);
+    const closedForms = formCards.length ? `Closed the secure form${formCards.length === 1 ? "" : "s"}; nothing typed there was kept.` : "";
+    const others = s.cards.filter((c) => c.kind !== "form");
+    const removed = others.length ? removeCards(others.map((c) => c.n)) : [];
+    if (!removed.length) {
+      if (formCards.length) return { ok: true, say: closedForms, speak: closedForms, data: { cards: formCards.map((c) => c.n) } };
+      return { ok: false, say: "Those cards aren't on the board any more." };
+    }
     const left = listCards().length;
     const what = removed.length === 1 ? cardName(removed[0]!) : cardsLabel(removed);
     const kept = s.how === "except" && s.except.length ? ` Kept ${cardsLabel(s.except)}.` : "";
     const missing = s.missing.length ? ` (${missingLine(s.missing)})` : "";
     return {
       ok: true,
-      say: `Removed ${what}.${kept}${missing} ${left ? `${left} card${left === 1 ? "" : "s"} left.` : "The board is empty now."} Say undo to bring ${removed.length === 1 ? "it" : "them"} back.`,
-      data: { cards: removed.map((c) => c.n) },
+      say: `Removed ${what}.${kept}${missing} ${left ? `${left} card${left === 1 ? "" : "s"} left.` : "The board is empty now."} Say undo to bring ${removed.length === 1 ? "it" : "them"} back.${closedForms ? ` ${closedForms}` : ""}`,
+      data: { cards: [...removed, ...formCards].map((c) => c.n) },
     };
   },
 };
@@ -491,7 +511,7 @@ export function registerScreenTools(): void {
     // undo_workspace stays available so an accidental clear can be reversed.
     hiddenActions: (persona) =>
       isGameMaster(persona) && gameOwned()
-        ? ["clear_workspace", "describe_workspace", "remove_card", "move_card", "arrange_cards", "resize_card", "control_card", "read_card", "edit_note", "rename_card", "duplicate_card", "make_text", "show_card", "edit_html", "set_speech_rate", "browser_open", "browser_tabs", "browser_read", "browser_act", "browser_modify", "browser_save", "browser_share"]
+        ? ["clear_workspace", "describe_workspace", "remove_card", "move_card", "arrange_cards", "resize_card", "control_card", "read_card", "edit_note", "rename_card", "duplicate_card", "retry_card", "make_text", "show_card", "edit_html", "set_speech_rate", "browser_open", "browser_tabs", "browser_read", "browser_act", "browser_modify", "browser_save", "browser_share"]
         : [],
   });
 }

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Inbox — Listview</title>
+    <style>
+      /* The page itself never scrolls: only the message list in the middle does, the way mail and chat apps are built. */
+      html, body { height: 100%; margin: 0; overflow: hidden; font: 16px system-ui, sans-serif; }
+      header { position: absolute; top: 0; left: 0; right: 0; height: 56px; padding: 12px 24px; box-sizing: border-box; border-bottom: 1px solid #ccc; }
+      header h1 { margin: 0; font-size: 20px; }
+      #list { position: absolute; top: 56px; bottom: 0; left: 0; right: 0; overflow-y: auto; padding: 0 24px; }
+      .item { height: 64px; border-bottom: 1px solid #eee; display: flex; align-items: center; }
+    </style>
+  </head>
+  <body>
+    <header><h1>Inbox</h1></header>
+    <div id="list" role="list"></div>
+    <script>
+      const list = document.getElementById("list");
+      for (let i = 1; i <= 60; i++) {
+        const row = document.createElement("div");
+        row.className = "item";
+        row.setAttribute("role", "listitem");
+        row.textContent = `Message ${i}: the quarterly report, part ${i}`;
+        list.appendChild(row);
+      }
+    </script>
+    <script type="module" src="/harness.js"></script>
+  </body>
+</html>

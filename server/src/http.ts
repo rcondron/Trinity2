@@ -1,11 +1,12 @@
-import path from "node:path";
 import express, { type Router } from "express";
 import { nanoid } from "nanoid";
-import { ROOT } from "./config.js";
+import { authAdminRouter, authRouter, requireAuth } from "./auth.js";
 import { serviceStatus, getEndpoints, publicEndpoints, setEndpoints, type Endpoints } from "./settings.js";
 import { deletePersona, getActivePersona, getPersona, getProfileName, listPersonas, savePersona, setActivePersona } from "./db/sqlite.js";
 import type { MemoryStore } from "./db/memory.js";
-import { browserState, browserToken, rotateBrowserToken } from "./services/browser-bridge.js";
+import { browserRouter } from "./routes/browser.js";
+import { vaultRouter } from "./routes/vault.js";
+import { filesRouter } from "./routes/files.js";
 import { imagesRouter } from "./services/images.js";
 import { audioRouter } from "./services/speech.js";
 import { videosRouter } from "./services/videos.js";
@@ -16,7 +17,8 @@ import { memoryRouter } from "./routes/memory.js";
 import { skillsRouter } from "./routes/skills.js";
 import { emitPersonaActivated } from "./events.js";
 import { mordiemModels } from "./services/llm.js";
-import { ah, isAllowedOrigin } from "./util/bg.js";
+import { checkModels } from "./services/model-health.js";
+import { ah } from "./util/bg.js";
 import { workspace, type ToastTone, type WorkspaceTemplate } from "./workspace/bus.js";
 import type { Persona } from "./types.js";
 
@@ -50,17 +52,19 @@ export interface ApiHooks {
 
 export function createApi(memory: MemoryStore, hooks: ApiHooks = {}): Router {
   const api = express.Router();
-  // Cross-site browser requests may not change anything: only the local app (or a
-  // non-browser client, which sends no Origin) can write.
-  api.use((req, res, next) => {
-    if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return next();
-    if (!isAllowedOrigin(req.get("origin"))) return res.status(403).json({ error: "forbidden origin" });
-    next();
-  });
+  // Is this browser linked, and linking it: the only routes open to a caller with no session (see auth.ts).
+  api.use(authRouter());
+  // Everything else needs a linked browser on one of the app's own pages, or the API key.
+  api.use(requireAuth);
+  api.use(authAdminRouter());
+  // The vault parses its own (small) bodies and never echoes them: ahead of the general parser.
+  api.use(vaultRouter());
   api.use(express.json({ limit: "12mb" }));
   api.use(imagesRouter());
   api.use(audioRouter());
   api.use(videosRouter());
+  // Files Trinity made or was given (data/files): listed, opened, downloaded, deleted. They read no request bodies.
+  api.use(filesRouter());
 
   // ── Workspace ──
   api.get("/workspace", (_req, res) => res.json(workspace.snapshot()));
@@ -114,13 +118,15 @@ export function createApi(memory: MemoryStore, hooks: ApiHooks = {}): Router {
   api.put("/settings/endpoints", (req, res) => {
     setEndpoints((req.body ?? {}) as Partial<Endpoints>);
     workspace.setOverlays(getEndpoints().workspaceOverlays); // every open workspace window follows at once
-    res.json(publicEndpoints());
+    // A newly picked model may not be on the gateway (or a missing one was just replaced): check before answering.
+    void checkModels()
+      .catch(() => [])
+      .then(() => res.json(publicEndpoints()));
   });
   // Model ids the gateway offers, for the Settings model pickers ({text: [...], image: [...]}).
   api.get("/settings/models", ah(async (_req, res) => res.json(await mordiemModels())));
-  // The Chrome extension: connection state, its tabs, and the pairing token (Settings → Browser extension).
-  api.get("/browser", (_req, res) => res.json({ ...browserState(), token: browserToken(), extensionDir: path.join(ROOT, "extension") }));
-  api.post("/browser/token", (_req, res) => res.json({ token: rotateBrowserToken() }));
+  // The Chrome extension: connection state, its tabs and pairing (Settings → Browser extension).
+  api.use(browserRouter());
   // Voice library (built-in presets + custom samples synced to the pod) and saved games.
   api.use(voicesRouter());
   api.use(gamesRouter());
@@ -206,8 +212,10 @@ export function createApi(memory: MemoryStore, hooks: ApiHooks = {}): Router {
   // JSON errors instead of Express's HTML stack page (and never an unhandled rejection).
   api.use((err: Error & { status?: number; type?: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     const status = err.status ?? (err.type === "entity.too.large" ? 413 : 500);
-    if (status >= 500) console.warn("[api]", err.message);
-    res.status(status).json({ error: status === 413 ? "upload too large" : err.message });
+    // (The body parser's own message quotes a piece of the body: it is never sent back and never logged.)
+    const unreadable = typeof err.type === "string" && /^(entity\.parse\.failed|entity\.verify\.failed|encoding\.unsupported|charset\.unsupported|request\.aborted|request\.size\.invalid|stream\.encoding\.set|stream\.not\.readable|parameters\.too\.many)$/.test(err.type);
+    if (status >= 500 && !unreadable) console.warn("[api]", err.message);
+    res.status(status).json({ error: status === 413 ? "upload too large" : unreadable ? "That request couldn't be read." : err.message });
   });
 
   return api;

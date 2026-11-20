@@ -1,0 +1,18 @@
+{
+  "about": "Gmail's unread search (#search/is:unread in:inbox): the same kind of list, holding unread mail only.",
+  "url": "https://mail.google.com/mail/u/0/#search/is%3Aunread+in%3Ainbox",
+  "title": "Search results - ryan@example.com - Gmail",
+  "text": "Sam Lee Roadmap for Q1 - Hi Ryan, attached is the draft roadmap for next quarter. Could you send comments by Friday? 9:42 AM First National Bank Your October statement is ready - Your statement for the account ending 4821 is now available online. 8:15 AM Morning Brew Markets wrap: stocks slip as rates hold - Good morning. Here is what moved overnight and what to watch today. 6:30 AM 1–3 of 3 Terms · Privacy · Program Policies",
+  "controls": [
+    { "ref": 1, "role": "button", "name": "Main menu" },
+    { "ref": 2, "role": "textbox", "name": "Search mail", "editable": true },
+    { "ref": 3, "role": "button", "name": "Compose" },
+    { "ref": 4, "role": "link", "name": "Inbox 3", "href": "https://mail.google.com/mail/u/0/#inbox" },
+    { "ref": 5, "role": "button", "name": "Not starred" },
+    { "ref": 6, "role": "link", "name": "Roadmap for Q1 - Hi Ryan, attached is the draft roadmap for next quarter. Could" },
+    { "ref": 7, "role": "button", "name": "Not starred" },
+    { "ref": 8, "role": "link", "name": "Your October statement is ready - Your statement for the account ending 4821 is" },
+    { "ref": 9, "role": "button", "name": "Not starred" },
+    { "ref": 10, "role": "link", "name": "Markets wrap: stocks slip as rates hold - Good morning. Here is what moved over" }
+  ]
+}

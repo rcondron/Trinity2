@@ -10,6 +10,7 @@ import {
   FALLBACK_TOOLSETS,
   api,
   isNotAvailable,
+  request,
   type PendingSkill,
   type Skill,
   type SkillTestResult,
@@ -32,6 +33,7 @@ import {
   relTime,
   sectionHead,
   segmented,
+  setButtonLabel,
   setChildren,
   skeletonLines,
   switchInput,
@@ -332,7 +334,12 @@ interface RowHandlers {
 class ForgedRow {
   readonly el: HTMLElement;
   private skill: Skill;
-  private panel: "code" | "test" | null = null;
+  private panel: "code" | "test" | "care" | null = null;
+  /** What the user typed about what is wrong (kept while the panel is open). */
+  private readonly fixText = h("textarea", { class: "textarea", rows: 2, maxLength: 1000, placeholder: "What is wrong with it? e.g. The tip should be worked out on the amount before tax." });
+  private readonly fixBtn: HTMLButtonElement;
+  private readonly careBtn: HTMLButtonElement;
+  private fixNote: HTMLElement | null = null;
   private code: string | null = null;
   private codeError: string | null = null;
   private codeLoading = false;
@@ -354,13 +361,16 @@ class ForgedRow {
     this.codeBtn = button("View code", { icon: "code", size: "sm", variant: "ghost", onclick: () => this.open("code") });
     this.testBtn = button("Test", { icon: "flask", size: "sm", variant: "ghost", onclick: () => this.open("test") });
     this.runBtn = button("Run test", { icon: "play", size: "sm", variant: "primary", onclick: () => void this.runTest() });
+    // Fix it in words, or go back to an earlier version (engines that count and version skills).
+    this.careBtn = button("Fix / versions", { icon: "wand", size: "sm", variant: "ghost", onclick: () => this.open("care") });
+    this.fixBtn = button("Fix skill", { icon: "wand", size: "sm", variant: "primary", onclick: () => void this.fix() });
     const del = button(null, { icon: "trash", size: "sm", variant: "danger", title: "Delete skill", onclick: () => void this.remove() });
     this.head = h("div", { class: "forged-main" });
     this.panelEl = h("div", { class: "forged-panel", hidden: true });
     this.el = h(
       "article",
       { class: "forged-row", dataset: { skill: skill.name } },
-      h("div", { class: "forged-top" }, this.sw.el, this.head, h("div", { class: "forged-actions" }, this.codeBtn, this.testBtn, del)),
+      h("div", { class: "forged-top" }, this.sw.el, this.head, h("div", { class: "forged-actions" }, this.codeBtn, this.testBtn, this.careBtn, del)),
       this.panelEl,
     );
     this.renderHead();
@@ -388,31 +398,45 @@ class ForgedRow {
     this.sw.el.title = label;
     this.el.classList.toggle("is-off", !s.enabled);
     const meta: (string | HTMLElement)[] = [];
+    // Version and counters (engines that keep them): how often it ran, how often that failed, when it last ran.
+    if (s.version !== undefined) meta.push(h("span", { class: "chip chip-mono", title: "Each fix, re-make or rollback installs the next version; earlier ones are kept" }, `v${s.version}`));
+    if (s.uses !== undefined) meta.push(`${s.uses} ${s.uses === 1 ? "use" : "uses"}`);
+    if (s.fails) meta.push(h("span", { class: "forged-fails", title: s.lastError ?? "" }, `${s.fails} failed`));
+    if (s.lastUsedAt) meta.push(`Last used ${relTime(s.lastUsedAt)}`);
     if (s.createdAt) meta.push(`Made ${relTime(s.createdAt)}`);
     if (s.model) meta.push(h("span", { class: "chip chip-mono", title: "The coder that wrote it" }, s.model));
+    const stateBadge = s.problem
+      ? badge("Can't load", "danger", "alert")
+      : s.state === "archived"
+        ? badge("Archived", "info")
+        : s.disabledWhy
+          ? badge("Switched off: repairs failed", "warn", "alert")
+          : s.enabled
+            ? null
+            : badge("Off");
+    this.careBtn.hidden = s.version === undefined || s.kind === "procedure";
+    setButtonLabel(this.codeBtn, s.kind === "procedure" ? "View plan" : "View code");
+    this.testBtn.hidden = s.kind === "procedure";
     setChildren(
       this.head,
-      h(
-        "div",
-        { class: "forged-name-row" },
-        h("span", { class: "skill-name" }, s.name),
-        s.problem ? badge("Can't load", "danger", "alert") : s.enabled ? null : badge("Off"),
-      ),
+      h("div", { class: "forged-name-row" }, h("span", { class: "skill-name" }, s.name), s.kind === "procedure" ? badge("Plan", "info") : null, stateBadge),
       h("div", { class: "skill-desc" }, s.description || "No description."),
       s.problem ? h("div", { class: "field-error", role: "status" }, s.problem) : null,
+      s.state === "archived" ? h("div", { class: "muted small" }, "Not used for a month, so it was put away. Switch it on to bring it back.") : null,
       s.need ? h("div", { class: "forged-need" }, icon("sparkles"), h("span", null, "Made for: ", h("q", null, s.need))) : null,
       meta.length ? h("div", { class: "forged-meta" }, meta.flatMap((m, i) => (i ? [h("span", { class: "meta-sep", "aria-hidden": "true" }, "·"), m] : [m]))) : null,
     );
     for (const [btn, which] of [
       [this.codeBtn, "code"],
       [this.testBtn, "test"],
+      [this.careBtn, "care"],
     ] as const) {
       btn.setAttribute("aria-expanded", String(this.panel === which));
       btn.classList.toggle("is-on", this.panel === which);
     }
   }
 
-  private open(which: "code" | "test"): void {
+  private open(which: "code" | "test" | "care"): void {
     this.panel = this.panel === which ? null : which;
     const notFetched = this.code === null && !this.codeError && !this.codeLoading;
     if (this.panel === "code" && this.code === null && !this.codeLoading) void this.loadCode();
@@ -457,6 +481,38 @@ class ForgedRow {
           : this.codeError
             ? h("div", { class: "notice notice-error notice-compact" }, icon("alert"), h("span", null, this.codeError))
             : codeBlock(this.skill.name, this.code ?? ""),
+      );
+      return;
+    }
+    if (p === "care") {
+      const s = this.skill;
+      const kept = s.versions ?? [];
+      setChildren(
+        this.panelEl,
+        h(
+          "div",
+          { class: "test-panel" },
+          h(
+            "p",
+            { class: "test-lede" },
+            icon("wand"),
+            "When a run fails, Trinity repairs the skill herself: the fix is tested against its examples and the failing case, then installed as the next version. Two repairs that fail switch it off.",
+          ),
+          s.disabledWhy ? h("div", { class: "notice notice-warn notice-compact" }, icon("alert"), h("span", null, s.disabledWhy)) : null,
+          s.lastError ? h("div", { class: "notice notice-info notice-compact" }, icon("info"), h("span", null, `Last failure: ${s.lastError}`)) : null,
+          s.notes?.length ? h("ul", { class: "muted small" }, s.notes.map((n) => h("li", null, n))) : null,
+          field({ label: "Tell her what is wrong", control: this.fixText, hint: "Your words go to the coder with the current code. Takes up to a minute." }).el,
+          h("div", { class: "form-actions test-actions" }, this.fixNote, h("span", { class: "spacer" }), this.fixBtn),
+          kept.length
+            ? h(
+                "div",
+                { class: "form-actions test-actions" },
+                h("span", { class: "muted small" }, `Version ${s.version} is in use. Go back to:`),
+                h("span", { class: "spacer" }),
+                kept.slice(0, 5).map((v) => button(`v${v}`, { size: "sm", variant: "subtle", title: `Install version ${v} again (as the next version)`, onclick: (e: Event) => void this.rollback(v, e.currentTarget as HTMLButtonElement) })),
+              )
+            : h("p", { class: "muted small" }, "No earlier version is kept yet."),
+        ),
       );
       return;
     }
@@ -507,6 +563,76 @@ class ForgedRow {
       this.testing = false;
       this.renderPanel();
     }
+  }
+
+  /** Have the coder repair it, with the user's words as what is wrong; the fix becomes the next version. */
+  private async fix(): Promise<void> {
+    const description = this.fixText.value.trim();
+    if (!description) {
+      this.fixText.focus();
+      return;
+    }
+    try {
+      const r = await withBusy(
+        this.fixBtn,
+        () =>
+          request<{ ok: boolean; skill?: unknown; version?: number; reason?: string; disabled?: boolean }>("POST", `/skills/${encodeURIComponent(this.skill.name)}/fix`, { description }, { action: "fix the skill", timeoutMs: 240_000, quiet: (e) => e.notAvailable }),
+        "Fixing…",
+      );
+      if (r.ok) {
+        this.fixText.value = "";
+        this.fixNote = h("span", { class: "muted small" }, `Fixed: now version ${r.version ?? "?"}.`);
+        toast(`“${this.skill.name}” was fixed (version ${r.version ?? "?"})`, "success");
+      } else {
+        this.fixNote = h("span", { class: "field-error" }, r.reason ?? "The fix didn't work.");
+        toast(r.disabled ? `“${this.skill.name}” was switched off: its repairs keep failing` : `The fix for “${this.skill.name}” didn't pass its tests`, "warn");
+      }
+      // The code, the examples and the counters changed: forget what was loaded for the old version.
+      this.code = null;
+      this.form = null;
+      this.result = null;
+      await this.reloadSelf();
+    } catch (err) {
+      if (isNotAvailable(err)) toast("Fixing skills needs an engine update.", "warn");
+    } finally {
+      this.renderPanel();
+    }
+  }
+
+  private async rollback(version: number, btn: HTMLButtonElement): Promise<void> {
+    const ok = await confirmAction({
+      title: `Go back to version ${version} of “${this.skill.name}”?`,
+      message: `Version ${version} is installed again as the next version. Version ${this.skill.version ?? "?"} is kept, so you can return to it.`,
+      confirmLabel: `Use version ${version}`,
+    });
+    if (!ok) return;
+    try {
+      await withBusy(btn, () => request<{ ok: boolean }>("POST", `/skills/${encodeURIComponent(this.skill.name)}/rollback`, { version }, { action: "roll the skill back", quiet: (e) => e.notAvailable }), "…");
+      this.code = null;
+      this.form = null;
+      this.result = null;
+      this.fixNote = null;
+      toast(`“${this.skill.name}” is back on the code of version ${version}`, "success");
+      await this.reloadSelf();
+    } catch (err) {
+      if (isNotAvailable(err)) toast("Rolling skills back needs an engine update.", "warn");
+    } finally {
+      this.renderPanel();
+    }
+  }
+
+  /** This skill as the engine has it now (after a fix or a rollback). */
+  private async reloadSelf(): Promise<void> {
+    try {
+      const fresh = (await api.skills.list({ quiet: true })).find((x) => x.name === this.skill.name);
+      if (fresh) {
+        this.skill = fresh;
+        this.handlers.toggled(fresh);
+      }
+    } catch {
+      /* the list refreshes on its own later */
+    }
+    this.renderHead();
   }
 
   private async toggle(on: boolean, input: HTMLInputElement): Promise<void> {

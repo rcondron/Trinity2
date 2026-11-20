@@ -6,9 +6,16 @@
 //   stopAudio()    — end the turn-taking (mic off); the session stays warm.
 //   sendText()     — a typed turn, spoken back through the same live voice.
 // Ported from the personaplex-toolcall bench's worklets.
+import { TimeStretcher } from "./time-stretch.js";
 import { buildVoiceChain, type VoiceChain } from "./voice-chain.js";
 
-const WORKLETS = `
+/**
+ * The two worklet processors, as the source of one module. A worklet cannot import from the page, so the
+ * time stretcher's class is written into the source as text — it is self-contained for exactly that
+ * (see time-stretch.ts). Exported for scripts/test-time-stretch.mts, which runs the Speaker without a browser.
+ */
+export const WORKLETS = `
+const TimeStretcher = ${TimeStretcher.toString()};
 class Mic extends AudioWorkletProcessor {
   constructor() { super(); this.buf = new Int16Array(1920); this.n = 0; }
   process(inputs) {
@@ -22,46 +29,121 @@ class Mic extends AudioWorkletProcessor {
 }
 class Speaker extends AudioWorkletProcessor {
   constructor() {
-    super(); this.q = []; this.cur = null; this.pos = 0; this.queued = 0; this.playing = false;
-    this.rate = 1; this.readPos = 0;
+    super();
+    // Chunks as they arrived; q[0] is used up to "at". "waiting" counts what is left in the queue, "queued"
+    // that plus what the stretcher holds unplayed: the backlog, in input samples.
+    this.q = []; this.at = 0; this.waiting = 0; this.queued = 0; this.playing = false;
+    // Pace without pitch: the queue plays through a time stretcher instead of being resampled.
+    // "rate" is the pace asked for, "pace" the one playing now (they differ only while catching up).
+    this.ts = new TimeStretcher(sampleRate); this.rate = 1; this.pace = 1;
     // Audio queued before playback starts: 240 ms, grown by 80 ms each time the queue runs dry mid-phrase
     // (network jitter over the pod's proxy), up to 400 ms — a gap in a word costs more than the delay.
     this.cushion = 5760;
+    // Catching up with the live stream (feed, steer): input goes to the stretcher 20 ms at a time. "floor" is
+    // the stream's noise floor (mean square), "hush" how many samples of silence in a row have gone by,
+    // "dropped" how many were left out so far.
+    this.block = Math.round(sampleRate * 0.02); this.floor = 1; this.hush = 0;
+    this.behind = false; this.rush = false; this.dropped = 0;
     this.port.onmessage = (e) => {
-      if (e.data === "flush") { this.q = []; this.cur = null; this.pos = 0; this.readPos = 0; this.queued = 0; this.playing = false; return; }
-      if (e.data && typeof e.data === "object" && e.data.rate != null) {
-        var r = Number(e.data.rate); if (isFinite(r) && r >= 0.5 && r <= 2) this.rate = r;
+      if (e.data === "flush") {
+        this.q = []; this.at = 0; this.waiting = 0; this.queued = 0; this.playing = false;
+        this.hush = 0; this.behind = false; this.rush = false; this.pace = this.rate;
+        this.ts.flush(); this.ts.setRate(this.rate);
         return;
       }
-      this.q.push(e.data); this.queued += e.data.length;
+      if (e.data && typeof e.data === "object" && e.data.rate != null) {
+        var r = Number(e.data.rate);
+        if (isFinite(r) && r >= 0.5 && r <= 2) {
+          // At once — unless playback is off the asked pace to catch up, when steer() eases over to it.
+          if (this.pace === this.rate) { this.pace = r; this.ts.setRate(r); }
+          this.rate = r;
+        }
+        return;
+      }
+      this.q.push(e.data); this.waiting += e.data.length; this.queued += e.data.length;
     };
   }
-  process(_, outputs) {
-    const out = outputs[0][0];
-    if (!this.playing) { if (this.queued < this.cushion) return true; this.playing = true; }
-    const step = this.rate > 0 ? this.rate : 1;
-    for (let i = 0; i < out.length; i++) {
-      if (!this.cur || this.readPos >= this.cur.length - 1) {
-        if (this.cur) this.queued = Math.max(0, this.queued - this.cur.length);
-        this.cur = this.q.shift(); this.readPos = 0;
-        if (!this.cur) {
-          this.playing = false;
-          if (i > 0 && this.cushion < 9600) this.cushion += 1920;
-          break;
+  // Mean square of c[from..to).
+  power(c, from, to) {
+    let e = 0;
+    for (let i = from; i < to; i++) e += c[i] * c[i];
+    return to > from ? e / (to - from) : 1;
+  }
+  // Hand the stretcher input until it can make "need" samples — no further ahead, so the backlog stays in
+  // the queue. This is also where lost time is paid back: the pod sends in real time, silence included, and
+  // a pace under 1 plays less than arrives. Once behind (steer), the silence of a pause is left out
+  // instead of played — after its first 160 ms, and never the block just before sound, so every word still
+  // starts from the silence it came with and a short gap inside a phrase is untouched. Speech is never dropped.
+  feed(need) {
+    const ts = this.ts, q = this.q, size = this.block, enough = this.cushion + 0.1 * sampleRate;
+    while (q.length && ts.available() < need) {
+      const c = q[0], from = this.at, to = Math.min(c.length, from + size);
+      // Silence: under about -55 dBFS — or, if the stream's own floor is noisier than that, within 6 dB of
+      // the floor (the quietest block so far, creeping up 6 dB in 10 s), but never over -45 dBFS.
+      const p = this.power(c, from, to);
+      this.floor = Math.min(p, this.floor * (1 + 0.003 * (to - from) / size) + 1e-9);
+      const still = Math.min(3.2e-5, Math.max(3.2e-6, 4 * this.floor));
+      let drop = false;
+      if (p >= still) {
+        this.hush = 0;
+        if (this.waiting + ts.pending() <= enough) this.behind = false;
+      } else {
+        if (this.hush >= 0.16 * sampleRate && this.behind && this.waiting + ts.pending() > enough) {
+          drop = (to < c.length ? this.power(c, to, Math.min(c.length, to + size)) : q.length > 1 ? this.power(q[1], 0, Math.min(q[1].length, size)) : 1) < still;
         }
+        this.hush += to - from;
       }
-      const idx = Math.floor(this.readPos);
-      const frac = this.readPos - idx;
-      const a = this.cur[idx] || 0;
-      const b = this.cur[Math.min(idx + 1, this.cur.length - 1)] || a;
-      out[i] = a + (b - a) * frac;
-      this.readPos += step;
+      if (drop) this.dropped += to - from; else ts.push(c, from, to);
+      this.waiting -= to - from;
+      if (to < c.length) this.at = to; else { q.shift(); this.at = 0; }
     }
+  }
+  // How far behind the live stream playback may get at a pace under 1. More than 300 ms over the cushion:
+  // the pauses pay it back (feed). Only if that is not enough — 2.5 s behind — does the pace give way:
+  // 1 (and past 4 s, up to 1.15) until the backlog is under a second, then back to the asked pace. The pace
+  // moves a little per block (0.3 takes under a second), so neither change is heard as a step.
+  // At 1 or faster there is nothing to make up: the queue just runs dry and waits, as it always has.
+  steer() {
+    const lag = this.queued, sr = sampleRate, slow = this.rate < 1;
+    if (slow && lag > this.cushion + 0.3 * sr) this.behind = true;
+    if (!slow || lag < sr) this.rush = false; else if (lag > 2.5 * sr) this.rush = true;
+    const goal = !this.rush ? this.rate : lag > 4 * sr ? Math.min(1.15, 1 + 0.15 * (lag - 4 * sr) / sr) : 1;
+    if (goal !== this.pace) {
+      const d = goal - this.pace;
+      this.pace = d > 0.002 ? this.pace + 0.002 : d < -0.002 ? this.pace - 0.002 : goal;
+      this.ts.setRate(this.pace);
+    }
+  }
+  process(_, outputs) {
+    const out = outputs[0][0], ts = this.ts;
+    if (!this.playing) { if (this.queued < this.cushion) return true; this.playing = true; }
+    this.steer();
+    this.feed(out.length);
+    let n = ts.pull(out);
+    if (n < out.length) {
+      // The queue ran dry. The stretcher keeps the last few ms back for look-ahead: they play as they are,
+      // then silence until the cushion — a step bigger now — has refilled.
+      n += ts.drain(out, n);
+      if (n < out.length) {
+        this.playing = false;
+        if (this.cushion < 9600) this.cushion += 1920;
+      }
+    }
+    this.queued = this.waiting + ts.pending();
     return true;
   }
 }
 registerProcessor("mic", Mic);
 registerProcessor("speaker", Speaker);`;
+
+/**
+ * The rate the speaker plays at: the user's own setting times the persona's pace, kept within what the
+ * time stretcher takes (0.5–2).
+ */
+export function playbackRate(speechRate: number, pace: number): number {
+  const rate = speechRate * pace;
+  return Number.isFinite(rate) ? Math.max(0.5, Math.min(2, rate)) : 1;
+}
 
 export type CallEvent = Record<string, unknown> & { type: string };
 export type CallState = "idle" | "connecting" | "standby" | "live" | "closed";
@@ -85,7 +167,8 @@ export class LiveCall {
   private micSink?: GainNode;
   private micStarting?: Promise<void>;
   private micEpoch = 0; // bumped by teardownMic: a mic still opening then is stale
-  private speechRate = 1;
+  private speechRate = 1; // the user's setting
+  private pace = 1; // the persona's own pace, from the engine
 
   get supported(): boolean {
     return typeof navigator !== "undefined" && !!navigator.mediaDevices && !!window.AudioContext;
@@ -142,8 +225,11 @@ export class LiveCall {
       if (e.type === "ready") {
         this.setState(this.stream ? "live" : "standby");
         if (typeof e.speechRate === "number") this.setSpeechRate(e.speechRate);
+        if (typeof e.pace === "number") this.setPace(e.pace);
       }
       if (e.type === "speech_rate" && typeof e.rate === "number") this.setSpeechRate(e.rate);
+      // The user cut in: what is still queued here must not play out.
+      if (e.type === "flush") this.flushPlayback();
       handlers.onEvent(e);
     };
     ws.onclose = () => {
@@ -176,7 +262,7 @@ export class LiveCall {
       } catch {
         /* ignore */
       }
-      this.speaker.port.postMessage({ rate: this.speechRate });
+      this.postRate();
     }
     // Heard here from now on: the engine says what it kept for a voice that can be heard.
     if (!could && this.canPlay) this.sendJson({ type: "playback", on: true });
@@ -187,7 +273,11 @@ export class LiveCall {
     this.chain?.setClarity(on);
   }
 
-  /** Playback pace for streamed PersonaPlex PCM (1 = normal). Also used by browser TTS. */
+  /**
+   * Playback pace for streamed PersonaPlex PCM (1 = normal): the user's setting. Also used by browser TTS.
+   * The pace changes, the pitch does not: the speaker worklet time-stretches (time-stretch.ts).
+   * What the speaker plays at is this times the persona's own pace (setPace).
+   */
   setSpeechRate(rate: number): void {
     const r = Math.max(0.5, Math.min(2, Number(rate) || 1));
     this.speechRate = r;
@@ -196,11 +286,33 @@ export class LiveCall {
     } catch {
       /* private mode */
     }
-    this.speaker?.port.postMessage({ rate: r });
+    this.postRate();
   }
 
   getSpeechRate(): number {
     return this.speechRate;
+  }
+
+  /**
+   * The persona's own pace (1 = as the voice comes; a narrator's might be 0.92), 0.5–1.5. The engine sends
+   * it with "ready"; it is not remembered here — the user's setting is theirs, and multiplies with it.
+   */
+  setPace(pace: number): void {
+    this.pace = Math.max(0.5, Math.min(1.5, Number(pace) || 1));
+    this.postRate();
+  }
+
+  /** Tell the speaker the rate to play at: the user's setting times the persona's pace. */
+  private postRate(): void {
+    this.speaker?.port.postMessage({ rate: playbackRate(this.speechRate, this.pace) });
+  }
+
+  /**
+   * Drop whatever the speaker still has queued: it is silent from the next audio block. The engine asks
+   * for this ({type: "flush"}) when the user cuts in, so the voice stops there instead of playing out.
+   */
+  flushPlayback(): void {
+    this.speaker?.port.postMessage("flush");
   }
 
   /** Start talking: call from the mic-tap gesture. A tap while the mic is still opening joins that start. */
@@ -249,7 +361,7 @@ export class LiveCall {
   /** End the turn (mic off). The voice session stays warm for the next tap. */
   stopAudio(): void {
     this.sendJson({ type: "mic", on: false });
-    this.speaker?.port.postMessage("flush");
+    this.flushPlayback();
     this.teardownMic();
     if (this.state === "live") this.setState("standby");
   }

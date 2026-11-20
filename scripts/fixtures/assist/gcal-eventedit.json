@@ -1,0 +1,20 @@
+{
+  "about": "A Google-Calendar-like new-event form as the event-template link opens it, filled in from the link: a title field, the date and times, guests, a Save button. (The test's fake browser gives this page the address it was opened with.)",
+  "url": "https://calendar.google.com/calendar/u/0/r/eventedit",
+  "title": "Google Calendar - Event details",
+  "text": "Event details Find a time Guests Rooms Nov 11, 2026 3:00pm to 3:30pm Nov 11, 2026 (GMT-06:00) Central Time - Chicago All day Does not repeat Add Google Meet video conferencing Add location Notification 30 minutes Add notification Ryan Smith Busy Default visibility Add description Guest permissions Modify event Invite others See guest list",
+  "controls": [
+    { "ref": 1, "role": "button", "name": "Cancel event creation" },
+    { "ref": 2, "role": "textbox", "name": "Title", "editable": true },
+    { "ref": 3, "role": "button", "name": "Save" },
+    { "ref": 4, "role": "button", "name": "More actions" },
+    { "ref": 5, "role": "textbox", "name": "Start date", "editable": true },
+    { "ref": 6, "role": "combobox", "name": "Start time", "editable": true },
+    { "ref": 7, "role": "combobox", "name": "End time", "editable": true },
+    { "ref": 8, "role": "textbox", "name": "End date", "editable": true },
+    { "ref": 9, "role": "checkbox", "name": "All day" },
+    { "ref": 10, "role": "textbox", "name": "Add guests", "editable": true },
+    { "ref": 11, "role": "textbox", "name": "Add location", "editable": true },
+    { "ref": 12, "role": "textbox", "name": "Add description", "editable": true }
+  ]
+}

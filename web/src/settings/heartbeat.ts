@@ -2,9 +2,11 @@
 // in ten minutes to stretch") and recurring tasks ("every morning at eight,
 // brief me on the news"). Reminders are spoken in the live call when due (and
 // shown in the transcript and the workspace); recurring tasks run as a turn of
-// their own. Toggle, edit inline, delete, and add new ones.
+// their own (some only on certain weekdays). Toggle, edit inline, delete, and
+// add new ones. Below them, the check-in: a short list Trinity looks at now and
+// then, with its active hours and how long you must have been quiet.
 
-import { api, type HeartbeatInput, type HeartbeatPatch, type HeartbeatTask } from "./api.js";
+import { api, request, type HeartbeatInput, type HeartbeatPatch, type HeartbeatTask } from "./api.js";
 import { announce } from "./channel.js";
 import { heartbeatRes } from "./store.js";
 import {
@@ -303,9 +305,20 @@ function whenPhrase(ts: number): string {
   return words.startsWith("in ") ? `${words} (${clockTime(ts)})` : words;
 }
 
-/** "every day at 8:00 AM" for whole-day intervals, else "every 30 min". */
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/** A weekday rule in words: "weekdays", "weekends", "Mon, Wed, Fri". */
+function daysLabel(days: number[]): string {
+  const set = [...new Set(days)].sort((a, b) => a - b);
+  if (set.join() === "1,2,3,4,5") return "weekdays";
+  if (set.join() === "0,6") return "weekends";
+  return [...set.filter((d) => d !== 0), ...set.filter((d) => d === 0)].map((d) => DAY_NAMES[d] ?? "").join(", ");
+}
+
+/** "every day at 8:00 AM" for whole-day intervals, "weekdays at 9:00 AM" with a weekday rule, else "every 30 min". */
 function cadence(t: HeartbeatTask): string {
   const base = fmtInterval(t.intervalSec);
+  if (t.days?.length) return t.intervalSec === 86400 && t.nextRunAt ? `${daysLabel(t.days)} at ${clockTime(t.nextRunAt)}` : `${base}, ${daysLabel(t.days)}`;
   return t.intervalSec >= 86400 && t.intervalSec % 86400 === 0 && t.nextRunAt ? `${base} at ${clockTime(t.nextRunAt)}` : base;
 }
 
@@ -363,6 +376,116 @@ export function createHeartbeatSection(): Section {
   const remindersCard = h("div", { class: "card" });
   const recurringCard = h("div", { class: "card" });
   const formCard = h("div", { class: "card" });
+
+  // ── The check-in: a short list Trinity looks at now and then, speaking only when something on it needs saying ──
+  interface Checkin {
+    enabled: boolean;
+    everyMin: number;
+    activeFrom: string;
+    activeTo: string;
+    idleMin: number;
+    checklist: string;
+    limit: number;
+  }
+  let checkin: Checkin | null = null;
+  const ciList = h("textarea", {
+    class: "textarea",
+    rows: 4,
+    placeholder: "If it's after six and I haven't mentioned dinner, ask what the plan is.\nIf I've been quiet for a couple of hours in the afternoon, suggest a stretch.",
+  });
+  const ciCount = h("span", { class: "muted small" });
+  // (Wide enough for "09:00 PM": a row's own rule would make them as narrow as the number fields.)
+  const ciFrom = h("input", { class: "input input-time", type: "time", style: "width: 150px", "aria-label": "Active from" });
+  const ciTo = h("input", { class: "input input-time", type: "time", style: "width: 150px", "aria-label": "Active until" });
+  const ciEvery = h("input", { class: "input", type: "number", min: "5", max: "1440", step: "5", inputMode: "numeric", "aria-label": "Minutes between looks" });
+  const ciIdle = h("input", { class: "input", type: "number", min: "1", max: "240", step: "1", inputMode: "numeric", "aria-label": "Minutes of quiet first" });
+  const ciSwitch = switchInput({ checked: true, label: "On", onchange: () => ciSync() });
+  const ciSave = button("Save", { variant: "primary", icon: "check", size: "sm", disabled: true });
+  const fList = field({ label: "The list", control: ciList, extra: ciCount, hint: "One line each. She stays silent when nothing on it needs attention, and an empty list is never looked at." });
+  const checkinCard = h(
+    "div",
+    { class: "card", hidden: true },
+    h(
+      "div",
+      { class: "card-head" },
+      h("span", { class: "card-icon" }, icon("bell")),
+      h(
+        "div",
+        { class: "card-head-text" },
+        h("h2", { class: "card-title" }, "Check-in"),
+        h("p", { class: "card-sub" }, "A quiet look at a short list of things you'd like to be nudged about — only in the hours you choose, only when you've been quiet, and only said when something needs it."),
+      ),
+      h("div", { class: "card-head-side" }, ciSwitch.el),
+    ),
+    h(
+      "div",
+      { class: "card-pad form-stack" },
+      fList.el,
+      h("div", { class: "interval-row" }, h("span", { class: "interval-every" }, "Between"), ciFrom, h("span", { class: "interval-every" }, "and"), ciTo),
+      h("div", { class: "interval-row" }, h("span", { class: "interval-every" }, "Every"), ciEvery, h("span", { class: "interval-every" }, "minutes, after"), ciIdle, h("span", { class: "interval-every" }, "minutes of quiet")),
+      h("div", { class: "form-actions" }, h("span", { class: "spacer" }), ciSave),
+    ),
+  );
+  const ciValues = () => ({
+    checklist: ciList.value,
+    enabled: ciSwitch.input.checked,
+    activeFrom: ciFrom.value,
+    activeTo: ciTo.value,
+    everyMin: Number(ciEvery.value),
+    idleMin: Number(ciIdle.value),
+  });
+  const ciDirty = () =>
+    Boolean(checkin) &&
+    (ciList.value.trim() !== checkin!.checklist.trim() || ciSwitch.input.checked !== checkin!.enabled || ciFrom.value !== checkin!.activeFrom || ciTo.value !== checkin!.activeTo || Number(ciEvery.value) !== checkin!.everyMin || Number(ciIdle.value) !== checkin!.idleMin);
+  function ciSync(): void {
+    const limit = checkin?.limit ?? 1200;
+    ciCount.textContent = `${ciList.value.length.toLocaleString()} / ${limit.toLocaleString()}`;
+    ciCount.classList.toggle("field-error", ciList.value.length > limit);
+    ciSave.disabled = !ciDirty();
+  }
+  function showCheckin(c: Checkin): void {
+    const untouched = !ciDirty();
+    checkin = c;
+    checkinCard.hidden = false;
+    // (Never over something typed and not saved yet.)
+    if (untouched) {
+      ciList.value = c.checklist;
+      ciSwitch.input.checked = c.enabled;
+      ciFrom.value = c.activeFrom;
+      ciTo.value = c.activeTo;
+      ciEvery.value = String(c.everyMin);
+      ciIdle.value = String(c.idleMin);
+    }
+    ciSync();
+  }
+  async function loadCheckin(): Promise<void> {
+    try {
+      showCheckin(await request<Checkin>("GET", "/heartbeat/checkin", undefined, { quiet: true }));
+    } catch {
+      /* an engine without the check-in: the card stays hidden */
+    }
+  }
+  for (const input of [ciList, ciFrom, ciTo, ciEvery, ciIdle])
+    input.addEventListener("input", () => {
+      fList.setError(null);
+      ciSync();
+    });
+  ciSave.addEventListener("click", () => {
+    void (async () => {
+      fList.setError(null);
+      try {
+        const saved = await withBusy(ciSave, () => request<Checkin>("PUT", "/heartbeat/checkin", ciValues(), { quiet: true }), "Saving…");
+        checkin = null;
+        showCheckin(saved);
+        announce("heartbeat");
+        toast(saved.enabled ? (saved.checklist.trim() ? "Saved — Trinity will look at the list now and then." : "Saved — with an empty list, nothing is looked at.") : "The check-in is off.", "success");
+      } catch (err) {
+        // Too long, a line the engine won't keep, or a time it can't read: it says which.
+        fList.setError((err as Error).message || "That couldn't be saved.");
+      }
+    })();
+  });
+
   const el = h(
     "section",
     { class: "section", "aria-labelledby": "sec-heartbeat" },
@@ -371,7 +494,7 @@ export function createHeartbeatSection(): Section {
       title: "Heartbeat",
       lede: "What Trinity does on a schedule — even when you're not talking. Reminders are spoken in a live call when they're due (and always shown in the transcript and the workspace); recurring tasks run on their own with her tools.",
     }),
-    h("div", { class: "heartbeat-stack" }, remindersCard, recurringCard, formCard),
+    h("div", { class: "heartbeat-stack" }, remindersCard, recurringCard, formCard, checkinCard),
   );
 
   // ── Rows ──
@@ -905,6 +1028,7 @@ export function createHeartbeatSection(): Section {
         buildForm();
         void load();
       } else void heartbeatRes.refresh().catch(() => {});
+      void loadCheckin();
       window.clearInterval(tick);
       // While the page is open: pick up reminders made by voice and ones that just fired, and keep
       // "in 8 min" honest (a refresh re-renders through the subscription).
@@ -915,9 +1039,10 @@ export function createHeartbeatSection(): Section {
     hide() {
       window.clearInterval(tick);
     },
-    isDirty: () => Boolean((editing && editForm?.dirty()) || addForm?.dirty()),
+    isDirty: () => Boolean((editing && editForm?.dirty()) || addForm?.dirty() || ciDirty()),
     refresh() {
       if (started && !editing) void heartbeatRes.refresh().catch(() => {});
+      if (started) void loadCheckin();
     },
   };
 }

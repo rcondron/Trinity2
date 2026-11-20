@@ -248,7 +248,7 @@ async function retrieveJob(
 }
 
 async function downloadUrl(url: string): Promise<Buffer> {
-  const res = await fetch(url, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
+  const res = await (await import("./safe-fetch.js")).safeFetch(url, { timeoutMs: DOWNLOAD_TIMEOUT_MS, maxBytes: 256 * 1024 * 1024 }); // a gateway-supplied URL: public hosts only, checked per hop
   if (!res.ok) throw new Error(`video download ${res.status}`);
   const bytes = Buffer.from(await res.arrayBuffer());
   if (bytes.length < 256) throw new Error("video download was empty");

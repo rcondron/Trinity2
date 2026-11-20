@@ -13,7 +13,10 @@
     "start": "tsx server/src/index.ts",
     "build:web": "vite build",
     "typecheck": "tsc --noEmit",
-    "eval:cards": "tsx scripts/eval-card-skills.mts"
+    "test": "node scripts/test-all.mjs",
+    "harness": "node scripts/harness.mjs",
+    "eval:cards": "tsx scripts/eval-card-skills.mts",
+    "eval:assistant": "tsx scripts/eval-assistant.mts"
   },
   "engines": {
     "node": ">=22"

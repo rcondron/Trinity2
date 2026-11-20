@@ -69,20 +69,30 @@ export const config = {
     // The coding skill's two coders (UI builds, forged skills, custom screens): a quick one for most
     // pages and a strong one for big apps. (The keys keep their first names, "glm" and "kimi", so
     // saved settings and Jev's option ids stay valid.) Measured on the engine's own build prompt, a
-    // timer and a chart: mercury-3 first code ~1.1 s, done ~3 s; deepseek-v4-flash-0731-fast ~1 s /
-    // ~11 s; kimi-k3 ~1 s / ~20–30 s with the most polished result; z-ai-glm-5-3-flash ~31 s (full
-    // z-ai-glm-5-3 is thinking-only on Mordiem: ~16 s of reasoning before any code).
-    glmModel: process.env.QUICK_CODER || process.env.MORDIEM_GLM_MODEL || "mercury-3",
+    // timer and a tip calculator, 2026-11-10 (mercury-3, the first default, was withdrawn from the gateway):
+    // deepseek-v4-1-flash-1017-ultrafast first code ~0.7 s, done ~2 s; claude-haiku-5-5 ~1 s / ~9–11 s;
+    // z-ai-glm-5-3-flash ~1–3 s / ~10–11 s; deepseek-v4-1-flash ~0.8 s / ~10–13 s; kimi-k3-fast-api and
+    // deepseek-v4-flash-0731-fast ~20 s; kimi-k3 ~1 s / ~20–30 s with the most polished result (full
+    // z-ai-glm-5-3 is thinking-only on Mordiem: ~16 s of reasoning before any code). A configured model the
+    // gateway stops serving is stood in for automatically (services/model-health.ts).
+    glmModel: process.env.QUICK_CODER || process.env.MORDIEM_GLM_MODEL || "deepseek-v4-1-flash-1017-ultrafast",
     kimiModel: process.env.STRONG_CODER || process.env.MORDIEM_KIMI_MODEL || "kimi-k3",
     // The problem solver (figure_out): plans, runs tools in turn, retries, forges a skill when none fits.
     plannerModel: process.env.PLANNER_MODEL || "kimi-k3",
     coderDefault: (process.env.CODER_DEFAULT === "kimi" || process.env.CODER_DEFAULT === "strong" ? "kimi" : "glm") as "glm" | "kimi",
     brainModel: process.env.BRAIN_MODEL || "claude-sonnet-5-5",
+    // Writes what Trinity says when no tool is needed (services/talk.ts). Blank = the brain model.
+    chatModel: process.env.CHAT_MODEL || "",
+    // Steps in when the chat model hasn't said a word in time, or fails. It has to follow the talk rules as well as
+    // the chat model does (measured on 41 lines of talk, requests and filler: Haiku 5.5 40 right with a steady ~1 s to
+    // the first sentence; the nano fast model 29, and it claims work it isn't doing). Blank = no backup.
+    chatBackupModel: process.env.CHAT_BACKUP_MODEL ?? "claude-haiku-5-5",
     // The card designer: writes information cards (show_card) — the facts, layout, look and picture
-    // brief of a recipe / news / profile card. Measured on the real prompt (recipe / profile / explainer):
-    // mercury-3 ~1.8 s a card, nemotron-nano ~4.5–5 s (thin), deepseek-v4-flash ~6 s, kimi-k3 6–20 s,
-    // claude-sonnet-5-5 ~8.5–9 s (the most careful). The quality tier always uses the brain. Blank = the brain.
-    cardModel: process.env.CARD_MODEL || "mercury-3",
+    // brief of a recipe / news / profile card. Measured on the real prompt (a recipe), 2026-11-10:
+    // deepseek-v4-1-flash-1017-ultrafast ~1.3 s a card, claude-haiku-5-5 ~5.8 s, z-ai-glm-5-3-flash ~6.6 s;
+    // earlier: nemotron-nano ~4.5–5 s (thin), kimi-k3 6–20 s, claude-sonnet-5-5 ~8.5–9 s (the most careful).
+    // The quality tier always uses the brain. Blank = the brain.
+    cardModel: process.env.CARD_MODEL || "deepseek-v4-1-flash-1017-ultrafast",
     // Fast model that writes the one spoken sentence after a tool runs.
     replyModel: process.env.REPLY_MODEL || "nvidia-nemotron-3-nano-30b-a3b",
     // Fast JSON model for argument extraction and game content (~2s measured).
@@ -107,6 +117,13 @@ export const config = {
     serpapiKey: process.env.SERPAPI_KEY || process.env.SERPAPI_API_KEY || "",
   },
 
+  // The user's own webmail and web calendar, opened in their signed-in browser through the extension (no account is
+  // set up in the engine): Gmail and Google Calendar by default; Outlook on the web works too.
+  assistant: {
+    mailUrl: process.env.MAIL_URL || "https://mail.google.com/mail/u/0/#inbox",
+    calendarUrl: process.env.CALENDAR_URL || "https://calendar.google.com/calendar/u/0/r",
+  },
+
   skills: {
     // "auto": a skill Trinity creates is tested in its sandbox and usable at once.
     // "manual": it waits in Settings → Skills for approval.
@@ -118,6 +135,11 @@ export const config = {
     // What the workspace window draws over the board: "all" (Jev's trail, background chips, toasts), "alerts" (chips and
     // toasts only) or "none". Settings → Workspace window.
     overlays: (process.env.WORKSPACE_OVERLAYS || "all") as "all" | "alerts" | "none",
+  },
+  voice: {
+    // "polished": the live voice only ever speaks words it is given — a tool's reply, or the talking brain's (short,
+    // consistent, nothing made up). "free": it improvises its own small talk, as a full-duplex model does.
+    talkStyle: (process.env.TALK_STYLE === "free" ? "free" : "polished") as "polished" | "free",
   },
   timing: {
     routeEveryMs: Number(process.env.ROUTE_EVERY_MS) || 400,
